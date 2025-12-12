@@ -7,6 +7,20 @@ import websockets  # pip install websockets
 
 clients = set()
 
+def _world_to_map_xy(self, cx: float, cy: float) -> Tuple[float, float]:
+    x_min, x_max = -25.72432848384547, 25.744828483845467
+    y_min, y_max = -18.432071780223303, 19.171471780223307
+
+    def _norm(v, vmin, vmax):
+        if vmax <= vmin:
+            return 0.5
+        t = (v - vmin) / (vmax - vmin)
+        return float(max(0.0, min(1.0, t)))
+
+    u = _norm(cx, x_min, x_max)
+    v = 1.0 - _norm(cy, y_min, y_max)
+    return u, v
+
 
 async def handler(ws):
     clients.add(ws)
@@ -67,7 +81,7 @@ def make_snapshot() -> dict:
                 "battery": random.randint(50, 100),
                 "fromLabel": "-",
                 "toLabel": "-",
-                "cameraId": None,
+                "cameraId": "cam-1",
                 "routeChanged": False,
             }
         )
@@ -77,7 +91,7 @@ def make_snapshot() -> dict:
         "payload": {
             "carsOnMap": cars_on_map,
             "carsStatus": cars_status,
-            "camerasOnMap": [],
+            "camerasOnMap": [{ "id": "camMarker-1", "cameraId": "cam-1", "x": 0.5, "y": -0.03 },{ "id": "camMarker-2", "cameraId": "cam-2", "x": -0.05, "y": 0.5 }],
             "camerasStatus": [],
             "incident": None,
             "routeChanges": [],

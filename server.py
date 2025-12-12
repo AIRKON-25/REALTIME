@@ -825,13 +825,8 @@ class RealtimeFusionServer:
         self.tracker_fixed_width = float(tracker_fixed_width) if tracker_fixed_width is not None else None
 
     def _world_to_map_xy(self, cx: float, cy: float) -> Tuple[float, float]:
-        """
-        세계 좌표(cx, cy)를 UI에서 쓰는 0~1 비율 좌표로 변환.
-        아래 범위는 맵에 맞게 나중에 조정하면 된다.
-        """
-        # TODO: 실제 맵 스케일에 맞게 조정
-        x_min, x_max = -50.0, 50.0
-        y_min, y_max = -50.0, 50.0
+        x_min, x_max = -25.72432848384547, 25.744828483845467
+        y_min, y_max = -18.432071780223303, 19.171471780223307
 
         def _norm(v, vmin, vmax):
             if vmax <= vmin:
@@ -839,10 +834,9 @@ class RealtimeFusionServer:
             t = (v - vmin) / (vmax - vmin)
             return float(max(0.0, min(1.0, t)))
 
-        x_norm = _norm(cx, x_min, x_max)
-        y_norm = _norm(cy, y_min, y_max)
-
-        return x_norm, y_norm
+        u = _norm(cx, x_min, x_max)
+        v = 1.0 - _norm(cy, y_min, y_max)
+        return u, v
 
     def _build_ui_snapshot(self, tracks: np.ndarray, ts: float) -> Optional[dict]:
         """
@@ -856,6 +850,16 @@ class RealtimeFusionServer:
             # 여기서는 빈 snapshot을 보내자.
             cars_on_map = []
             cars_status = []
+            # 테스트용
+            cars_on_map.append({
+                    "id": "car-1",
+                    "carId": "mcar-1",
+                    "x": random.random(),
+                    "y": random.random(),
+                    "yaw": random.uniform(0, 360),
+                    "color": "#3b82f6",
+                    "status": "normal",  # 경로 변경 로직은 나중에
+                })
         else:
             cars_on_map = []
             cars_status = []
@@ -906,7 +910,7 @@ class RealtimeFusionServer:
             "payload": {
                 "carsOnMap": cars_on_map,
                 "carsStatus": cars_status,
-                "camerasOnMap": [],
+                "camerasOnMap": [{ "id": "camMarker-1", "cameraId": "cam-1", "x": 0.5, "y": -0.03 },{ "id": "camMarker-2", "cameraId": "cam-2", "x": -0.05, "y": 0.5 }],
                 "camerasStatus": [],
                 "incident": None,
                 "routeChanges": [],
