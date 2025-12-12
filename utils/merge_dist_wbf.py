@@ -28,8 +28,11 @@ def load_cam_labels(pred_dir: str, frame_key: str) -> List[Tuple[str, np.ndarray
 
 # ---------------- 기하/IoU ----------------
 def aabb_iou_axis_aligned(b1, b2) -> float: # AABB IoU 계산함 
-    x1,y1,L1,W1,_ = b1
-    x2,y2,L2,W2,_ = b2
+    # rows may include an optional leading class column -> use the last 5 values (cx, cy, L, W, yaw)
+    g1 = b1[-5:] if len(b1) >= 5 else b1
+    g2 = b2[-5:] if len(b2) >= 5 else b2
+    x1,y1,L1,W1,_ = g1
+    x2,y2,L2,W2,_ = g2
     A = [x1 - L1/2, y1 - W1/2, x1 + L1/2, y1 + W1/2]
     B = [x2 - L2/2, y2 - W2/2, x2 + L2/2, y2 + W2/2]
     ix1, iy1 = max(A[0], B[0]), max(A[1], B[1])
@@ -72,7 +75,9 @@ def cluster_by_aabb_iou(
     # AABB IoU 계산해서 thr 이상이면 클러스터에 넣기
     if boxes.size == 0:
         return []
-    N = len(boxes)
+    boxes_geom = boxes[:, -5:] if isinstance(boxes, np.ndarray) and boxes.ndim == 2 and boxes.shape[1] >= 5 else boxes
+    cls_col = boxes[:, 0] if isinstance(boxes, np.ndarray) and boxes.ndim == 2 and boxes.shape[1] > 5 else None
+    N = len(boxes_geom)
     used = np.zeros(N, dtype=bool)
     clusters: List[List[int]] = []
     normalized_colors: Optional[List[Optional[str]]] = None
@@ -103,7 +108,9 @@ def cluster_by_aabb_iou(
                             thr = max(iou_cluster_thr - color_bonus, 0.0)
                         else:
                             thr = min(iou_cluster_thr + color_penalty, 1.0)
-                if aabb_iou_axis_aligned(boxes[k], boxes[j]) >= thr:
+                if cls_col is not None and cls_col[k] != cls_col[j]:
+                    continue
+                if aabb_iou_axis_aligned(boxes_geom[k], boxes_geom[j]) >= thr:
                     used[j] = True
                     q.append(j)
                     cluster.append(j)
@@ -207,11 +214,12 @@ def fuse_cluster_weighted( # 가중 평균 대표 생성
       2) 중심/크기 잔차로 재가중(이상치 다운웨이트)
       3) yaw는 기준각에 맞춰 180° flip 정렬 → 원형평균(R 작으면 중앙값)
     """
-    cluster_boxes = np.array([boxes[i] for i in idxs], dtype=float) 
+    cluster_boxes = np.array([boxes[i] for i in idxs], dtype=float)
+    cluster_geom = cluster_boxes[:, -5:] if cluster_boxes.ndim == 2 and cluster_boxes.shape[1] >= 5 else cluster_boxes
     cluster_cams  = [cams[i]  for i in idxs]
-    M = len(cluster_boxes)
+    M = len(cluster_geom)
     if M == 1:
-        return cluster_boxes[0].astype(float)
+        return cluster_geom[0].astype(float)
 
     weight_bias = np.ones(M, dtype=float)
     if extra_weights is not None:
@@ -227,7 +235,7 @@ def fuse_cluster_weighted( # 가중 평균 대표 생성
 
     # 캠 - 객체 거리 가중치---
     w_dist = []
-    for idx, (b, cam) in enumerate(zip(cluster_boxes, cluster_cams)):
+    for idx, (b, cam) in enumerate(zip(cluster_geom, cluster_cams)):
         cx, cy = b[0], b[1]
         cam_xy = cam_ground_xy.get(cam, (0.0, 0.0))
         d = math.hypot(cx - cam_xy[0], cy - cam_xy[1])
@@ -239,15 +247,15 @@ def fuse_cluster_weighted( # 가중 평균 대표 생성
 
     # 위에만 썼더니 가중치 덜먹어서 huber커널로 가중치 더 줌---
     # 중심(절대편차)
-    cx0, cy0 = _weighted_central_xy(cluster_boxes, w_base)
-    r_loc = np.hypot(cluster_boxes[:,0] - cx0, cluster_boxes[:,1] - cy0)
+    cx0, cy0 = _weighted_central_xy(cluster_geom, w_base)
+    r_loc = np.hypot(cluster_geom[:,0] - cx0, cluster_geom[:,1] - cy0)
     # scale: 가중 중앙절대편차(MAD) 근사
     med_r = float(np.average(np.sort(r_loc), weights=np.sort(w_base))) if M>1 else float(r_loc.mean())
     scale_loc = max(med_r * loc_scale_k, 1e-3)
     w_loc = _cauchy_weights(r_loc, scale_loc)
 
     # 크기(상대오차)
-    Ls = cluster_boxes[:,2]; Ws = cluster_boxes[:,3]
+    Ls = cluster_geom[:,2]; Ws = cluster_geom[:,3]
     L0 = _weighted_mean(Ls, w_base); W0 = _weighted_mean(Ws, w_base)
     rel_L = np.abs(Ls - L0) / max(abs(L0), 1e-6)
     rel_W = np.abs(Ws - W0) / max(abs(W0), 1e-6)
@@ -259,7 +267,7 @@ def fuse_cluster_weighted( # 가중 평균 대표 생성
     w_comb = _normalize_with_cap(w_base * w_loc * w_size, max_frac=max_cam_frac)
 
     # 각도처리 yaw 강건 평균---
-    yaws = cluster_boxes[:,4].astype(float)
+    yaws = cluster_geom[:,4].astype(float)
 
     # 3-1) 초기 기준각: 거리+재가중 가중 원형평균
     ref_yaw, R0 = _weighted_circular_mean_deg(yaws, w_comb)
@@ -274,8 +282,8 @@ def fuse_cluster_weighted( # 가중 평균 대표 생성
         mean_yaw = _weighted_circular_median_deg(yaws_aligned, w_comb)
 
     # ---------- 4) 위치/크기 최종 가중 평균 ----------
-    mean_cx = float(np.average(cluster_boxes[:,0], weights=w_comb))
-    mean_cy = float(np.average(cluster_boxes[:,1], weights=w_comb))
+    mean_cx = float(np.average(cluster_geom[:,0], weights=w_comb))
+    mean_cy = float(np.average(cluster_geom[:,1], weights=w_comb))
     mean_L  = float(np.average(Ls, weights=w_comb))
     mean_W  = float(np.average(Ws, weights=w_comb))
 

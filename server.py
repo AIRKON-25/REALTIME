@@ -13,6 +13,7 @@ import asyncio
 import websockets  # pip install websockets
 import numpy as np
 import open3d as o3d
+import colorsys
 
 try:
     from scipy.spatial import cKDTree  # type: ignore
@@ -28,16 +29,16 @@ from utils.merge_dist_wbf import (
 from utils.tracker import SortTracker
 
 # ----- 색상 관련 유틸 -----
-COLOR_LABELS = ("red", "pink", "green", "white", "yellow", "purple")
+COLOR_LABELS = ("red", "green", "blue", "yellow", "purple")
 VALID_COLORS = {color: color for color in COLOR_LABELS}
 COLOR_HEX_MAP = {
     "red": "#f52629",
-    "pink": "#f53e96",
     "green": "#48ad0d",
-    "white": "#f0f0f0",
+    "blue": "#2458e6",
     "yellow": "#ffdd00",
     "purple": "#781de7",
 }
+HEX_TO_COLOR_MAP = {hex_val: label for label, hex_val in COLOR_HEX_MAP.items()}
 
 
 def normalize_color_hex(value: Optional[str]) -> Optional[str]:
@@ -66,6 +67,38 @@ def color_label_to_hex(color: Optional[str]) -> Optional[str]:
     if not color:
         return None
     return COLOR_HEX_MAP.get(color)
+
+
+def _hex_to_rgb(hex_value: str) -> Tuple[int, int, int]:
+    return tuple(int(hex_value[idx:idx + 2], 16) for idx in (1, 3, 5))
+
+
+def hex_to_color_label(value: Optional[str]) -> Optional[str]:
+    hex_value = normalize_color_hex(value)
+    if not hex_value:
+        return None
+    if hex_value in HEX_TO_COLOR_MAP:
+        return HEX_TO_COLOR_MAP[hex_value]
+
+    r, g, b = _hex_to_rgb(hex_value)
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    hue = h * 360.0
+
+    # Keep ranges simple; adjust as needed for your palette.
+    if s < 0.12 or v < 0.1:
+        return "blue"  # default bucket for very low saturation or value
+
+    if (0 <= hue < 20) or (340 <= hue < 360):
+        return "red"
+    if 40 <= hue < 75:
+        return "yellow"
+    if 75 <= hue < 170:
+        return "green"
+    if 170 <= hue < 250:
+        return "blue"
+    if 250 <= hue < 340:
+        return "purple"
+    return "red"
 
 
 def _normalize_base_url(value: Optional[str]) -> Optional[str]:
@@ -421,7 +454,7 @@ class TrackBroadcaster:
         if self.protocol == "udp":
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.addr = (self.host, self.port)
-        else:
+        else: # TCP
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((self.host, self.port))
             self.addr = None
@@ -657,7 +690,7 @@ class UDPReceiverSingle:
                 f"detections={cnt}",
             )
             if dets:
-                sample = json.dumps(dets[0], ensure_ascii=False)
+                sample = json.dumps(dets, ensure_ascii=False) # dets[0]
                 print(f"  sample_det={sample}")
         except Exception as exc:
             print(f"[UDPReceiverSingle] log error: {exc}")
@@ -705,16 +738,16 @@ class UDPReceiverSingle:
                     cx, cy = it["center"]
                     color = normalize_color_label(it.get("color"))
                     dets.append({
-                        "cls": int(it.get("class", 0)),
+                        "cls": int(it.get("class_id", 0)),
                         "cx": float(cx),
                         "cy": float(cy),
                         "length": float(it.get("length", 0.0)),
                         "width": float(it.get("width", 0.0)),
                         "yaw": float(it.get("yaw", 0.0)),
                         "score": float(it.get("score", 0.0)),
-                        "cz": float(it.get("cz", 0.0)),
-                        "pitch": float(it.get("pitch", 0.0)),
-                        "roll": float(it.get("roll", 0.0)),
+                        # "cz": float(it.get("cz", 0.0)),
+                        # "pitch": float(it.get("pitch", 0.0)),
+                        # "roll": float(it.get("roll", 0.0)),
                         "color": color,
                         "color_hex": it.get("color_hex"),
                     })
@@ -851,15 +884,15 @@ class RealtimeFusionServer:
             cars_on_map = []
             cars_status = []
             # 테스트용
-            cars_on_map.append({
-                    "id": "car-1",
-                    "carId": "mcar-1",
-                    "x": random.random(),
-                    "y": random.random(),
-                    "yaw": random.uniform(0, 360),
-                    "color": "#3b82f6",
-                    "status": "normal",  # 경로 변경 로직은 나중에
-                })
+            # cars_on_map.append({
+            #         "id": "car-1",
+            #         "carId": "mcar-1",
+            #         "x": random.random(),
+            #         "y": random.random(),
+            #         "yaw": random.uniform(0, 360),
+            #         "color": "#3b82f6",
+            #         "status": "normal",  # 경로 변경 로직은 나중에
+            #     })
         else:
             cars_on_map = []
             cars_status = []
@@ -873,8 +906,8 @@ class RealtimeFusionServer:
                 yaw = float(row[6])
 
                 meta = self.track_meta.get(tid, {})
-                color_label = meta.get("color")
                 color_hex = meta.get("color_hex")
+                color_label = hex_to_color_label(color_hex) # COLOR_LABELS의 값들로 매핑되도록
                 ui_color = color_hex or color_label_to_hex(color_label) or "#22c55e"
 
                 # UI용 ID들
@@ -890,11 +923,13 @@ class RealtimeFusionServer:
                     "x": x_norm,
                     "y": y_norm,
                     "yaw": yaw,
-                    "color": ui_color,
+                    # "color": ui_color,
+                    "color": color_label,
                     "status": "normal",  # 경로 변경 로직은 나중에
                 })
 
                 cars_status.append({
+                    "class": cls,
                     "id": car_id,
                     "color": ui_color,
                     "speed": meta.get("speed", 0.0),      # 추적기에서 속도 정보가 있으면 나중에 연결
@@ -1024,7 +1059,7 @@ class RealtimeFusionServer:
             det_colors: List[Optional[str]] = []
             for det in fused:
                 det_rows.append([
-                    0,
+                    det["cls"],
                     det["cx"],
                     det["cy"],
                     (self.tracker_fixed_length if self.tracker_fixed_length is not None else det["length"]),
@@ -1148,7 +1183,8 @@ class RealtimeFusionServer:
     def _fuse_boxes(self, raw_detections: List[dict]) -> List[dict]:
         if not raw_detections:
             return []
-        boxes = np.array([[d["cx"], d["cy"], d["length"], d["width"], d["yaw"]] for d in raw_detections], dtype=float)
+        print(raw_detections)
+        boxes = np.array([[d["cls"], d["cx"], d["cy"], d["length"], d["width"], d["yaw"]] for d in raw_detections], dtype=float)
         cams = [d.get("cam", "?") for d in raw_detections]
         colors = [normalize_color_label(d.get("color")) for d in raw_detections]
         clusters = cluster_by_aabb_iou(
@@ -1203,6 +1239,8 @@ class RealtimeFusionServer:
         score = np.mean([float(d.get("score", 0.0)) for d in subset])
         pitch = np.mean([float(d.get("pitch", 0.0)) for d in subset])
         roll = np.mean([float(d.get("roll", 0.0)) for d in subset])
+        cls_counts = Counter([int(d.get("cls", -1)) for d in subset if "cls" in d])
+        fused_cls = cls_counts.most_common(1)[0][0] if cls_counts else None
         cams = [d.get("cam", "?") for d in subset]
         normalized_colors = [normalize_color_label(d.get("color")) for d in subset]
         valid_colors = [c for c in normalized_colors if c is not None]
@@ -1224,6 +1262,8 @@ class RealtimeFusionServer:
             "roll": float(roll),
             "score": float(score),
             "source_cams": cams,
+            "cls": fused_cls,
+            "cls_votes": dict(cls_counts),
             "color": color,
             "color_hex": color_hex,
             "color_votes": dict(color_counts),
