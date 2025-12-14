@@ -983,6 +983,9 @@ class TensorRTTemporalRunner:
 
     def _allocate_buffers_if_needed(self):
         for i, name in enumerate(self.tensor_names):
+            if name in self.host_buffers:
+                continue
+                
             shape = self.binding_shapes.get(name, None)
 
             # shape 정보가 없으면 가져옴
