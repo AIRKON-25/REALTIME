@@ -225,6 +225,8 @@ class VisualizationWorker(threading.Thread):
                     print(f"[VisWorker] WARN: failed to save {save_path}: {exc}")
 
             if self.show_window:
+                if vis_frame is not None:
+                    vis_frame = cv2.resize(vis_frame, (500, 500)) 
                 cv2.imshow("DepthAI TRT Live", vis_frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key != 255:
