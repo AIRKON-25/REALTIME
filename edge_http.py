@@ -504,7 +504,7 @@ def parse_args():
     parser = argparse.ArgumentParser("DepthAI inference with HTTP visualization stream")
     parser.add_argument("--weights", type=str, required=True, help="TensorRT engine (.engine) path")
     parser.add_argument("--img-size", type=str, default="864,1536", help="Model input H,W")
-    parser.add_argument("--camera-size", type=str, default="1920,1080", help="DepthAI output width,height")
+    parser.add_argument("--camera-size", type=str, default="1536,864", help="DepthAI output width,height")
     parser.add_argument("--score-mode", type=str, default="obj*cls", choices=["obj", "cls", "obj*cls"])
     parser.add_argument("--conf", type=float, default=0.30)
     parser.add_argument("--nms-iou", type=float, default=0.2)
