@@ -7,7 +7,7 @@ import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 import cv2
 import depthai as dai
@@ -23,7 +23,7 @@ from edge import (
     preprocess_frame,
 )
 from utils.edge.evaluation_utils import decode_predictions
-from utils.edge.geometry_utils import tiny_filter_on_dets
+from utils.edge.geometry_utils import parallelogram_from_triangle, tiny_filter_on_dets
 from utils.edge.inference_lstm_onnx_pointcloud_tensorrt import TensorRTTemporalRunner
 
 
@@ -61,12 +61,18 @@ class HttpVisualizationWorker(threading.Thread):
     def __init__(self,
                  broadcaster: FrameBroadcaster,
                  jpeg_quality: int,
-                 show_window: bool):
+                 show_window: bool,
+                 front_highlight: bool,
+                 vehicle_cls_set: Optional[Set[int]],
+                 front_color: Tuple[int, int, int]):
         super().__init__(daemon=True)
         self.queue: queue.Queue = queue.Queue(maxsize=3)
         self.broadcaster = broadcaster
         self.jpeg_quality = jpeg_quality
         self.show_window = show_window
+        self.front_highlight = front_highlight
+        self.vehicle_cls_set = vehicle_cls_set
+        self.front_color = front_color
         self.stop_evt = threading.Event()
         self._last_key = -1
 
@@ -108,7 +114,10 @@ class HttpVisualizationWorker(threading.Thread):
                 dets,
                 sx,
                 sy,
-                infer_ms
+                infer_ms,
+                self.front_highlight,
+                self.vehicle_cls_set,
+                self.front_color
             )
 
             if save_path:
@@ -237,7 +246,10 @@ def render_vis_frame(frame_bgr: np.ndarray,
                      dets,
                      scale_to_orig_x: float,
                      scale_to_orig_y: float,
-                     infer_ms: float) -> np.ndarray:
+                     infer_ms: float,
+                     front_highlight: bool,
+                     vehicle_cls_set: Optional[Set[int]],
+                     front_color: Tuple[int, int, int]) -> np.ndarray:
     vis_frame = None
     if tri_records:
         vis_frame = draw_pred_pseudo3d(frame_bgr, tri_records)
@@ -253,7 +265,56 @@ def render_vis_frame(frame_bgr: np.ndarray,
         2,
         cv2.LINE_AA,
     )
+    if front_highlight:
+        highlight_vehicle_front_faces(
+            vis_frame,
+            tri_records,
+            vehicle_cls_set,
+            front_color
+        )
     return vis_frame
+
+
+def highlight_vehicle_front_faces(vis_frame: np.ndarray,
+                                  tri_records: List[dict],
+                                  vehicle_cls_set: Optional[Set[int]],
+                                  front_color: Tuple[int, int, int],
+                                  alpha: float = 0.6,
+                                  height_scale: float = 0.5,
+                                  min_dy: int = 8,
+                                  max_dy: int = 80) -> None:
+    if not tri_records:
+        return
+    overlay = vis_frame.copy()
+    changed = False
+    for rec in tri_records:
+        cls_raw = rec.get("class_id")
+        if cls_raw is None:
+            continue
+        cls_val = int(cls_raw)
+        if vehicle_cls_set is not None and cls_val not in vehicle_cls_set:
+            continue
+        tri = rec.get("tri")
+        if tri is None:
+            continue
+        tri_np = np.asarray(tri, dtype=np.float32)
+        if tri_np.shape != (3, 2):
+            continue
+        poly = parallelogram_from_triangle(tri_np[0], tri_np[1], tri_np[2]).astype(np.float32)
+        base = np.round(poly).astype(np.int32)
+        x_min, x_max = poly[:, 0].min(), poly[:, 0].max()
+        y_min, y_max = poly[:, 1].min(), poly[:, 1].max()
+        w = max(1.0, float(x_max - x_min))
+        h = max(1.0, float(y_max - y_min))
+        diag = float(np.hypot(w, h))
+        off = int(np.clip(height_scale * diag, min_dy, max_dy))
+        top = base.copy()
+        top[:, 1] -= off
+        front_poly = np.array([base[0], base[1], top[1], top[0]], dtype=np.int32)
+        cv2.fillConvexPoly(overlay, front_poly, front_color)
+        changed = True
+    if changed:
+        cv2.addWeighted(overlay, alpha, vis_frame, 1 - alpha, 0, vis_frame)
 
 
 def run_live_inference_http(args) -> None:
@@ -296,6 +357,9 @@ def run_live_inference_http(args) -> None:
                 raise ValueError(f"Unsupported resize mode: {args.resize_mode}")
             resize_mode = getattr(dai.ImgResizeMode, mode_key)
 
+    vehicle_cls_set: Optional[Set[int]] = {0}
+    front_color = (0, 0, 255)
+
     broadcaster = FrameBroadcaster()
     handler_cls = build_handler(broadcaster, args.page_title)
     server = ThreadingHTTPServer((args.http_host, args.http_port), handler_cls)
@@ -307,7 +371,14 @@ def run_live_inference_http(args) -> None:
 
     vis_worker: Optional[HttpVisualizationWorker] = None
     try:
-        vis_worker = HttpVisualizationWorker(broadcaster, jpeg_quality, args.show_vis)
+        vis_worker = HttpVisualizationWorker(
+            broadcaster,
+            jpeg_quality,
+            args.show_vis,
+            args.front_highlight,
+            vehicle_cls_set,
+            front_color
+        )
         vis_worker.start()
 
         with dai.Pipeline() as pipeline:
@@ -472,6 +543,10 @@ def parse_args():
                         help="Override vehicle length in UDP payloads (meters)")
     parser.add_argument("--udp-fixed-width", type=float, default=2.7,
                         help="Override vehicle width in UDP payloads (meters)")
+    parser.add_argument("--front-highlight", dest="front_highlight", action="store_true", default=True,
+                        help="Highlight vehicle front faces in visualization (default: on)")
+    parser.add_argument("--no-front-highlight", dest="front_highlight", action="store_false",
+                        help="Disable vehicle front-face highlight")
     parser.add_argument("--http-host", type=str, default="0.0.0.0",
                         help="Interface/IP to bind the MJPEG server to")
     parser.add_argument("--http-port", type=int, default=8080,
