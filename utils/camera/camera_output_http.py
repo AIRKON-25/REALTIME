@@ -3,7 +3,6 @@
 import argparse
 import socket
 import threading
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -177,6 +176,7 @@ def main():
             ).createOutputQueue()
 
             pipeline.start()
+            frame_counter = 0
             while pipeline.isRunning():
                 videoIn = videoQueue.get()
                 assert isinstance(videoIn, dai.ImgFrame)
@@ -186,10 +186,10 @@ def main():
                     frame_bytes = encoded.tobytes()
                     broadcaster.update(frame_bytes)
                     if save_dir:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                        output_path = save_dir / f"frame_{timestamp}.jpg"
+                        output_path = save_dir / f"frame_{frame_counter:06d}.jpg"
                         with open(output_path, "wb") as fh:
                             fh.write(frame_bytes)
+                        frame_counter += 1
     except KeyboardInterrupt:
         pass
     finally:
