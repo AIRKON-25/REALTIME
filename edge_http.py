@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import queue
 import socket
 import threading
 import time
@@ -54,6 +55,87 @@ class FrameBroadcaster:
         with self._condition:
             self._stopped = True
             self._condition.notify_all()
+
+
+class HttpVisualizationWorker(threading.Thread):
+    def __init__(self,
+                 broadcaster: FrameBroadcaster,
+                 jpeg_quality: int,
+                 show_window: bool):
+        super().__init__(daemon=True)
+        self.queue: queue.Queue = queue.Queue(maxsize=3)
+        self.broadcaster = broadcaster
+        self.jpeg_quality = jpeg_quality
+        self.show_window = show_window
+        self.stop_evt = threading.Event()
+        self._last_key = -1
+
+    def submit(self, payload):
+        try:
+            self.queue.put_nowait(payload)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(payload)
+            except queue.Full:
+                pass
+
+    def get_key(self) -> int:
+        key = self._last_key
+        self._last_key = -1
+        return key
+
+    def stop(self):
+        self.stop_evt.set()
+
+    def run(self):
+        while not self.stop_evt.is_set() or not self.queue.empty():
+            try:
+                frame_bgr, tri_records, dets, sx, sy, infer_ms, save_path = self.queue.get(timeout=0.01)
+            except queue.Empty:
+                if self.show_window:
+                    key = cv2.waitKey(1) & 0xFF
+                    if key != 255:
+                        self._last_key = key
+                continue
+
+            vis_frame = render_vis_frame(
+                frame_bgr,
+                tri_records,
+                dets,
+                sx,
+                sy,
+                infer_ms
+            )
+
+            if save_path:
+                try:
+                    cv2.imwrite(save_path, vis_frame)
+                except Exception as exc:
+                    print(f"[VisWorker] WARN: failed to save {save_path}: {exc}")
+
+            success, encoded = cv2.imencode(
+                ".jpg",
+                vis_frame,
+                [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+            )
+            if success:
+                self.broadcaster.update(encoded.tobytes())
+
+            if self.show_window:
+                preview = vis_frame
+                if preview is not None:
+                    preview = cv2.resize(preview, (500, 500))
+                cv2.imshow("DepthAI TRT HTTP", preview)
+                key = cv2.waitKey(1) & 0xFF
+                if key != 255:
+                    self._last_key = key
+
+        if self.show_window:
+            cv2.destroyAllWindows()
 
 
 def build_handler(broadcaster: FrameBroadcaster, page_title: str):
@@ -223,7 +305,11 @@ def run_live_inference_http(args) -> None:
     bound_ip = args.http_host if args.http_host != "0.0.0.0" else guess_local_ip()
     print(f"[HTTP] Streaming MJPEG at http://{bound_ip}:{args.http_port}/ (Ctrl+C to stop)")
 
+    vis_worker: Optional[HttpVisualizationWorker] = None
     try:
+        vis_worker = HttpVisualizationWorker(broadcaster, jpeg_quality, args.show_vis)
+        vis_worker.start()
+
         with dai.Pipeline() as pipeline:
             cam = pipeline.create(dai.node.Camera).build()
             request_kwargs = {}
@@ -284,26 +370,19 @@ def run_live_inference_http(args) -> None:
                     post_ms = (time.time() - t_post0) * 1000.0
 
                     vis_start = time.time()
-                    vis_frame = render_vis_frame(
+                    vis_save_path = None
+                    if save_dir is not None:
+                        vis_save_path = os.path.join(save_dir, f"frame_{frame_idx:06d}.jpg")
+                    vis_payload = (
                         prep["orig_bgr"].copy(),
                         tri_records,
                         dets,
                         prep["scale_to_orig_x"],
                         prep["scale_to_orig_y"],
                         infer_ms,
+                        vis_save_path,
                     )
-                    vis_save_path = None
-                    if save_dir is not None:
-                        vis_save_path = os.path.join(save_dir, f"frame_{frame_idx:06d}.jpg")
-                        try:
-                            cv2.imwrite(vis_save_path, vis_frame)
-                        except Exception as exc:
-                            print(f"[Vis] WARN: failed to save {vis_save_path}: {exc}")
-                    encode_success, encoded = cv2.imencode(
-                        ".jpg", vis_frame, [int(cv2.IMWRITE_JPEG_QUALITY), jpeg_quality]
-                    )
-                    if encode_success:
-                        broadcaster.update(encoded.tobytes())
+                    vis_worker.submit(vis_payload)
                     vis_ms = (time.time() - vis_start) * 1000.0
                     frame_idx += 1
 
@@ -334,21 +413,19 @@ def run_live_inference_http(args) -> None:
                         f"post {post_ms:.1f} ms | vis {vis_ms:.1f} ms | total {total_ms:.1f} ms | fps {fps:.1f}"
                     )
 
-                    if args.show_vis:
-                        cv2.imshow("DepthAI TRT HTTP", cv2.resize(vis_frame, (500, 500)))
-                        key = cv2.waitKey(1) & 0xFF
-                        if key == ord("q"):
-                            break
-                        if key == ord("r"):
-                            print("[Info] State reset requested.")
-                            runner.reset()
+                    key = vis_worker.get_key() if args.show_vis else -1
+                    if key == ord("q"):
+                        break
+                    if key == ord("r"):
+                        print("[Info] State reset requested.")
+                        runner.reset()
 
             except KeyboardInterrupt:
                 print("[Info] Keyboard interrupt received, stopping.")
-            finally:
-                if args.show_vis:
-                    cv2.destroyAllWindows()
     finally:
+        if vis_worker is not None:
+            vis_worker.stop()
+            vis_worker.join(timeout=1.0)
         broadcaster.stop()
         server.shutdown()
         server.server_close()
