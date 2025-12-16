@@ -540,7 +540,7 @@ def run_live_inference(args) -> None:
                     topk=args.topk,
                     contain_thr=args.contain_thr,
                     score_mode=args.score_mode,
-                    use_gpu_nms=False
+                    use_gpu_nms=True
                 )[0]
                 dets = tiny_filter_on_dets(dets, min_area=20.0, min_edge=3.0)
                 tri_records, det_color_infos = [], []
