@@ -168,10 +168,10 @@ def main():
     try:
         with dai.Pipeline() as pipeline:
             cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
-            cam.setFps(float(args.fps))
             videoQueue = cam.requestOutput(
                 (1536,864),
                 resizeMode=dai.ImgResizeMode.LETTERBOX,
+                fps=float(args.fps),
                 enableUndistortion=True,
             ).createOutputQueue()
 
