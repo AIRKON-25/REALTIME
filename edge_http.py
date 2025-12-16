@@ -310,7 +310,7 @@ def highlight_vehicle_front_faces(vis_frame: np.ndarray,
         front_poly = np.array([base[0], base[1], top[1], top[0]], dtype=np.int32)
         cv2.polylines(vis_frame, [front_poly], True, front_color, 2, cv2.LINE_AA)
         for idx in range(2):
-            cv2.line(vis_frame, tuple(base[idx]), tuple(front_poly[idx + 2]), front_color, 2, cv2.LINE_AA)
+            cv2.line(vis_frame, tuple(base[idx]), tuple(top[idx]), front_color, 2, cv2.LINE_AA)
 
 
 def run_live_inference_http(args) -> None:
