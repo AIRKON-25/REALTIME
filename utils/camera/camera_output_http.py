@@ -16,6 +16,12 @@ def parse_args():
     parser.add_argument("--host", default="0.0.0.0", help="Interface/IP to bind the HTTP server to.")
     parser.add_argument("--port", type=int, default=8080, help="Port to serve the MJPEG stream on.")
     parser.add_argument(
+        "--fps",
+        type=float,
+        default=10,
+        help="Camera capture FPS. Lower values reduce bandwidth and CPU usage.",
+    )
+    parser.add_argument(
         "--save-dir",
         type=Path,
         default=None,
@@ -163,6 +169,7 @@ def main():
     try:
         with dai.Pipeline() as pipeline:
             cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
+            cam.setFps(float(args.fps))
             videoQueue = cam.requestOutput(
                 (1536,864),
                 resizeMode=dai.ImgResizeMode.LETTERBOX,
