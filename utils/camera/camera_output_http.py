@@ -3,7 +3,9 @@
 import argparse
 import socket
 import threading
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import cv2
 import depthai as dai
@@ -13,6 +15,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Stream undistorted camera output over HTTP.")
     parser.add_argument("--host", default="0.0.0.0", help="Interface/IP to bind the HTTP server to.")
     parser.add_argument("--port", type=int, default=8080, help="Port to serve the MJPEG stream on.")
+    parser.add_argument(
+        "--save-dir",
+        type=Path,
+        default=None,
+        help="Optional directory to save every encoded frame as JPEG.",
+    )
     return parser.parse_args()
 
 
@@ -139,6 +147,10 @@ def guess_local_ip():
 
 def main():
     args = parse_args()
+    save_dir = args.save_dir
+    if save_dir:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Saving encoded frames to {save_dir.resolve()}")
     broadcaster = FrameBroadcaster()
     handler_cls = build_handler(broadcaster)
     server = ThreadingHTTPServer((args.host, args.port), handler_cls)
@@ -164,7 +176,13 @@ def main():
                 frame = videoIn.getCvFrame()
                 success, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
                 if success:
-                    broadcaster.update(encoded.tobytes())
+                    frame_bytes = encoded.tobytes()
+                    broadcaster.update(frame_bytes)
+                    if save_dir:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        output_path = save_dir / f"frame_{timestamp}.jpg"
+                        with open(output_path, "wb") as fh:
+                            fh.write(frame_bytes)
     except KeyboardInterrupt:
         pass
     finally:
