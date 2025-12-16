@@ -279,14 +279,11 @@ def highlight_vehicle_front_faces(vis_frame: np.ndarray,
                                   tri_records: List[dict],
                                   vehicle_cls_set: Optional[Set[int]],
                                   front_color: Tuple[int, int, int],
-                                  alpha: float = 0.6,
                                   height_scale: float = 0.5,
                                   min_dy: int = 8,
                                   max_dy: int = 80) -> None:
     if not tri_records:
         return
-    overlay = vis_frame.copy()
-    changed = False
     for rec in tri_records:
         cls_raw = rec.get("class_id")
         if cls_raw is None:
@@ -311,10 +308,9 @@ def highlight_vehicle_front_faces(vis_frame: np.ndarray,
         top = base.copy()
         top[:, 1] -= off
         front_poly = np.array([base[0], base[1], top[1], top[0]], dtype=np.int32)
-        cv2.fillConvexPoly(overlay, front_poly, front_color)
-        changed = True
-    if changed:
-        cv2.addWeighted(overlay, alpha, vis_frame, 1 - alpha, 0, vis_frame)
+        cv2.polylines(vis_frame, [front_poly], True, front_color, 2, cv2.LINE_AA)
+        for idx in range(2):
+            cv2.line(vis_frame, tuple(base[idx]), tuple(front_poly[idx + 2]), front_color, 2, cv2.LINE_AA)
 
 
 def run_live_inference_http(args) -> None:
