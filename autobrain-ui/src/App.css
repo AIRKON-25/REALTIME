@@ -1,0 +1,568 @@
+/* #root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+} */
+:root {
+  --bg-main: #f4f5f7;
+  --bg-card: #ffffff;
+  --map-bg: #3f3f46;
+  --border-soft: #e5e7eb;
+  --text-main: #111827;
+  --text-muted: #6b7280;
+  --accent: #2563eb;
+  --danger: #ef4444;
+  --map-bottom-space: 90px;
+  --map-aspect: 1.88; /* 가로/세로 비율 */
+
+  --radius-lg: 18px;
+  --radius-md: 12px;
+
+  --shadow-soft: 0 10px 30px rgba(15, 23, 42, 0.08);
+
+  --font-main: "Pretendard", system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-accent: "Sofia Pro", var(--font-main);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg-main);
+  font-family: var(--font-main);
+  color: var(--text-main);
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-root,
+html,
+body {
+  height: 100%;
+}
+
+.app-root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Header */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 40px;
+}
+
+.header__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header__logo-mark {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  background: #1d4ed8;
+}
+
+.header__logo-title {
+  font-family: var(--font-accent);
+  font-weight: 700;
+  font-size: 24px;
+}
+
+.header__logo-subtitle {
+  display: block;
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.header__center {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.header__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #9ca3af;
+}
+
+.header__status-dot--on {
+  background: #22c55e;
+}
+
+.header__status-label {
+  letter-spacing: 0.06em;
+}
+
+.header__right {
+  font-size: 14px;
+}
+
+/* Layout */
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(320px, 1.1fr);
+  gap: 24px;
+  padding: 0 40px 32px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.layout__map {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+}
+
+.layout__map-inner {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+.layout__map-inner--has-back {
+  height: calc(100% - var(--map-bottom-space));
+}
+
+.layout__side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.right-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+.layout__back-button {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  padding: 8px 14px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  background: #e5e7eb;
+}
+
+.layout--cameraFocused .layout__map,
+.layout--carFocused .layout__map,
+.layout--incidentFocused .layout__map {
+  /* 맵을 조금 줄이고 오른쪽 패널을 넓힘 느낌 */
+}
+
+@media (max-width: 1280px) {
+  .header {
+    padding: 14px 24px;
+  }
+  .layout {
+    grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
+    gap: 18px;
+    padding: 0 24px 28px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .layout {
+    grid-template-columns: 1fr;
+    padding: 0 16px 24px;
+    gap: 16px;
+  }
+  .layout__side {
+    order: 2;
+  }
+  .right-panels {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .right-panels > * {
+    flex: 1 1 calc(50% - 8px);
+    min-width: 260px;
+  }
+}
+
+@media (max-width: 768px) {
+  .header {
+    padding: 12px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .layout {
+    padding: 0 12px 20px;
+    gap: 12px;
+  }
+  .right-panels {
+    flex-direction: column;
+  }
+  .right-panels > * {
+    flex: 1 1 auto;
+    min-width: 100%;
+  }
+  .layout__map-inner {
+    justify-content: stretch;
+  }
+}
+
+/* Map */
+
+.map {
+  position: relative;
+  background: var(--map-bg);
+  border-radius: var(--radius-lg);
+  overflow: visible;
+  box-shadow: var(--shadow-soft);
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+}
+
+.map__content {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+}
+
+.map__image-wrapper {
+  position: relative;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
+
+.map__image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* 카메라 아이콘 */
+
+.map__camera {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border: none;
+  width: 44px;
+  height: 32px;
+  border-radius: 999px;
+  background: #f9fafb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.25);
+  cursor: pointer;
+}
+
+.map__camera--active {
+  background: #1d4ed8;
+}
+
+/* .map__camera-icon {
+  width: 20px;
+  height: 20px;
+  background: #111827;
+  border-radius: 4px;
+} */
+.map__camera-icon {
+  transition: 0.2s ease;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.map__camera-icon:hover {
+  opacity: 1;
+}
+
+.map__camera-icon--active {
+  filter: drop-shadow(0 0 6px #00b2ff);
+  opacity: 1;
+}
+
+/* 차량 */
+
+.map__car {
+  position: absolute;
+  width: 46px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: 0 3px 7px rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.map__car--active {
+  outline: 3px solid #38bdf8;
+}
+
+.map__car--warning {
+  outline: 3px solid var(--danger);
+}
+
+.map__car-image {
+  width: 46px;
+  height: auto;
+  pointer-events: none;
+}
+
+.map__car-image--cone {
+  width: 32px;
+}
+
+/* 장애물 */
+
+.map__obstacle {
+  position: absolute;
+}
+
+.map__obstacle-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: var(--danger);
+}
+
+/* 경로 변경 */
+
+.map__route-svg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.map__route-line {
+  stroke: var(--danger);
+  stroke-width: 4;
+}
+
+/* Panels 공통 */
+
+.panel {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  padding: 18px 20px;
+}
+
+.panel__title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.panel__empty {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+/* Car list */
+
+.car-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.car-list--scrollable {
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.car-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: #f9fafb;
+  cursor: pointer;
+  text-align: left;
+}
+
+.car-card--active {
+  border-color: var(--accent);
+  background: #e0f2fe;
+}
+
+.car-card--alert .car-card__route-changed {
+  background: var(--danger);
+  color: white;
+}
+
+.car-card__icon {
+  width: 32px;
+  height: 22px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.car-card__body {
+  flex: 1;
+  font-size: 13px;
+}
+
+.car-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.car-card__row--labels {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.car-card__id {
+  font-weight: 600;
+}
+
+.car-card__speed,
+.car-card__battery {
+  font-weight: 500;
+}
+
+.car-card__route-changed {
+  margin-top: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #fee2e2;
+  color: var(--danger);
+  text-align: center;
+}
+
+/* Incident */
+
+.incident__content {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.incident__icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--danger);
+}
+
+.incident__title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.incident__description {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.incident--active {
+  border: 2px solid var(--danger);
+}
+
+/* Monitoring */
+
+.monitoring__camera-label {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: #e5e7eb;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.monitoring__frame {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: #020617;
+}
+
+.monitoring__image {
+  display: block;
+  width: 100%;
+  height: auto;
+}
