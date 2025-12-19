@@ -913,7 +913,7 @@ class RealtimeFusionServer:
                 tid = int(row[0])
                 cls = int(row[1])
                 cx = float(row[2])
-                cy = float(row[3])
+                cy = float(-row[3])
                 length = float(row[4])
                 width = float(row[5])
                 yaw = float(row[6])

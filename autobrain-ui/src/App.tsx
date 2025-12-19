@@ -21,7 +21,10 @@ import { IncidentPanel } from "./components/IncidentPanel";
 import { MonitoringPanel } from "./components/MonitoringPanel";
 import { mockSnapshot } from "./mockData"; // 더미데이터
 
-const WS_URL = "ws://localhost:18000/monitor"; // 서버에서 여기에 열어주면 됨
+// 접속한 호스트/포트를 따라가도록 설정
+const WS_HOST = import.meta.env.VITE_WS_HOST || window.location.hostname;
+const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
+const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
 const USE_MOCK = false; // true면 mockSnapshot만 사용
 
 function App() {
