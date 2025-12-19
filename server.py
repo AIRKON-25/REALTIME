@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-import open3d as o3d
+# import open3d as o3d
 from comms.command_server import CommandServer
 from comms.track_broadcaster import TrackBroadcaster
 from comms.ws_hub import WebSocketHub
@@ -31,70 +31,6 @@ from utils.tracking.merge_dist_wbf import (
     cluster_by_aabb_iou, fuse_cluster_weighted
 )
 from utils.tracking.tracker import SortTracker
-
-class GroundHeightLookup:
-    """
-    간단한 지면 높이 질의용: global ply의 XY→Z 근접 값을 가져온다.
-    """
-    def __init__(self, ply_path: Optional[str], *, flip_y: bool = False, max_points: int = 500_000):
-        self.enabled = False
-        self.xy: Optional[np.ndarray] = None
-        self.z: Optional[np.ndarray] = None
-        self.tree = None
-
-        if not ply_path:
-            return
-        path = Path(ply_path)
-        if not path.exists():
-            print(f"[GroundZ] ply not found: {path}")
-            return
-        try:
-            cloud = o3d.io.read_point_cloud(str(path))
-            pts = np.asarray(cloud.points, dtype=np.float32)
-        except Exception as exc:
-            print(f"[GroundZ] failed to load ply {path}: {exc}")
-            return
-        if pts.size == 0:
-            print(f"[GroundZ] empty ply: {path}")
-            return
-        if flip_y:
-            pts[:, 1] *= -1.0
-        if max_points and len(pts) > max_points:
-            stride = max(1, int(len(pts) / max_points))
-            pts = pts[::stride]
-            print(f"[GroundZ] subsampled ply to {len(pts)} points (stride={stride})")
-        self.xy = pts[:, :2].astype(np.float32, copy=False)
-        self.z = pts[:, 2].astype(np.float32, copy=False)
-        if cKDTree is not None:
-            try:
-                self.tree = cKDTree(self.xy)
-            except Exception as exc:
-                print(f"[GroundZ] cKDTree build failed: {exc}")
-                self.tree = None
-        self.enabled = True
-        print(f"[GroundZ] loaded {len(self.z)} points from {path.name} (flip_y={flip_y}, kdtree={'yes' if self.tree else 'no'})")
-
-    def query(self, x: float, y: float, *, default: float = 0.0, k: int = 5) -> float:
-        if not self.enabled or self.xy is None or self.z is None:
-            return float(default)
-        try:
-            if self.tree is not None:
-                k_use = min(max(1, int(k)), len(self.z))
-                dists, idxs = self.tree.query([float(x), float(y)], k=k_use)
-                idx_arr = np.atleast_1d(idxs)
-                z_vals = self.z[idx_arr]
-                if k_use > 1:
-                    dist_arr = np.atleast_1d(dists)
-                    weights = 1.0 / np.maximum(dist_arr, 1e-3)
-                    return float(np.average(z_vals, weights=weights))
-                return float(z_vals[0])
-            diff = self.xy - np.array([float(x), float(y)], dtype=np.float32)
-            d2 = np.sum(diff * diff, axis=1)
-            idx = int(np.argmin(d2))
-            return float(self.z[idx])
-        except Exception:
-            return float(default)
-
 
 class UDPReceiverSingle:
     def __init__(self, port: int, host: str = "0.0.0.0", max_bytes: int = 65507):
@@ -125,7 +61,7 @@ class UDPReceiverSingle:
             )
             if dets:
                 sample = json.dumps(dets, ensure_ascii=False) # dets[0]
-                print(f"  sample_det={sample}")
+                print(f"all_det={sample}")
         except Exception as exc:
             print(f"[UDPReceiverSingle] log error: {exc}")
 
@@ -179,9 +115,6 @@ class UDPReceiverSingle:
                         "width": float(it.get("width", 0.0)),
                         "yaw": float(it.get("yaw", 0.0)),
                         "score": float(it.get("score", 0.0)),
-                        # "cz": float(it.get("cz", 0.0)),
-                        # "pitch": float(it.get("pitch", 0.0)),
-                        # "roll": float(it.get("roll", 0.0)),
                         "color": color,
                         "color_hex": it.get("color_hex"),
                     })
@@ -189,7 +122,6 @@ class UDPReceiverSingle:
                 return cam, dets if dets else []
         except Exception:
             pass
-
 
 # -----------------------------
 # 파이프라인: 수집 → 통합/융합 → 추적 → 브로드캐스트(JSON)
@@ -262,9 +194,6 @@ class RealtimeFusionServer:
 
         # 프레임 버퍼(최근 T초 동안 카메라별 최신)
         self.buffer: Dict[str, deque] = {cam: deque(maxlen=1) for cam in cam_ports.keys()}
-
-        # 지면 높이 조회
-        self.ground_height = GroundHeightLookup(global_ply, flip_y=flip_ply_y)
 
         # 브로드캐스트 (UDP/TCP)
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
@@ -391,11 +320,6 @@ class RealtimeFusionServer:
         if cam_name not in self.buffer:
             self.buffer[cam_name] = deque(maxlen=1)
         self.active_cams.add(cam_name)
-
-    def _ground_height_at(self, x: float, y: float, default: float = 0.0) -> float:
-        if hasattr(self, "ground_height") and self.ground_height and self.ground_height.enabled:
-            return self.ground_height.query(x, y, default=default)
-        return float(default)
 
     def _should_log(self) -> bool:
         now = time.time()
@@ -669,10 +593,8 @@ class RealtimeFusionServer:
     def _aggregate_cluster(self, detections: List[dict], idxs: List[int], fused_box: Optional[np.ndarray] = None) -> dict:
         subset = [detections[i] for i in idxs]
         if not subset:
-            return {"cz": 0.0, "pitch": 0.0, "roll": 0.0, "score": 0.0, "source_cams": []}
+            return {"score": 0.0, "source_cams": []}
         score = np.mean([float(d.get("score", 0.0)) for d in subset])
-        pitch = np.mean([float(d.get("pitch", 0.0)) for d in subset])
-        roll = np.mean([float(d.get("roll", 0.0)) for d in subset])
         cls_counts = Counter([int(d.get("cls", -1)) for d in subset if "cls" in d])
         fused_cls = cls_counts.most_common(1)[0][0] if cls_counts else None
         cams = [d.get("cam", "?") for d in subset]
@@ -683,17 +605,7 @@ class RealtimeFusionServer:
         hex_candidates = [normalize_color_hex(d.get("color_hex")) for d in subset if d.get("color_hex")]
         hex_candidates = [h for h in hex_candidates if h]
         color_hex = random.choice(hex_candidates) if hex_candidates else None
-        if fused_box is not None and len(fused_box) >= 4:
-            cx_rep = float(fused_box[0])
-            cy_rep = float(fused_box[1])
-            cz_default = np.mean([float(d.get("cz", 0.0)) for d in subset])
-            cz = self._ground_height_at(cx_rep, cy_rep, default=cz_default)
-        else:
-            cz = np.mean([float(d.get("cz", 0.0)) for d in subset])
         return {
-            "cz": float(cz),
-            "pitch": float(pitch),
-            "roll": float(roll),
             "score": float(score),
             "source_cams": cams,
             "cls": fused_cls,
@@ -739,9 +651,6 @@ class RealtimeFusionServer:
             det = fused_list[det_idx]
             meta = self.track_meta.setdefault(tid, {})
             meta.update({
-                "cz": float(det.get("cz", 0.0)),
-                "pitch": float(det.get("pitch", 0.0)),
-                "roll": float(det.get("roll", 0.0)),
                 "score": float(det.get("score", 0.0)),
                 "source_cams": list(det.get("source_cams", [])),
             })
