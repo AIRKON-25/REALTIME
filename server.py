@@ -1,7 +1,7 @@
 import argparse
+import time
 
 from realtime.server_core import RealtimeFusionServer, parse_cam_ports
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -90,8 +90,10 @@ def main():
         ws_host=None if args.no_web else args.web_host,
         ws_port=args.web_port,
     )
+    server.start()
     try:
-        server.start()
+        while True:
+            time.sleep(1.0)
     except KeyboardInterrupt:
         pass
     finally:
