@@ -388,28 +388,3 @@ def merge_frame_with_distance_weight(
     return out_path
 
 
-if __name__ == "__main__":
-    pred_dir = "/inference_results_onnx/bev_labels"
-    out_dir  = "/merge_dist_wbf"
-    os.makedirs(out_dir, exist_ok=True)
-
-    # 폴더내 싹 돌면서 프레임키 춫ㄹ
-    files = sorted(glob.glob(os.path.join(pred_dir, "cam*_frame_*.txt")))
-    frame_keys = set()
-    for f in files:
-        name = os.path.basename(f)
-        parts = name.split("_frame_")
-        if len(parts) >= 2:
-            key_part = parts[1]
-            key = os.path.splitext(key_part)[0]
-            frame_keys.add(key)
-
-    frame_keys = sorted(frame_keys)
-    print(f"Found {len(frame_keys)} frame keys to process")
-    for frame_key in frame_keys: # 프레임 마다
-        merge_frame_with_distance_weight(
-            pred_dir, frame_key, out_dir, CAMERA_SETUPS,
-            iou_cluster_thr=0.25, # 0.25 사용!
-            d0=5.0,
-            p=2.0
-        )

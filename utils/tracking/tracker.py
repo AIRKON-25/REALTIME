@@ -1,4 +1,3 @@
-import glob
 import math
 import os
 from collections import Counter
@@ -709,50 +708,3 @@ def load_detections_from_file(filepath: str) -> np.ndarray:
         return np.array([])
 
 
-def main_tracking():
-    input_folder = "/merge_dist_wbf_drop"
-    file_pattern = os.path.join(input_folder, "merged_frame_*.txt")
-    frame_files = sorted(glob.glob(file_pattern))
-
-    if not frame_files:
-        print(f"오류: '{input_folder}' 폴더에서 파일을 찾을 수 없습니다. 경로와 파일명을 확인해주세요.")
-        return
-
-    tracker = SortTracker(max_age=10, min_hits=3, iou_threshold=0.15)
-    all_tracking_results = []
-
-    print(f"총 {len(frame_files)}개의 프레임 파일 로드됨. 추적 시작...")
-
-    for frame_idx, filepath in enumerate(frame_files):
-        detections = load_detections_from_file(filepath)
-        tracked_objects = tracker.update(detections, None)
-
-        if len(tracked_objects) > 0:
-            frame_id_column = np.full((tracked_objects.shape[0], 1), frame_idx)
-            frame_results = np.hstack((frame_id_column, tracked_objects))
-            all_tracking_results.append(frame_results)
-
-        if (frame_idx + 1) % 50 == 0 or frame_idx == len(frame_files) - 1:
-            print(f"--- 프레임 {frame_idx + 1} / {len(frame_files)} 처리 완료. 현재 활성 트랙 수: {len(tracker.tracks)}")
-
-    if all_tracking_results:
-        try:
-            final_results = np.vstack(all_tracking_results)
-
-            print("\n✅ 추적 완료. 최종 결과를 'tracking_output.txt'에 저장합니다.")
-
-            header = "frame_id, track_id, class, x_center, y_center, length, width, angle"
-            np.savetxt(
-                "tracking_output.txt",
-                final_results,
-                fmt=['%d', '%d', '%d', '%.4f', '%.4f', '%.4f', '%.4f', '%.4f'],
-                delimiter=',',
-                header=header,
-                comments='',
-            )
-        except Exception as e:
-            print(f"\n⚠️ 최종 결과 통합/저장 중 오류 발생: {e}")
-    else:
-        print("\n⚠️ 추적된 객체가 없습니다. (모든 프레임에서 Confirmed/Lost 상태의 트랙이 없었음)")
-
-# main_tracking() 
