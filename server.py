@@ -958,8 +958,12 @@ class RealtimeFusionServer:
             "payload": {
                 "carsOnMap": cars_on_map,
                 "carsStatus": cars_status,
-                "camerasOnMap": [{ "id": "camMarker-1", "cameraId": "cam-1", "x": 0.5, "y": -0.03 },{ "id": "camMarker-2", "cameraId": "cam-2", "x": -0.05, "y": 0.5 }],
-                "camerasStatus": [],
+                "camerasOnMap": [{ "id": "camMarker-1", "cameraId": "cam-1", "x": -0.05, "y": 0.5},
+                                 { "id": "camMarker-2", "cameraId": "cam-2", "x": 1.05, "y": 0.5}],
+                "camerasStatus": [
+                    {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
+                    {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.103:8080/stream"},
+                ],
                 "incident": None,
                 "routeChanges": [],
             },
@@ -1337,7 +1341,12 @@ class RealtimeFusionServer:
 
     def _broadcast_tracks(self, tracks: np.ndarray, ts: float):
         if self.track_tx:
-            self.track_tx.send(tracks, self.track_meta, ts)
+            # tracks: ndarray [id, cls, cx, cy, l, w, yaw, vx, vy]
+            send_tracks = tracks
+            if tracks is not None and len(tracks):
+                send_tracks = tracks[tracks[:, 1] == 0]  # cls == 0만 전송
+            if send_tracks is not None and len(send_tracks):
+                self.track_tx.send(send_tracks, self.track_meta, ts)
         if self.carla_tx:
             self.carla_tx.send(tracks, self.track_meta, ts)
         # ✅ React UI용 WebSocket 브로드캐스트
