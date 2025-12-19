@@ -684,27 +684,3 @@ class SortTracker:
                 track.force_set_color(color)
                 return True
         return False
-
-
-def load_detections_from_file(filepath: str) -> np.ndarray:
-    try:
-        if os.path.getsize(filepath) == 0:
-            return np.array([])
-
-        data = pd.read_csv(
-            filepath,
-            header=None,
-            sep=r'[,\s]+',
-            engine='python',
-            dtype=float,
-        ).values
-
-        if data.shape[1] != 6:
-            raise ValueError(f"파일 {filepath}의 열 개수가 예상 (6개)와 다릅니다: {data.shape[1]}")
-        return data
-
-    except Exception as e:
-        print(f"파일 로드 오류: {filepath}. 오류: {e}")
-        return np.array([])
-
-

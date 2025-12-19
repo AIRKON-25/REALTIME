@@ -473,7 +473,7 @@ class RealtimeFusionServer:
             if snapshot is not None:
                 self.ws_hub.broadcast(snapshot)
 
-    def _fuse_boxes_for_cam(self):
+    def main_loop(self):
         timings: Dict[str, float] = {}
         last = time.time()
         while True:
@@ -536,7 +536,7 @@ class RealtimeFusionServer:
                 self.command_server.start()
             except Exception as exc:
                 print(f"[CommandServer] failed to start: {exc}")
-        threading.Thread(target=self._fuse_boxes_for_cam, daemon=True).start()
+        threading.Thread(target=self.main_loop, daemon=True).start()
         print("[Fusion] server started")
 
 
