@@ -23,10 +23,10 @@ except Exception:
 import os, gzip, json, csv, hashlib, threading, queue, time  # noqa: F401
 from datetime import datetime, timezone  # noqa: F401
 
-from utils.merge_dist_wbf import (
+from utils.tracking.merge_dist_wbf import (
     cluster_by_aabb_iou, fuse_cluster_weighted
 )
-from utils.tracker import SortTracker
+from utils.tracking.tracker import SortTracker
 
 # ----- 색상 관련 유틸 -----
 COLOR_LABELS = ("red", "green", "blue", "yellow", "purple")
@@ -477,6 +477,17 @@ class TrackBroadcaster:
                 cls = int(row[1])
                 cx, cy, L, W, yaw = map(float, row[2:7])
                 extra = extras.get(tid, {})
+                vx, vy = 0.0, 0.0
+                velocity = extra.get("velocity")
+                if velocity and len(velocity) >= 2:
+                    try:
+                        vx = float(velocity[0])
+                        vy = float(velocity[1])
+                    except Exception:
+                        vx, vy = 0.0, 0.0
+                speed_val = extra.get("speed")
+                if speed_val is None:
+                    speed_val = float(np.hypot(vx, vy))
                 payload["items"].append({
                     "id": tid,
                     "class": cls,
@@ -484,6 +495,8 @@ class TrackBroadcaster:
                     "length": L,
                     "width": W,
                     "yaw": yaw,
+                    "velocity": [vx, vy],
+                    "speed": float(speed_val),
                     "pitch": float(extra.get("pitch", 0.0)),
                     "roll": float(extra.get("roll", 0.0)),
                     "score": float(extra.get("score", 0.0)),
@@ -1274,6 +1287,15 @@ class RealtimeFusionServer:
         self.track_meta = {tid: meta for tid, meta in self.track_meta.items() if tid in active_ids}
         for tid, attrs in track_attrs.items():
             meta = self.track_meta.setdefault(tid, {})
+            vel = attrs.get("velocity")
+            if vel and len(vel) == 2:
+                scale = 1.0 / max(self.dt, 1e-6) # 걍 FPS
+                vx = float(vel[0]) * scale # 프레임당 이동속도 * fps = 초당 이동속도
+                vy = float(vel[1]) * scale
+                meta["velocity"] = [vx, vy]
+                meta["speed"] = float(np.hypot(vx, vy))
+            elif "speed" in attrs:
+                meta["speed"] = float(attrs.get("speed", 0.0))
             color = normalize_color_label(attrs.get("color"))
             if color:
                 meta["color"] = color

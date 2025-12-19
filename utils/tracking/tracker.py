@@ -45,7 +45,7 @@ MEAS_GAP_SMOOTH_FACTOR = 0.15
 
 # History-based smoothing parameters
 STATE_HISTORY_SIZE = 8
-DEFAULT_SMOOTH_WINDOW = 5
+DEFAULT_SMOOTH_WINDOW = 5 # 최근 이만큼의 프레임을 반영해서 부드럽게 ㅇㅇ
 
 def wrap_deg(angle):
     """[-180, 180)로 정규화"""
@@ -374,7 +374,16 @@ class Track:
             return 0.0
         return self.color_counts.get(color, 0) / float(self.total_color_votes)
 
+    def get_velocity(self) -> Tuple[float, float]:
+        vx, vy = self.kf_pos.x[2:4].flatten()
+        return float(vx), float(vy)
+
+    def get_speed(self) -> float:
+        vx, vy = self.get_velocity()
+        return float(math.hypot(vx, vy))
+
     def _assemble_state(self) -> np.ndarray:
+        vx, vy = self.get_velocity()
         return np.array([
             self.cls,
             self.kf_pos.x[0, 0],
@@ -382,6 +391,8 @@ class Track:
             self.car_length,
             self.car_width,
             self.car_yaw,
+            vx,
+            vy,
         ], dtype=float)
 
     def get_state(self, smooth_window: int = 1) -> np.ndarray:
@@ -401,6 +412,7 @@ class Track:
         yaw_vals = stacked[:, 5]
         yaw_rad = np.deg2rad(yaw_vals)
         yaw_mean = wrap_deg(math.degrees(math.atan2(np.mean(np.sin(yaw_rad)), np.mean(np.cos(yaw_rad)))))
+        vel_vals = np.mean(stacked[:, 6:8], axis=0) if stacked.shape[1] >= 8 else np.zeros(2, dtype=float)
 
         smoothed_state = np.array([
             self.cls,
@@ -409,6 +421,8 @@ class Track:
             max(0.0, pos_size[2]),
             max(0.0, pos_size[3]),
             yaw_mean,
+            vel_vals[0],
+            vel_vals[1],
         ], dtype=float)
         return smoothed_state
 
@@ -598,6 +612,8 @@ class SortTracker:
                     "color": track.get_color(),
                     "color_confidence": track.get_color_confidence(),
                     "color_locked": bool(track.color_lock),
+                    "velocity": track.get_velocity(),
+                    "speed": track.get_speed(),
                 }
         return attrs
 
@@ -635,6 +651,9 @@ class SortTracker:
                 "length": float(state_vec[3]),
                 "width": float(state_vec[4]),
                 "yaw": float(state_vec[5]),
+                "vx": float(state_vec[6]),
+                "vy": float(state_vec[7]),
+                "speed": float(math.hypot(state_vec[6], state_vec[7])),
             })
         return items
 
