@@ -9,7 +9,7 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import depthai as dai
@@ -398,6 +398,7 @@ class UDPSender:
         max_bytes: int = 65000,
         fixed_length: Optional[float] = None,
         fixed_width: Optional[float] = None,
+        on_send: Optional[Callable[[bytes, int, float, Optional[float], List[dict]], None]] = None,
     ):
         self.addr = (host, int(port))
         self.fmt = fmt
@@ -405,6 +406,7 @@ class UDPSender:
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.fixed_length = float(fixed_length) if fixed_length is not None else None
         self.fixed_width = float(fixed_width) if fixed_width is not None else None
+        self.on_send = on_send
 
     def close(self):
         try:
@@ -447,6 +449,11 @@ class UDPSender:
                 print(f"[UDP] bytes={payload[:200]}{'...' if len(payload) > 200 else ''}")
         else:
             raise ValueError(f"Unsupported UDP payload fmt: {self.fmt}")
+        if self.on_send is not None:
+            try:
+                self.on_send(payload, cam_id, ts, capture_ts, bev_list)
+            except Exception as exc:
+                print(f"[UDP] on_send error: {exc}")
         if len(payload) <= self.max_bytes:
             self.sock.sendto(payload, self.addr)
 
