@@ -192,7 +192,7 @@ class Track:
 
         self.time_since_update = 0
         self.hits += 1
-        if self.state == TrackState.TENTATIVE and self.hits >= self.confirm_hits:
+        if self.state == TrackState.TENTATIVE and self.hits >= self.min_hit:
             self.state = TrackState.CONFIRMED
         elif self.state in (TrackState.CONFIRMED, TrackState.LOST):
             self.state = TrackState.CONFIRMED

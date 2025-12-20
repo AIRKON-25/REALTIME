@@ -21,6 +21,7 @@ from utils.tracking.cluster import cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.tracker import SortTracker
 from utils.tracking._constants import IOU_CLUSTER_THR
+from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES
 
 class RealtimeServer:
     def __init__(
@@ -182,6 +183,10 @@ class RealtimeServer:
                       timings: Optional[Dict[str, float]] = None):
         """"
         파이프라인 로그 출력
+        [Fusion] ts=1766250365.874 total_raw=4 cams=(cam1:4) clusters=4 tracks=4
+        fused_sample={"cx": -8.90107380003167, "cy": 12.338851432457503, "length": 4.4, "width": 2.7, "yaw": -138.16341035956063, "score": 0.967749834060669, "source_cams": ["cam1"], "color": null}
+        track_sample={"id": 927, "cls": 1, "cx": -12.218371690364483, "cy": -16.645277481758548, "length": 4.4, "width": 2.7, "yaw": 171.02710871210473}
+        timings(ms) {"gather": 0.0092999980552122, "fuse": 0.6614999947487377, "track": 5.105099997308571}
         """
         total_raw = sum(raw_stats.values())
         fused_count = len(fused)
@@ -457,8 +462,34 @@ class RealtimeServer:
             if snapshot is not None:
                 self.ws_hub.broadcast(snapshot)
 
+    def _run_tracker_step(self, fused: List[dict]) -> np.ndarray:
+        """
+        트래커 실행, 트랙/메타 데이터 업데이트, 트랙 반환
+        """
+        det_rows = []
+        det_colors: List[Optional[str]] = []
+        for det in fused:
+            det_rows.append([
+                det["cls"],
+                det["cx"],
+                det["cy"],
+                (self.tracker_fixed_length if self.tracker_fixed_length is not None else det["length"]),
+                (self.tracker_fixed_width if self.tracker_fixed_width is not None else det["width"]),
+                det["yaw"],
+            ])
+            det_colors.append(det.get("color"))
+
+        dets_for_tracker = np.array(det_rows, dtype=float) if det_rows else np.zeros((0, 6), dtype=float)
+        
+        tracks = self.tracker.update(dets_for_tracker, det_colors)
+        
+
+        track_attrs = self.tracker.get_track_attributes()
+        self._update_track_meta(self.tracker.get_latest_matches(), fused, track_attrs)
+        return tracks
+
     def main_loop(self):
-        timings: Dict[str, float] = {} # 단계별 처리 시간 기록용
+        timings: Dict[str, float] = {} # 단계별 처리 시간 기록용(ms)
         last = time.time()
         while True:
             self._process_command_queue()
@@ -487,32 +518,16 @@ class RealtimeServer:
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
             timings["fuse"] = (time.perf_counter() - t1) * 1000.0
-
-            det_rows = []
-            det_colors: List[Optional[str]] = []
-            for det in fused:
-                det_rows.append([
-                    det["cls"],
-                    det["cx"],
-                    det["cy"],
-                    (self.tracker_fixed_length if self.tracker_fixed_length is not None else det["length"]),
-                    (self.tracker_fixed_width if self.tracker_fixed_width is not None else det["width"]),
-                    det["yaw"],
-                ])
-                det_colors.append(det.get("color"))
-            dets_for_tracker = np.array(det_rows, dtype=float) if det_rows else np.zeros((0, 6), dtype=float)
             t2 = time.perf_counter()
-            tracks = self.tracker.update(dets_for_tracker, det_colors)
+            tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
-            track_attrs = self.tracker.get_track_attributes()
-            self._update_track_meta(self.tracker.get_latest_matches(), fused, track_attrs)
             self._broadcast_tracks(tracks, now)
 
             if self._should_log(): # 1초에 한번 로그
                 stats = {}
                 for det in raw_dets:
                     cam = det.get("cam", "?")
-                    stats[cam] = stats.get(cam, 0) + 1
+                    stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
                 self._log_pipeline(stats, fused, tracks, now, timings)
 
     def start(self):
