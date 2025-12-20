@@ -175,9 +175,12 @@ class RealtimeServer:
             "payload": {
                 "carsOnMap": cars_on_map,
                 "carsStatus": cars_status,
-                "camerasOnMap": [{"id": "camMarker-1", "cameraId": "cam-1", "x": 0.5, "y": -0.03},
-                                 {"id": "camMarker-2", "cameraId": "cam-2", "x": -0.05, "y": 0.5}],
-                "camerasStatus": [],
+                "camerasOnMap": [{ "id": "camMarker-1", "cameraId": "cam-1", "x": -0.05, "y": 0.5},
+                                 { "id": "camMarker-2", "cameraId": "cam-2", "x": 1.05, "y": 0.5}],
+                "camerasStatus": [
+                    {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
+                    {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.103:8080/stream"},
+                ],
                 "incident": None,
                 "routeChanges": [],
             },
