@@ -38,13 +38,10 @@ class RealtimeFusionServer:
         tx_protocol: str = "udp",
         carla_host: Optional[str] = None,
         carla_port: int = 61000,
-        global_ply: str = "real_global_ply.ply",
-        vehicle_glb: str = "pointcloud/car.glb",
         tracker_fixed_length: Optional[float] = None,
         tracker_fixed_width: Optional[float] = None,
         command_host: Optional[str] = None,
         command_port: Optional[int] = None,
-        flip_ply_y: bool = True,
         ws_host: Optional[str] = "0.0.0.0",
         ws_port: int = 9001,
     ):
