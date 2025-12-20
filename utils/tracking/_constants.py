@@ -1,5 +1,6 @@
 # tracking 관련 상수들 정의
 
+# tracker 관련 상수들 정의
 # 이럼 이제 맨 처음 정지되어있을때는 못잡을거임,, 랜덤임 음음음
 # 최소 이동량(미터 단위 추정). 이보다 작으면 정지로 간주해 yaw 보정 생략
 FORWARD_HEADING_MIN_DIST = 0.001
@@ -35,6 +36,7 @@ YAW_PERIOD_DEG = 180.0
 HEADING_FLIP_THRESHOLD = 90.0
 KF_STATE_INIT_COV_SCALE = 10.0
 
+# fusion 관련 상수들 정의
 # Fusion-related defaults
 DIST_WEIGHT_D0 = 5.0
 DIST_WEIGHT_P = 2.0
@@ -52,3 +54,8 @@ SCALE_MIN = 1e-3
 # Angle handling
 YAW_FLIP_THRESHOLD_DEG = 90.0
 YAW_R_FALLBACK = 0.25
+
+# cluster 관련 상수들 정의
+IOU_CLUSTER_THR = 0.15
+COLOR_BONUS = 0.0
+COLOR_PENALTY = 0.0
