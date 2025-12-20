@@ -11,7 +11,7 @@ from comms.command_server import CommandServer
 from comms.track_broadcaster import TrackBroadcaster
 from comms.udp_receiver import UDPReceiverSingle
 from comms.ws_hub import WebSocketHub
-from data_io.camera_assets import load_camera_markers, safe_float
+from data_io.camera_assets import safe_float
 from utils.colors import (
     color_label_to_hex,
     hex_to_color_label,
@@ -28,8 +28,6 @@ class RealtimeServer:
         self,
         cam_ports: Dict[str, int],
         cam_positions_path: Optional[str] = None,
-        local_ply_dir: Optional[str] = None,
-        local_lut_dir: Optional[str] = None,
         fps: float = 10.0,
         iou_cluster_thr: float = 0.25,
         single_port: int = 50050,
@@ -70,33 +68,20 @@ class RealtimeServer:
 
         self.receiver = UDPReceiverSingle(single_port)
 
-        self.camera_markers = load_camera_markers(cam_positions_path, local_ply_dir, local_lut_dir)
-        self.cam_xy: Dict[str, Tuple[float, float]] = {}
-        for marker in self.camera_markers:
-            pos = marker.get("position") or {}
-            x = safe_float(pos.get("x"))
-            y = safe_float(pos.get("y"))
-            if x is None or y is None:
-                continue
-            name = marker.get("name") or marker.get("key")
-            if not name:
-                continue
-            self.cam_xy[str(name)] = (float(x), float(y))
-        if not self.cam_xy:
-            print("[Fusion] WARN: no camera positions loaded; distance weighting falls back to origin.")
+        self.cam_xy: Dict[str, Tuple[float, float]] = {} # 카메라 위치 로드... json으로 뺄까?
 
         self.buffer: Dict[str, deque] = {cam: deque(maxlen=1) for cam in cam_ports.keys()}
+        """ 아래처럼 생김
+        self.buffer = {
+            "cam1": deque(maxlen=1), 최대길이 1인 덱
+            "cam2": deque(maxlen=1) 즉, 카메라별로 가장 최신 데이터 1개만 유지하는 버퍼
+        }
+        """
 
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
 
-        smooth_window = max(3, min(8, int(round(0.2 / max(self.dt, 1e-3)))))
-        self.tracker = SortTracker(
-            max_age=20,
-            min_hits=20,
-            iou_threshold=0.15,
-            smooth_window=smooth_window,
-        )
+        self.tracker = SortTracker() # 기본 파라미터로 SortTracker 초기화
         self._log_interval = 1.0
         self._next_log_ts = 0.0
 
@@ -246,7 +231,10 @@ class RealtimeServer:
                 detections.append(det_copy)
         return detections
 
-    def _process_command_queue(self): # 명령 큐 처리 yaw/색상 명령 처리
+    def _process_command_queue(self): 
+        """
+        명령 큐 처리 yaw/색상 명령 처리
+        """
         if not self.command_queue:
             return
         while True:
@@ -262,7 +250,10 @@ class RealtimeServer:
                 except queue.Full:
                     pass
 
-    def _handle_command_item(self, item: dict) -> dict: # 단일 명령 처리 yaw/색상 명령 처리
+    def _handle_command_item(self, item: dict) -> dict: 
+        """
+        단일 명령 처리 yaw/색상 명령 처리
+        """
         cmd = str(item.get("cmd") or "").strip().lower()
         payload = item.get("payload") or {}
         if cmd == "flip_yaw":
@@ -380,10 +371,8 @@ class RealtimeServer:
     def _aggregate_cluster(self, detections: List[dict], idxs: List[int], fused_box: Optional[np.ndarray] = None) -> dict:
         subset = [detections[i] for i in idxs]
         if not subset:
-            return {"cz": 0.0, "pitch": 0.0, "roll": 0.0, "score": 0.0, "source_cams": []}
+            return {"score": 0.0, "source_cams": []}
         score = np.mean([float(d.get("score", 0.0)) for d in subset])
-        pitch = np.mean([float(d.get("pitch", 0.0)) for d in subset])
-        roll = np.mean([float(d.get("roll", 0.0)) for d in subset])
         cls_counts = Counter([int(d.get("cls", -1)) for d in subset if "cls" in d])
         fused_cls = cls_counts.most_common(1)[0][0] if cls_counts else None
         cams = [d.get("cam", "?") for d in subset]
@@ -394,14 +383,7 @@ class RealtimeServer:
         hex_candidates = [normalize_color_hex(d.get("color_hex")) for d in subset if d.get("color_hex")]
         hex_candidates = [h for h in hex_candidates if h]
         color_hex = random.choice(hex_candidates) if hex_candidates else None
-        if fused_box is not None and len(fused_box) >= 4:
-            cz = np.mean([float(d.get("cz", 0.0)) for d in subset])
-        else:
-            cz = np.mean([float(d.get("cz", 0.0)) for d in subset])
         return {
-            "cz": float(cz),
-            "pitch": float(pitch),
-            "roll": float(roll),
             "score": float(score),
             "source_cams": cams,
             "cls": fused_cls,
@@ -462,6 +444,9 @@ class RealtimeServer:
                 meta["color_votes"] = dict(votes)
 
     def _broadcast_tracks(self, tracks: np.ndarray, ts: float):
+        """
+        제어컴, CARLA, WebSocket 허브로 트랙 전송
+        """
         if self.track_tx:
             self.track_tx.send(tracks, self.track_meta, ts)
         if self.carla_tx:
@@ -536,14 +521,3 @@ class RealtimeServer:
                 print(f"[CommandServer] failed to start: {exc}")
         threading.Thread(target=self.main_loop, daemon=True).start() # 메인 루프 시작
         print("[Fusion] server started")
-
-
-def parse_cam_ports(text: str) -> Dict[str, int]:
-    out = {}
-    for tok in text.split(","):
-        tok = tok.strip()
-        if not tok:
-            continue
-        name, port = tok.split(":")
-        out[name.strip()] = int(port)
-    return out

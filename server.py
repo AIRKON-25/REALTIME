@@ -1,16 +1,11 @@
 import argparse
 import time
 
-from realtime.server_core import RealtimeServer, parse_cam_ports
+from realtime.server_core import RealtimeServer
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--cam-ports", default="cam1:50050,cam2:50051")
+    ap = argparse.ArgumentParser() # 현장에서 바로 바뀌는 파라미터들만 인자로 빼자
     # ap.add_argument("--cam-positions-json", default="camera_position.json")
-    ap.add_argument("--local-ply-dir", default="outputs",
-                    help="카메라별 로컬 PLY를 찾을 루트(패턴: cam_<id>_*.ply)")
-    ap.add_argument("--local-lut-dir", default="outputs",
-                    help="카메라별 LUT(npz)를 찾을 루트(패턴: cam_<id>_*.npz)")
     ap.add_argument("--fps", type=float, default=30.0)
     ap.add_argument("--iou-thr", type=float, default=0.01)
     ap.add_argument("--udp-port", type=int, default=50050)
@@ -33,13 +28,16 @@ def main():
                     help="yaw/색상 명령 서버 포트")
     args = ap.parse_args()
 
-    cam_ports = parse_cam_ports(args.cam_ports)
+    cam_ports = {
+        "cam1": 101,
+        "cam2": 102,
+        "cam3": 103,
+        "cam4": 104,
+    }
 
     server = RealtimeServer(
         cam_ports=cam_ports,
         # cam_positions_path=args.cam_positions_json,
-        local_ply_dir=args.local_ply_dir,
-        local_lut_dir=args.local_lut_dir,
         fps=args.fps,
         iou_cluster_thr=args.iou_thr,
         single_port=args.udp_port,
