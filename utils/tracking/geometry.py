@@ -1,11 +1,9 @@
 import math
 from typing import List
-
 import numpy as np
 
-
 def wrap_deg(angle: float) -> float:
-    """Wrap angle to [-180, 180)."""
+    """각도를 -180도에서 180도 범위로 래핑"""
     a = (angle + 180.0) % 360.0
     if a < 0:
         a += 360.0
@@ -14,8 +12,9 @@ def wrap_deg(angle: float) -> float:
 
 def nearest_equivalent_deg(meas: float, ref: float, period: float = 360.0) -> float:
     """
-    Convert measurement into the equivalent angle closest to the reference.
-    period=360 for general angle, 180 for fore/aft symmetric models.
+    근처에 있는 동등한 각도를 반환
+    예: meas=170, ref=-170 -> 반환값은 -190 (ref에 더 가까움)
+    180도 주기 각도에 유용함
     """
     d = meas - ref
     d = (d + period / 2.0) % period - period / 2.0
@@ -23,6 +22,9 @@ def nearest_equivalent_deg(meas: float, ref: float, period: float = 360.0) -> fl
 
 
 def carla_to_aabb(detection: np.ndarray) -> np.ndarray:
+    """
+    CARLA 형식의 검출을 축 정렬 경계 상자(AABB)로 변환
+    """
     # detection: [class, x_c, y_c, l, w, yaw_deg]
     x_c, y_c, l, w, yaw_deg = detection[1:6]
     yaw = math.radians(yaw_deg)
@@ -45,6 +47,9 @@ def carla_to_aabb(detection: np.ndarray) -> np.ndarray:
 
 
 def iou_bbox(boxA: np.ndarray, boxB: np.ndarray) -> float:
+    """
+    두 축 정렬 경계 상자 간의 IoU 계산
+    """
     xA = max(boxA[0], boxB[0])
     yA = max(boxA[1], boxB[1])
     xB = min(boxA[0] + boxA[2], boxB[0] + boxB[2])
@@ -64,8 +69,10 @@ def iou_bbox(boxA: np.ndarray, boxB: np.ndarray) -> float:
 
 
 def iou_batch(detections_carla: np.ndarray, tracks: List["Track"]) -> np.ndarray:
-    from utils.tracking.tracker import Track  # circular import guard
-
+    """
+    검출과 예측된 트랙 간의 IoU 기반 비용 행렬 계산
+    1 - IoU 값을 사용하여 비용을 나타냄
+    """
     cost_matrix = np.zeros((len(detections_carla), len(tracks)), dtype=np.float32)
     for i, det_carla in enumerate(detections_carla):
         det_aabb = carla_to_aabb(det_carla)
@@ -78,7 +85,9 @@ def iou_batch(detections_carla: np.ndarray, tracks: List["Track"]) -> np.ndarray
 
 
 def aabb_iou_axis_aligned(b1, b2) -> float:
-    # rows may include an optional leading class column -> use the last 5 values (cx, cy, L, W, yaw)
+    """
+    두 축 정렬 경계 상자 간의 IoU 계산
+    """
     g1 = b1[-5:] if len(b1) >= 5 else b1
     g2 = b2[-5:] if len(b2) >= 5 else b2
     x1, y1, L1, W1, _ = g1
