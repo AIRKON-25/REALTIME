@@ -18,10 +18,8 @@ from utils.colors import (
     normalize_color_hex,
     normalize_color_label,
 )
-from utils.tracking.merge_dist_wbf import (
-    cluster_by_aabb_iou,
-    fuse_cluster_weighted,
-)
+from utils.tracking.cluster import cluster_by_aabb_iou
+from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.tracker import SortTracker
 
 
