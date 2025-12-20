@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
 import os
 import queue
 import socket
@@ -55,6 +56,64 @@ class FrameBroadcaster:
         with self._condition:
             self._stopped = True
             self._condition.notify_all()
+
+
+class UDPRecorder(threading.Thread):
+    def __init__(self, record_path: str):
+        super().__init__(daemon=True)
+        self.record_path = os.path.abspath(record_path)
+        self.queue: queue.Queue = queue.Queue(maxsize=1024)
+        self.stop_evt = threading.Event()
+        self._last_sent_ts: Optional[float] = None
+        os.makedirs(os.path.dirname(self.record_path) or ".", exist_ok=True)
+
+    def handle_send(self,
+                    payload: bytes,
+                    cam_id: int,
+                    ts: float,
+                    capture_ts: Optional[float],
+                    bev_dets) -> None:
+        delay_ms = None
+        if self._last_sent_ts is not None:
+            delay_ms = (ts - self._last_sent_ts) * 1000.0
+        self._last_sent_ts = ts
+        record = {
+            "cam_id": cam_id,
+            "sent_ts": ts,
+            "capture_ts": capture_ts,
+            "delay_ms": delay_ms,
+            "payload": payload.decode("utf-8", errors="replace"),
+        }
+        if bev_dets is not None:
+            record["bev_count"] = len(bev_dets)
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            try:
+                self.queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self.queue.put_nowait(record)
+            except queue.Full:
+                pass
+
+    def stop(self) -> None:
+        self.stop_evt.set()
+
+    def run(self):
+        try:
+            with open(self.record_path, "w", encoding="utf-8") as fp:
+                while not self.stop_evt.is_set() or not self.queue.empty():
+                    try:
+                        rec = self.queue.get(timeout=0.05)
+                    except queue.Empty:
+                        continue
+                    line = json.dumps(rec, ensure_ascii=False)
+                    fp.write(line + "\n")
+                    fp.flush()
+        except Exception as exc:
+            print(f"[UDPRecorder] WARN: recording stopped due to error: {exc}")
 
 
 class HttpVisualizationWorker(threading.Thread):
@@ -335,6 +394,11 @@ def run_live_inference_http(args) -> None:
     homography = load_homography_matrix(args.homography) if args.homography else None
     if args.udp_enable and homography is None:
         raise ValueError("UDP output requested but no homography (--homography) provided.")
+    udp_recorder: Optional[UDPRecorder] = None
+    if args.record_udp:
+        udp_recorder = UDPRecorder(args.record_udp)
+        udp_recorder.start()
+        print(f"[UDP] Recording payloads to {udp_recorder.record_path}")
     udp_sender = None
     if args.udp_enable:
         udp_sender = UDPSender(
@@ -343,6 +407,7 @@ def run_live_inference_http(args) -> None:
             fmt=args.udp_format,
             fixed_length=args.udp_fixed_length,
             fixed_width=args.udp_fixed_width,
+            on_send=udp_recorder.handle_send if udp_recorder is not None else None,
         )
 
     resize_mode = None
@@ -498,6 +563,9 @@ def run_live_inference_http(args) -> None:
         server.server_close()
         if udp_sender is not None:
             udp_sender.close()
+        if udp_recorder is not None:
+            udp_recorder.stop()
+            udp_recorder.join(timeout=1.0)
 
 
 def parse_args():
@@ -551,6 +619,8 @@ def parse_args():
                         help="Title shown on the HTTP landing page")
     parser.add_argument("--jpeg-quality", type=int, default=85,
                         help="JPEG quality (1-100) used for streaming frames")
+    parser.add_argument("--record-udp", type=str, default=None,
+                        help="If set, write each UDP payload to this NDJSON file for offline replay")
     return parser.parse_args()
 
 
