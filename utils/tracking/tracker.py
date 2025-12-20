@@ -13,44 +13,34 @@ from utils.tracking.geometry import (
     nearest_equivalent_deg,
     wrap_deg,
 )
+from utils.colors import normalize_color_label
 
-COLOR_LABELS = ("red", "pink", "green", "white", "yellow", "purple", "black")
-VALID_COLORS = {color: color for color in COLOR_LABELS}
-
-
-def normalize_color_label(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    color = str(value).strip().lower()
-    if not color or color == "none":
-        return None
-    return VALID_COLORS.get(color)
-
-# 이럼 이제 맨 처음 정지되어있을때는 못잡을거임,, 랜덤임 음음음
-# 최소 이동량(미터 단위 추정). 이보다 작으면 정지로 간주해 yaw 보정 생략
-FORWARD_HEADING_MIN_DIST = 0.001
-# SORT 보정: 감지 yaw가 추정 yaw과 너무 반대면 180° 뒤집어서 사용
-YAW_SORT_CORRECTION_THRESHOLD = 150.0  # deg
-# 검출 yaw를 180° 주기로만 신뢰(앞/뒤 동일)하고, 이동 방향으로 부호를 고정하기 위한 파라미터
-HEADING_LOCK_ANGLE_THR = 45.0
-HEADING_UNLOCK_ANGLE_THR = 140.0
-HEADING_LOCK_FRAMES = 2
-HEADING_ALIGN_MIN_DIST = 0.001
-
-# Kalman noise/variance tuning for smoother yet responsive tracks
-POS_INIT_COV_SCALE = 250.0
-POS_PROCESS_NOISE_SCALE = 1.0
-POS_MEAS_NOISE_SCALE = 2.0
-YAW_PROCESS_NOISE_SCALE = 0.05
-YAW_MEAS_NOISE_SCALE = 0.5
-SIZE_PROCESS_NOISE_SCALE = 0.01
-SIZE_MEAS_NOISE_SCALE = 0.5
-# 측정 업데이트 시 프레임 간격이 길어질수록 관측값 영향 줄이는 계수
-MEAS_GAP_SMOOTH_FACTOR = 0.15
-
-# History-based smoothing parameters
-STATE_HISTORY_SIZE = 8
-DEFAULT_SMOOTH_WINDOW = 5 # 최근 이만큼의 프레임을 반영해서 부드럽게 ㅇㅇ
+from utils.tracking._constants import (
+    DEFAULT_COLOR_LOCK_STREAK,
+    DEFAULT_COLOR_PENALTY,
+    DEFAULT_CONFIRM_HITS,
+    DEFAULT_IOU_THRESHOLD,
+    DEFAULT_MAX_AGE,
+    DEFAULT_MIN_HITS,
+    DEFAULT_SMOOTH_WINDOW,
+    FORWARD_HEADING_MIN_DIST,
+    HEADING_ALIGN_MIN_DIST,
+    HEADING_FLIP_THRESHOLD,
+    HEADING_LOCK_ANGLE_THR,
+    HEADING_LOCK_FRAMES,
+    HEADING_UNLOCK_ANGLE_THR,
+    KF_STATE_INIT_COV_SCALE,
+    MEAS_GAP_SMOOTH_FACTOR,
+    POS_INIT_COV_SCALE,
+    POS_MEAS_NOISE_SCALE,
+    POS_PROCESS_NOISE_SCALE,
+    SIZE_MEAS_NOISE_SCALE,
+    SIZE_PROCESS_NOISE_SCALE,
+    STATE_HISTORY_SIZE,
+    YAW_MEAS_NOISE_SCALE,
+    YAW_PERIOD_DEG,
+    YAW_PROCESS_NOISE_SCALE,
+)
 
 
 def iou_batch(detections_carla: np.ndarray, tracks: List["Track"]) -> np.ndarray:
@@ -78,9 +68,9 @@ class Track:
     def __init__(
         self,
         bbox_init: np.ndarray,
-        confirm_hits: int = 3,
+        confirm_hits: int = DEFAULT_CONFIRM_HITS,
         color: Optional[str] = None,
-        color_lock_streak: int = 5,
+        color_lock_streak: int = DEFAULT_COLOR_LOCK_STREAK,
         pos_process_noise_scale: float = POS_PROCESS_NOISE_SCALE,
         pos_meas_noise_scale: float = POS_MEAS_NOISE_SCALE,
         yaw_process_noise_scale: float = YAW_PROCESS_NOISE_SCALE,
@@ -153,7 +143,7 @@ class Track:
         kf.F = np.array([[1, 1], [0, 1]])
         kf.H = np.array([[1, 0]])
         kf.x[0] = initial_value
-        kf.P *= 10.0
+        kf.P *= KF_STATE_INIT_COV_SCALE
         kf.Q *= Q_scale
         kf.R *= R_scale
         return kf
@@ -188,7 +178,7 @@ class Track:
 
         yaw_det = float(measurement[5])
         yaw_det = self._align_measurement_yaw(yaw_det, measurement[1:3])
-        yaw_meas = nearest_equivalent_deg(yaw_det, self.kf_yaw.x[0, 0], period=180.0)
+        yaw_meas = nearest_equivalent_deg(yaw_det, self.kf_yaw.x[0, 0], period=YAW_PERIOD_DEG)
         self.kf_yaw.update(np.array([[yaw_meas]]))
         # self.kf_yaw.update(np.array([[yaw_det]]))
         self.car_yaw = wrap_deg(self.kf_yaw.x[0, 0])
@@ -278,17 +268,17 @@ class Track:
         """
         yaw_det = wrap_deg(yaw_det)
         # 1) 기존 상태와 180° 주기 기준으로 가깝게 정규화(앞/뒤 동일하게 취급)
-        yaw_det = nearest_equivalent_deg(yaw_det, self.car_yaw, period=180.0)
+        yaw_det = nearest_equivalent_deg(yaw_det, self.car_yaw, period=YAW_PERIOD_DEG)
 
         heading = self._compute_heading_from_motion(meas_xy)
         if heading is None:
             # 이동이 거의 없으면 잠정적으로 상태 근처로만 클램프
             if self.heading_locked and self.locked_heading is not None:
-                return nearest_equivalent_deg(yaw_det, self.locked_heading, period=180.0)
+                return nearest_equivalent_deg(yaw_det, self.locked_heading, period=YAW_PERIOD_DEG)
             return yaw_det
 
         # 2) 이동 방향과 가장 가까운 부호 선택(180° 주기)
-        yaw_heading = nearest_equivalent_deg(yaw_det, heading, period=180.0)
+        yaw_heading = nearest_equivalent_deg(yaw_det, heading, period=YAW_PERIOD_DEG)
         diff = abs(wrap_deg(yaw_heading - heading))
 
         # 3) heading 일관성 점수로 잠금/해제 판단
@@ -310,7 +300,7 @@ class Track:
                 self.locked_heading = heading
 
         if self.heading_locked and self.locked_heading is not None:
-            return nearest_equivalent_deg(yaw_heading, self.locked_heading, period=180.0)
+            return nearest_equivalent_deg(yaw_heading, self.locked_heading, period=YAW_PERIOD_DEG)
         return yaw_heading
 
     def get_color(self) -> Optional[str]:
@@ -388,12 +378,12 @@ class Track:
         if dist >= FORWARD_HEADING_MIN_DIST:
             heading = wrap_deg(math.degrees(math.atan2(dy, dx)))
             diff = abs(wrap_deg(self.car_yaw - heading))
-            if diff > 90.0:
-                self.car_yaw = wrap_deg(self.car_yaw - 180.0)
+            if diff > HEADING_FLIP_THRESHOLD:
+                self.car_yaw = wrap_deg(self.car_yaw - YAW_PERIOD_DEG)
                 self.kf_yaw.x[0, 0] = self.car_yaw
         self.last_pos = np.array(current_xy, dtype=float)
 
-    def force_flip_yaw(self, offset_deg: float = 180.0) -> None:
+    def force_flip_yaw(self, offset_deg: float = YAW_PERIOD_DEG) -> None:
         """
         외부 명령으로 yaw를 강제 뒤집을 때 사용. heading 잠금은 해제한다.
         """
@@ -417,12 +407,12 @@ class Track:
 class SortTracker:
     def __init__(
         self,
-        max_age: int = 3,
-        min_hits: int = 3,
-        iou_threshold: float = 0.3,
-        color_penalty: float = 0.3,
+        max_age: int = DEFAULT_MAX_AGE,
+        min_hits: int = DEFAULT_MIN_HITS,
+        iou_threshold: float = DEFAULT_IOU_THRESHOLD,
+        color_penalty: float = DEFAULT_COLOR_PENALTY,
         smooth_window: int = DEFAULT_SMOOTH_WINDOW,
-        color_lock_streak: int = 5,
+        color_lock_streak: int = DEFAULT_COLOR_LOCK_STREAK,
         pos_process_noise_scale: float = POS_PROCESS_NOISE_SCALE,
         pos_meas_noise_scale: float = POS_MEAS_NOISE_SCALE,
         yaw_process_noise_scale: float = YAW_PROCESS_NOISE_SCALE,
@@ -451,9 +441,7 @@ class SortTracker:
         detection_colors: Optional[List[Optional[str]]] = None,
     ) -> np.ndarray:
         """
-        Update tracker with detections.
-        detections_carla: Nx6 array [class, x_center, y_center, length, width, angle]
-        detection_colors: optional list aligned with detections (None entries allowed)
+        새로운 프레임의 검출 결과로 트래커 상태를 갱신하고, 현재 활성 트랙을 반환
         """
         if detections_carla is None:
             detections_carla = np.zeros((0, 6), dtype=float)
@@ -534,6 +522,9 @@ class SortTracker:
         detection_colors: Optional[List[Optional[str]]],
         count: int,
     ) -> List[Optional[str]]:
+        """
+        검출 색상 라벨을 정규화하고, 검출 개수에 맞게 길이를 조정
+        """
         if not detection_colors:
             return [None] * count
         colors: List[Optional[str]] = []
@@ -605,7 +596,7 @@ class SortTracker:
             })
         return items
 
-    def force_flip_yaw(self, track_id: int, offset_deg: float = 180.0) -> bool:
+    def force_flip_yaw(self, track_id: int, offset_deg: float = YAW_PERIOD_DEG) -> bool:
         """
         지정한 track id의 yaw를 강제로 뒤집는다.
         """
