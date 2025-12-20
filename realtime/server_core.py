@@ -11,7 +11,6 @@ from comms.command_server import CommandServer
 from comms.track_broadcaster import TrackBroadcaster
 from comms.udp_receiver import UDPReceiverSingle
 from comms.ws_hub import WebSocketHub
-from data_io.camera_assets import safe_float
 from utils.colors import (
     color_label_to_hex,
     hex_to_color_label,
