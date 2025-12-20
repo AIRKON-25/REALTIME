@@ -2,12 +2,13 @@ import argparse
 import time
 
 from realtime.server_core import RealtimeServer
+from utils.tracking._constants import IOU_CLUSTER_THR
 
 def main():
     ap = argparse.ArgumentParser() # 현장에서 바로 바뀌는 파라미터들만 인자로 빼자
     # ap.add_argument("--cam-positions-json", default="camera_position.json")
     ap.add_argument("--fps", type=float, default=30.0)
-    ap.add_argument("--iou-thr", type=float, default=0.01)
+    ap.add_argument("--iou-cluster-thr", type=float, default=IOU_CLUSTER_THR)
     ap.add_argument("--udp-port", type=int, default=50050)
     ap.add_argument("--tx-host", default=None)
     ap.add_argument("--tx-port", type=int, default=60050)
@@ -39,7 +40,7 @@ def main():
         cam_ports=cam_ports,
         # cam_positions_path=args.cam_positions_json,
         fps=args.fps,
-        iou_cluster_thr=args.iou_thr,
+        iou_cluster_thr=args.iou_cluster_thr,
         single_port=args.udp_port,
         tx_host=args.tx_host,
         tx_port=args.tx_port,

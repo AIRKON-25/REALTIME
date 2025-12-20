@@ -20,7 +20,7 @@ from utils.colors import (
 from utils.tracking.cluster import cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.tracker import SortTracker
-
+from utils.tracking._constants import IOU_CLUSTER_THR
 
 class RealtimeServer:
     def __init__(
@@ -28,7 +28,7 @@ class RealtimeServer:
         cam_ports: Dict[str, int],
         cam_positions_path: Optional[str] = None,
         fps: float = 10.0,
-        iou_cluster_thr: float = 0.25,
+        iou_cluster_thr: float = IOU_CLUSTER_THR,
         single_port: int = 50050,
         tx_host: Optional[str] = None,
         tx_port: int = 60050,
@@ -50,9 +50,6 @@ class RealtimeServer:
         self.active_cams = set()
         self.color_bias_strength = 0.3
         self.color_bias_min_votes = 2
-        delta = min(max(self.color_bias_strength * 0.25, 0.0), 0.00)
-        self.color_cluster_bonus = delta
-        self.color_cluster_penalty = delta
 
         self._log_interval = 1.0
         self._next_log_ts = 0.0
@@ -325,16 +322,14 @@ class RealtimeServer:
         clusters = cluster_by_aabb_iou(
             boxes,
             iou_cluster_thr=self.iou_thr,
-            color_labels=colors,
-            color_bonus=self.color_cluster_bonus,
-            color_penalty=self.color_cluster_penalty,
+            color_labels=colors
         )
         fused_list = []
         for idxs in clusters:
             weight_bias = self._color_weight_biases(raw_detections, idxs)
             rep = fuse_cluster_weighted(
                 boxes, cams, idxs, self.cam_xy,
-                d0=5.0, p=2.0, extra_weights=weight_bias
+                extra_weights=weight_bias
             )
             extras = self._aggregate_cluster(raw_detections, idxs, rep)
             fused_list.append({
