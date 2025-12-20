@@ -1,7 +1,7 @@
 import argparse
 import time
 
-from realtime.server_core import RealtimeFusionServer, parse_cam_ports
+from realtime.server_core import RealtimeServer, parse_cam_ports
 
 def main():
     ap = argparse.ArgumentParser()
@@ -35,7 +35,7 @@ def main():
 
     cam_ports = parse_cam_ports(args.cam_ports)
 
-    server = RealtimeFusionServer(
+    server = RealtimeServer(
         cam_ports=cam_ports,
         # cam_positions_path=args.cam_positions_json,
         local_ply_dir=args.local_ply_dir,

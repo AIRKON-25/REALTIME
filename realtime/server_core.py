@@ -23,7 +23,7 @@ from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.tracker import SortTracker
 
 
-class RealtimeFusionServer:
+class RealtimeServer:
     def __init__(
         self,
         cam_ports: Dict[str, int],
@@ -243,7 +243,7 @@ class RealtimeFusionServer:
                 detections.append(det_copy)
         return detections
 
-    def _process_command_queue(self):
+    def _process_command_queue(self): # 명령 큐 처리 yaw/색상 명령 처리
         if not self.command_queue:
             return
         while True:
@@ -259,7 +259,7 @@ class RealtimeFusionServer:
                 except queue.Full:
                     pass
 
-    def _handle_command_item(self, item: dict) -> dict:
+    def _handle_command_item(self, item: dict) -> dict: # 단일 명령 처리 yaw/색상 명령 처리
         cmd = str(item.get("cmd") or "").strip().lower()
         payload = item.get("payload") or {}
         if cmd == "flip_yaw":
@@ -525,13 +525,13 @@ class RealtimeFusionServer:
                 self._log_pipeline(stats, fused, tracks, now, timings)
 
     def start(self):
-        self.receiver.start()
-        if self.command_server:
+        self.receiver.start() # UDP 리시버 시작
+        if self.command_server: # 명령 서버 시작
             try:
                 self.command_server.start()
             except Exception as exc:
                 print(f"[CommandServer] failed to start: {exc}")
-        threading.Thread(target=self.main_loop, daemon=True).start()
+        threading.Thread(target=self.main_loop, daemon=True).start() # 메인 루프 시작
         print("[Fusion] server started")
 
 

@@ -8,6 +8,7 @@ from typing import Optional
 class CommandServer:
     """
     간단한 TCP 명령 서버. 각 연결은 JSON 한 줄을 보내고 응답을 받는다.
+    yaw/색상 명령 처리를 위해 RealtimeFusionServer에서 사용된다.
     """
 
     def __init__(self, host: str, port: int, command_queue: "queue.Queue[dict]", response_timeout: float = 2.0):

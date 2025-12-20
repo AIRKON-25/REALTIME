@@ -9,6 +9,10 @@ from utils.colors import normalize_color_label
 
 
 class UDPReceiverSingle:
+    """
+    엣지 디바이스 -> 인지서버
+    단일 포트에서 UDP로 BEV 라벨 데이터를 수신하는 리시버.
+    """
     def __init__(self, port: int, host: str = "0.0.0.0", max_bytes: int = 65507):
         self.host = host
         self.port = int(port)

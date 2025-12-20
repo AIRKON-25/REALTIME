@@ -7,6 +7,8 @@ import numpy as np
 
 class TrackBroadcaster:
     """
+    인지서버 -> carla/제어서버
+    매 프레임마다 tracks+extras 데이터를 json으로 해서 지정된 호스트/포트로 전송
     UDP/TCP 브로드캐스터.
     track 패킷 포맷:
     {
@@ -14,7 +16,7 @@ class TrackBroadcaster:
         "timestamp": unix_ts,
         "items": [
             {"id": tid, "class": cls, "center": [cx, cy, cz], "length": L,
-             "width": W, "yaw": yaw_deg, "pitch": pitch, "roll": roll,
+             "width": W, "yaw": yaw_deg, "velocity": [vx, vy], "speed": speed,
              "score": score, "sources": ["cam1", ...]}
         ]
     }
@@ -72,8 +74,6 @@ class TrackBroadcaster:
                     "yaw": yaw,
                     "velocity": [vx, vy],
                     "speed": float(speed_val),
-                    "pitch": float(extra.get("pitch", 0.0)),
-                    "roll": float(extra.get("roll", 0.0)),
                     "score": float(extra.get("score", 0.0)),
                     "sources": list(extra.get("source_cams", [])),
                     "color": extra.get("color"),
