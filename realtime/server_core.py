@@ -43,16 +43,14 @@ class RealtimeServer:
         ws_port: int = 9001,
     ):
         self.fps = fps
-        self.dt = 1.0 / max(1e-3, fps)
-        self.buffer_ttl = max(self.dt * 2.0, 1.0)
+        self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
+        self.buffer_ttl = max(self.dt * 2.0, 1.0) # 버퍼 유효 시간 초
         self.iou_thr = iou_cluster_thr
         self.track_meta: Dict[int, dict] = {}
         self.active_cams = set()
-        self.color_bias_strength = 0.3
-        self.color_bias_min_votes = 2
+        self.color_bias_strength = COLOR_BIAS_STRENGTH
+        self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
 
-        self._log_interval = 1.0
-        self._next_log_ts = 0.0
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
             try:
@@ -62,7 +60,7 @@ class RealtimeServer:
                 print(f"[WebSocketHub] init failed: {exc}")
                 self.ws_hub = None
 
-        self.receiver = UDPReceiverSingle(single_port)
+        self.inference_receiver = UDPReceiverSingle(single_port)
 
         self.cam_xy: Dict[str, Tuple[float, float]] = {} # 카메라 위치 로드... json으로 뺄까?
 
@@ -78,7 +76,7 @@ class RealtimeServer:
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
 
         self.tracker = SortTracker() # 기본 파라미터로 SortTracker 초기화
-        self._log_interval = 1.0
+    
         self._next_log_ts = 0.0
 
         self.command_queue: Optional[queue.Queue] = None
@@ -176,12 +174,15 @@ class RealtimeServer:
     def _should_log(self) -> bool:
         now = time.time()
         if now >= self._next_log_ts:
-            self._next_log_ts = now + self._log_interval
+            self._next_log_ts = now + 1.0
             return True
         return False
 
     def _log_pipeline(self, raw_stats: Dict[str, int], fused: List[dict], tracks: np.ndarray, timestamp: float,
                       timings: Optional[Dict[str, float]] = None):
+        """"
+        파이프라인 로그 출력
+        """
         total_raw = sum(raw_stats.values())
         fused_count = len(fused)
         track_count = int(len(tracks)) if tracks is not None else 0
@@ -217,7 +218,7 @@ class RealtimeServer:
                 continue
             entry = dq[-1]
             ts = float(entry.get("ts", 0.0) or 0.0)
-            if (now - ts) > self.buffer_ttl:
+            if (now - ts) > self.buffer_ttl: # 버퍼 유효시간 확인(너무 오래된 거 버림)
                 dq.clear()
                 continue
             for det in entry["dets"]:
@@ -314,6 +315,9 @@ class RealtimeServer:
         return {"status": "error", "message": f"unknown command '{cmd}'"}
 
     def _fuse_boxes(self, raw_detections: List[dict]) -> List[dict]:
+        """
+        클러스터링 및 융합
+        """
         if not raw_detections:
             return []
         boxes = np.array([[d["cls"], d["cx"], d["cy"], d["length"], d["width"], d["yaw"]] for d in raw_detections], dtype=float)
@@ -388,6 +392,9 @@ class RealtimeServer:
         }
 
     def _update_track_meta(self, matches: List[Tuple[int, int]], fused_list: List[dict], track_attrs: Dict[int, dict]):
+        """
+        트랙 메타데이터 업데이트
+        """
         active_ids = set(track_attrs.keys())
         self.track_meta = {tid: meta for tid, meta in self.track_meta.items() if tid in active_ids}
         for tid, attrs in track_attrs.items():
@@ -451,12 +458,13 @@ class RealtimeServer:
                 self.ws_hub.broadcast(snapshot)
 
     def main_loop(self):
-        timings: Dict[str, float] = {}
+        timings: Dict[str, float] = {} # 단계별 처리 시간 기록용
         last = time.time()
         while True:
             self._process_command_queue()
             try:
-                item = self.receiver.q.get_nowait()
+                # 인지 결과 수신
+                item = self.inference_receiver.q.get_nowait()
                 cam = item["cam"]
                 ts = float(item.get("ts", 0.0) or time.time())
                 dets = item["dets"]
@@ -465,7 +473,8 @@ class RealtimeServer:
                 self.buffer[cam].append({"ts": ts, "dets": dets})
             except queue.Empty:
                 pass
-
+            
+            # 메인 루프 주기 제어
             now = time.time()
             if now - last < self.dt:
                 time.sleep(0.005)
@@ -473,10 +482,10 @@ class RealtimeServer:
             last = now
 
             t0 = time.perf_counter()
-            raw_dets = self._gather_current()
+            raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cam","ts"...}, ...]
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
             t1 = time.perf_counter()
-            fused = self._fuse_boxes(raw_dets)
+            fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
             timings["fuse"] = (time.perf_counter() - t1) * 1000.0
 
             det_rows = []
@@ -499,7 +508,7 @@ class RealtimeServer:
             self._update_track_meta(self.tracker.get_latest_matches(), fused, track_attrs)
             self._broadcast_tracks(tracks, now)
 
-            if self._should_log():
+            if self._should_log(): # 1초에 한번 로그
                 stats = {}
                 for det in raw_dets:
                     cam = det.get("cam", "?")
@@ -507,7 +516,7 @@ class RealtimeServer:
                 self._log_pipeline(stats, fused, tracks, now, timings)
 
     def start(self):
-        self.receiver.start() # UDP 리시버 시작
+        self.inference_receiver.start() # 인지 결과 리시버 시작
         if self.command_server: # 명령 서버 시작
             try:
                 self.command_server.start()

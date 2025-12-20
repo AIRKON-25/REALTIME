@@ -18,7 +18,6 @@ from utils.colors import normalize_color_label
 from utils.tracking._constants import (
     DEFAULT_COLOR_LOCK_STREAK,
     DEFAULT_COLOR_PENALTY,
-    DEFAULT_CONFIRM_HITS,
     DEFAULT_IOU_THRESHOLD,
     DEFAULT_MAX_AGE,
     DEFAULT_MIN_HITS,
@@ -68,7 +67,7 @@ class Track:
     def __init__(
         self,
         bbox_init: np.ndarray,
-        confirm_hits: int = DEFAULT_CONFIRM_HITS,
+        min_hit: int = DEFAULT_MIN_HITS,
         color: Optional[str] = None,
         color_lock_streak: int = DEFAULT_COLOR_LOCK_STREAK,
         pos_process_noise_scale: float = POS_PROCESS_NOISE_SCALE,
@@ -121,7 +120,7 @@ class Track:
         self.age = 1
         self.state = TrackState.TENTATIVE
         self.history: List[np.ndarray] = []
-        self.confirm_hits = confirm_hits
+        self.min_hit = min_hit
 
         self.color_counts: Counter = Counter()
         self.current_color: Optional[str] = None
@@ -408,11 +407,9 @@ class SortTracker:
     def __init__(
         self,
         max_age: int = DEFAULT_MAX_AGE,
-        min_hits: int = DEFAULT_MIN_HITS,
         iou_threshold: float = DEFAULT_IOU_THRESHOLD,
         color_penalty: float = DEFAULT_COLOR_PENALTY,
         smooth_window: int = DEFAULT_SMOOTH_WINDOW,
-        color_lock_streak: int = DEFAULT_COLOR_LOCK_STREAK,
         pos_process_noise_scale: float = POS_PROCESS_NOISE_SCALE,
         pos_meas_noise_scale: float = POS_MEAS_NOISE_SCALE,
         yaw_process_noise_scale: float = YAW_PROCESS_NOISE_SCALE,
@@ -422,11 +419,9 @@ class SortTracker:
     ):
         self.tracks: List[Track] = []
         self.max_age = max_age
-        self.min_hits = min_hits
         self.iou_threshold = iou_threshold
         self.color_penalty = color_penalty
         self.smooth_window = max(1, smooth_window)
-        self.color_lock_streak = max(1, int(color_lock_streak))
         self.last_matches: List[Tuple[int, int]] = []
         self.pos_process_noise_scale = float(pos_process_noise_scale)
         self.pos_meas_noise_scale = float(pos_meas_noise_scale)
@@ -494,16 +489,8 @@ class SortTracker:
         for det_idx in unmatched_detections:
             color = det_colors[det_idx] if det_colors else None
             new_track = Track(
-                detections_carla[det_idx],
-                confirm_hits=self.min_hits,
+                bbox_init=detections_carla[det_idx],
                 color=color,
-                color_lock_streak=self.color_lock_streak,
-                pos_process_noise_scale=self.pos_process_noise_scale,
-                pos_meas_noise_scale=self.pos_meas_noise_scale,
-                yaw_process_noise_scale=self.yaw_process_noise_scale,
-                yaw_meas_noise_scale=self.yaw_meas_noise_scale,
-                size_process_noise_scale=self.size_process_noise_scale,
-                size_meas_noise_scale=self.size_meas_noise_scale,
             )
             self.tracks.append(new_track)
 

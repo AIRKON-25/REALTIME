@@ -26,7 +26,6 @@ STATE_HISTORY_SIZE = 8
 DEFAULT_SMOOTH_WINDOW = 5 # 최근 이만큼의 프레임을 반영해서 부드럽게 ㅇㅇ
 
 # Tracking defaults and shared thresholds
-DEFAULT_CONFIRM_HITS = 3
 DEFAULT_COLOR_LOCK_STREAK = 5
 DEFAULT_MAX_AGE = 3
 DEFAULT_MIN_HITS = 3
