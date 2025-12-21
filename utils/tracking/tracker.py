@@ -25,6 +25,8 @@ from utils.tracking._constants import (
     CAR_POS_PROCESS_NOISE,
     CAR_SIZE_MEAS_NOISE,
     CAR_SIZE_PROCESS_NOISE,
+    CAR_SMOOTH_WINDOW,
+    CAR_OUTPUT_EMA_ALPHA,
     CAR_YAW_MEAS_NOISE,
     CAR_YAW_PROCESS_NOISE,
     CLS_CAR_TO_OBS_ASPECT_RATIO_MAX,
@@ -150,7 +152,8 @@ class TrackerConfigCar(TrackerConfigBase):
         yaw_meas_noise_scale: float = CAR_YAW_MEAS_NOISE,
         size_process_noise_scale: float = CAR_SIZE_PROCESS_NOISE,
         size_meas_noise_scale: float = CAR_SIZE_MEAS_NOISE,
-        smooth_window: int = DEFAULT_SMOOTH_WINDOW,
+        smooth_window: int = CAR_SMOOTH_WINDOW,
+        output_ema_alpha: Optional[float] = CAR_OUTPUT_EMA_ALPHA,
     ):
         super().__init__(
             max_age=max_age,
@@ -163,7 +166,7 @@ class TrackerConfigCar(TrackerConfigBase):
             size_meas_noise_scale=size_meas_noise_scale,
             smooth_window=smooth_window,
             vel_damping=0.0,
-            output_ema_alpha=None,
+            output_ema_alpha=output_ema_alpha,
             jump_distance_gate=None,
             output_snap_eps=CAR_OUTPUT_SNAP_EPS,
             stop_speed_thresh=CAR_STOP_SPEED_THR,
