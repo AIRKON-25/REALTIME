@@ -61,6 +61,16 @@ from utils.tracking._constants import (
     YAW_MEAS_NOISE_SCALE,
     YAW_PERIOD_DEG,
     YAW_PROCESS_NOISE_SCALE,
+    OBSTACLE_OUTPUT_SNAP_EPS,
+    OBSTACLE_STOP_ALPHA_SCALE,
+    OBSTACLE_STOP_FRAMES,
+    OBSTACLE_STOP_Q_SCALE,
+    OBSTACLE_STOP_SPEED_THR,
+    CAR_OUTPUT_SNAP_EPS,
+    CAR_STOP_SPEED_THR,
+    CAR_STOP_ALPHA_SCALE,
+    CAR_STOP_FRAMES,
+    CAR_STOP_Q_SCALE,
 )
 
 
@@ -78,6 +88,11 @@ class TrackerConfigBase:
     vel_damping: float = 0.0
     output_ema_alpha: Optional[float] = None
     jump_distance_gate: Optional[float] = None
+    output_snap_eps: float = 0.0
+    stop_speed_thresh: float = 0.0
+    stop_frames: int = 0
+    stop_alpha_scale: float = 1.0
+    stop_q_scale: float = 1.0
 
 
 class TrackerConfigCar(TrackerConfigBase):
@@ -106,6 +121,11 @@ class TrackerConfigCar(TrackerConfigBase):
             vel_damping=0.0,
             output_ema_alpha=None,
             jump_distance_gate=None,
+            output_snap_eps=CAR_OUTPUT_SNAP_EPS,
+            stop_speed_thresh=CAR_STOP_SPEED_THR,
+            stop_frames=CAR_STOP_FRAMES,
+            stop_alpha_scale=CAR_STOP_ALPHA_SCALE,
+            stop_q_scale=CAR_STOP_Q_SCALE,
         )
 
 
@@ -124,6 +144,11 @@ class TrackerConfigObstacle(TrackerConfigBase):
         vel_damping: float = OBSTACLE_VEL_DAMPING,
         output_ema_alpha: Optional[float] = OBSTACLE_OUTPUT_EMA_ALPHA,
         jump_distance_gate: Optional[float] = OBSTACLE_JUMP_GATE_NORM_DIST,
+        output_snap_eps: float = OBSTACLE_OUTPUT_SNAP_EPS,
+        stop_speed_thresh: float = OBSTACLE_STOP_SPEED_THR,
+        stop_frames: int = OBSTACLE_STOP_FRAMES,
+        stop_alpha_scale: float = OBSTACLE_STOP_ALPHA_SCALE,
+        stop_q_scale: float = OBSTACLE_STOP_Q_SCALE,
     ):
         super().__init__(
             max_age=max_age,
@@ -138,6 +163,11 @@ class TrackerConfigObstacle(TrackerConfigBase):
             vel_damping=vel_damping,
             output_ema_alpha=output_ema_alpha,
             jump_distance_gate=jump_distance_gate,
+            output_snap_eps=output_snap_eps,
+            stop_speed_thresh=stop_speed_thresh,
+            stop_frames=stop_frames,
+            stop_alpha_scale=stop_alpha_scale,
+            stop_q_scale=stop_q_scale,
         )
 
 
@@ -202,6 +232,9 @@ class Track:
         )
         self.current_config: Optional[TrackerConfigBase] = None
         self._pos_base_R = self.kf_pos.R.copy()
+        self._base_Q_pos = self.kf_pos.Q.copy()
+        self._base_Q_yaw = self.kf_yaw.Q.copy()
+        self._base_Q_size = self.kf_length.Q.copy()
         self._ema_state: Optional[np.ndarray] = None
         if class_config:
             self.apply_config(class_config)
@@ -244,12 +277,15 @@ class Track:
         self.kf_pos.Q = np.eye(4) * POS_PROCESS_NOISE_SCALE * cfg.pos_process_noise_scale
         self.kf_pos.R = np.eye(2) * POS_MEAS_NOISE_SCALE * cfg.pos_meas_noise_scale
         self._pos_base_R = self.kf_pos.R.copy()
+        self._base_Q_pos = self.kf_pos.Q.copy()
         self.kf_yaw.Q = np.eye(2) * cfg.yaw_process_noise_scale
         self.kf_yaw.R = np.eye(1) * cfg.yaw_meas_noise_scale
+        self._base_Q_yaw = self.kf_yaw.Q.copy()
         self.kf_length.Q = np.eye(2) * cfg.size_process_noise_scale
         self.kf_length.R = np.eye(1) * cfg.size_meas_noise_scale
         self.kf_width.Q = np.eye(2) * cfg.size_process_noise_scale
         self.kf_width.R = np.eye(1) * cfg.size_meas_noise_scale
+        self._base_Q_size = self.kf_length.Q.copy()
 
     def predict(self, cfg: Optional[TrackerConfigBase] = None) -> None:
         if cfg:
@@ -268,6 +304,17 @@ class Track:
             damp = max(0.0, min(1.0, cfg.vel_damping))
             self.kf_pos.x[2, 0] *= (1.0 - damp)
             self.kf_pos.x[3, 0] *= (1.0 - damp)
+        if cfg and cfg.stop_q_scale < 1.0 and self._is_stopped(cfg):
+            scale = max(cfg.stop_q_scale, 0.0)
+            self.kf_pos.Q = self._base_Q_pos * scale
+            self.kf_yaw.Q = self._base_Q_yaw * scale
+            self.kf_length.Q = self._base_Q_size * scale
+            self.kf_width.Q = self._base_Q_size * scale
+        else:
+            self.kf_pos.Q = self._base_Q_pos
+            self.kf_yaw.Q = self._base_Q_yaw
+            self.kf_length.Q = self._base_Q_size
+            self.kf_width.Q = self._base_Q_size
 
         self.age += 1
         if self.state != TrackState.DELETED:
@@ -445,7 +492,7 @@ class Track:
             vy,
         ], dtype=float)
 
-    def get_state(self, smooth_window: int = 1, ema_alpha: Optional[float] = None) -> np.ndarray:
+    def get_state(self, smooth_window: int = 1, ema_alpha: Optional[float] = None, snap_eps: float = 0.0, stop_alpha_scale: float = 1.0, is_stopped: bool = False) -> np.ndarray:
         base_state = self._assemble_state()
         if smooth_window <= 1:
             out = base_state
@@ -475,12 +522,20 @@ class Track:
                     vel_vals[1],
                 ], dtype=float)
 
+        last_output = self._ema_state
+        if snap_eps > 0.0 and last_output is not None:
+            disp = math.hypot(out[1] - last_output[1], out[2] - last_output[2])
+            if disp <= snap_eps:
+                out = last_output
+
         if ema_alpha is None or ema_alpha <= 0.0 or ema_alpha >= 1.0:
             return out
+        alpha = ema_alpha
+        if is_stopped and stop_alpha_scale > 0.0:
+            alpha = max(min(alpha * stop_alpha_scale, 1.0), 0.0)
         if self._ema_state is None:
             self._ema_state = out.copy()
         else:
-            alpha = ema_alpha
             beta = 1.0 - alpha
             yaw_prev = self._ema_state[5]
             yaw_new = out[5]
@@ -490,6 +545,23 @@ class Track:
             blended[5] = blended_yaw
             self._ema_state = blended
         return self._ema_state
+
+    def _is_stopped(self, cfg: TrackerConfigBase) -> bool:
+        if cfg.stop_frames <= 0 or cfg.stop_speed_thresh <= 0.0:
+            return False
+        recent = list(self.history[-cfg.stop_frames:]) if self.history else []
+        if len(recent) < cfg.stop_frames:
+            return False
+        speeds = []
+        for st in recent:
+            if len(st) >= 8:
+                vx, vy = st[6], st[7]
+            else:
+                vx, vy = 0.0, 0.0
+            speeds.append(math.hypot(vx, vy))
+        if not speeds:
+            return False
+        return float(np.mean(speeds)) <= cfg.stop_speed_thresh
 
     def _enforce_forward_heading(self, current_xy): # 이동방향과 yaw 맞추기
         if self.heading_locked:
@@ -674,9 +746,13 @@ class SortTracker:
         for track in self.tracks:
             if track.state in (TrackState.CONFIRMED, TrackState.LOST):
                 cfg = self._config_for(track.cls)
+                stopped = track._is_stopped(cfg)
                 state = track.get_state(
                     smooth_window=cfg.smooth_window,
                     ema_alpha=cfg.output_ema_alpha,
+                    snap_eps=cfg.output_snap_eps,
+                    stop_alpha_scale=cfg.stop_alpha_scale,
+                    is_stopped=stopped,
                 )
                 output_results.append(np.array([track.id, *state], dtype=float))
 
@@ -768,6 +844,9 @@ class SortTracker:
             state_vec = track.get_state(
                 smooth_window=cfg.smooth_window,
                 ema_alpha=cfg.output_ema_alpha,
+                snap_eps=cfg.output_snap_eps,
+                stop_alpha_scale=cfg.stop_alpha_scale,
+                is_stopped=track._is_stopped(cfg),
             )
             items.append({
                 "id": track.id,
