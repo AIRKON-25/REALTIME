@@ -13,7 +13,7 @@ class UDPReceiverSingle:
     엣지 디바이스 -> 인지서버
     단일 포트에서 UDP로 BEV 라벨 데이터를 수신하는 리시버.
     """
-    def __init__(self, port: int, host: str = "0.0.0.0", max_bytes: int = 65507):
+    def __init__(self, port: int, host: str = "0.0.0.0", max_bytes: int = 65507, log_packets: bool = False):
         self.host = host
         self.port = int(port)
         self.max_bytes = max_bytes
@@ -21,6 +21,7 @@ class UDPReceiverSingle:
         self.th = None
         self.running = False
         self.q: "queue.Queue[dict]" = queue.Queue(maxsize=4096)
+        self.log_packets = log_packets
 
     def _log_packet(self, cam: str, dets: List[dict], meta: Optional[dict] = None):
         try:
@@ -82,7 +83,8 @@ class UDPReceiverSingle:
                 cam_id = int(msg.get("camera_id", 0) or 0)
                 cam = f"cam{cam_id}" if cam_id else "cam?"
                 dets = []
-                for it in msg.get("items", []):
+                items = msg.get("items", [])
+                for it in items:
                     cx, cy = it["center"]
                     dets.append({
                         "cls": int(it.get("class_id", 0)),
@@ -94,7 +96,8 @@ class UDPReceiverSingle:
                         "score": float(it.get("score", 0.0)),
                         "color_hex": it.get("color_hex"),
                     })
-                self._log_packet(cam, dets if dets else [], meta=msg)
+                if self.log_packets:
+                    self._log_packet(cam, dets if dets else [], meta=msg)
                 return cam, dets if dets else []
         except Exception:
             pass

@@ -50,6 +50,8 @@ class RealtimeServer:
         tracker_config_obstacle: Optional[TrackerConfigObstacle] = None,
         assoc_center_weight: Optional[float] = None,
         assoc_center_norm: Optional[float] = None,
+        log_pipeline: bool = True,
+        log_udp_packets: bool = False,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -68,6 +70,7 @@ class RealtimeServer:
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
         self._prev_tracks_for_cluster: Optional[np.ndarray] = None
         self.last_cluster_debug: Dict[str, int] = {}
+        self.log_pipeline = log_pipeline
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -78,7 +81,7 @@ class RealtimeServer:
                 print(f"[WebSocketHub] init failed: {exc}")
                 self.ws_hub = None
 
-        self.inference_receiver = UDPReceiverSingle(single_port)
+        self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
         self.cam_xy: Dict[str, Tuple[float, float]] = {} # 카메라 위치 로드... json으로 뺄까?
 
@@ -595,12 +598,12 @@ class RealtimeServer:
             self._broadcast_tracks(tracks, now)
             self._prev_tracks_for_cluster = tracks.copy() if tracks is not None and len(tracks) else None
 
-            if self._should_log(): # 1초에 한번 로그
+            if self.log_pipeline and self._should_log(): # 1초에 한번 로그
                 stats = {}
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
-                # self._log_pipeline(stats, fused, tracks, now, timings)
+                self._log_pipeline(stats, fused, tracks, now, timings)
                 if self.last_cluster_debug:
                     print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
                 tracker_metrics = self.tracker.get_last_metrics()
