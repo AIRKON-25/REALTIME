@@ -33,6 +33,15 @@ from utils.tracking._constants import (
     DEFAULT_MAX_AGE,
     DEFAULT_MIN_HITS,
     DEFAULT_SMOOTH_WINDOW,
+    LAST_CHANCE_ASPECT_RATIO_MAX,
+    LAST_CHANCE_CENTER_DIST_GATE_M,
+    LAST_CHANCE_COLOR_GATE,
+    LAST_CHANCE_DIR_DIFF_MAX_DEG,
+    LAST_CHANCE_DIST_WEIGHT,
+    LAST_CHANCE_IOU_WEIGHT,
+    LAST_CHANCE_LOOKBACK,
+    LAST_CHANCE_SIZE_RATIO_MAX,
+    LAST_CHANCE_SIZE_RATIO_MIN,
     FORWARD_HEADING_MIN_DIST,
     HEADING_ALIGN_MIN_DIST,
     HEADING_FLIP_THRESHOLD,
@@ -55,8 +64,29 @@ from utils.tracking._constants import (
     POS_INIT_COV_SCALE,
     POS_MEAS_NOISE_SCALE,
     POS_PROCESS_NOISE_SCALE,
+    REACTIVATE_ASPECT_RATIO_MAX,
+    REACTIVATE_CENTER_DIST_GATE_M,
+    REACTIVATE_DIR_DIFF_MAX_DEG,
+    REACTIVATE_GATE_COST_INF,
+    REACTIVATE_IOU_THRESHOLD,
+    REACTIVATE_SIZE_RATIO_MAX,
+    REACTIVATE_SIZE_RATIO_MIN,
+    REACTIVATE_SIZE_ROLLBACK_ENABLE,
+    REACTIVATE_SIZE_ROLLBACK_FRAMES,
+    REACTIVATE_SIZE_ROLLBACK_RATIO_MAX,
+    REACTIVATE_SIZE_ROLLBACK_RATIO_MIN,
+    REID_COLOR_LAMBDA,
+    REID_COLOR_MISMATCH_PENALTY,
+    REID_DIR_LAMBDA,
+    REID_DIR_SPEED_MIN,
+    REID_SIZE_EPS,
+    REID_SIZE_LAMBDA,
     SIZE_MEAS_NOISE_SCALE,
     SIZE_PROCESS_NOISE_SCALE,
+    SPLIT_GUARD_CLOSE_DIST_M,
+    SPLIT_GUARD_DIR_DIFF_MAX_DEG,
+    SPLIT_GUARD_ENABLE,
+    SPLIT_GUARD_FRAMES,
     STATE_HISTORY_SIZE,
     YAW_MEAS_NOISE_SCALE,
     YAW_PERIOD_DEG,
@@ -261,6 +291,9 @@ class Track:
         self.heading_locked: bool = False
         self.heading_lock_score: int = 0
         self.locked_heading: Optional[float] = None
+        self.reactivation_guard_frames: int = 0
+        self.reactivation_size_ref: Optional[Tuple[float, float]] = None
+        self.split_guard_frames: int = 0
     def _init_2d_kf(self, initial_value: float, Q_scale: float = 0.1, R_scale: float = 1.0) -> KalmanFilter:
         kf = KalmanFilter(dim_x=2, dim_z=1)
         kf.F = np.array([[1, 1], [0, 1]])
@@ -649,6 +682,36 @@ class SortTracker:
         )
         self.assoc_center_weight = max(0.0, assoc_center_weight)
         self.assoc_center_norm = max(assoc_center_norm, 1e-3)
+        self.reactivate_iou_threshold = REACTIVATE_IOU_THRESHOLD
+        self.reactivate_center_dist_gate_m = REACTIVATE_CENTER_DIST_GATE_M
+        self.reactivate_size_ratio_min = REACTIVATE_SIZE_RATIO_MIN
+        self.reactivate_size_ratio_max = REACTIVATE_SIZE_RATIO_MAX
+        self.reactivate_aspect_ratio_max = REACTIVATE_ASPECT_RATIO_MAX
+        self.reactivate_dir_diff_max_deg = REACTIVATE_DIR_DIFF_MAX_DEG
+        self.reactivate_gate_cost_inf = float(REACTIVATE_GATE_COST_INF)
+        self.reid_color_lambda = REID_COLOR_LAMBDA
+        self.reid_size_lambda = REID_SIZE_LAMBDA
+        self.reid_dir_lambda = REID_DIR_LAMBDA
+        self.reid_color_mismatch_penalty = REID_COLOR_MISMATCH_PENALTY
+        self.reid_dir_speed_min = REID_DIR_SPEED_MIN
+        self.reid_size_eps = REID_SIZE_EPS
+        self.last_chance_lookback = LAST_CHANCE_LOOKBACK
+        self.last_chance_center_dist_gate_m = LAST_CHANCE_CENTER_DIST_GATE_M
+        self.last_chance_size_ratio_min = LAST_CHANCE_SIZE_RATIO_MIN
+        self.last_chance_size_ratio_max = LAST_CHANCE_SIZE_RATIO_MAX
+        self.last_chance_aspect_ratio_max = LAST_CHANCE_ASPECT_RATIO_MAX
+        self.last_chance_dir_diff_max_deg = LAST_CHANCE_DIR_DIFF_MAX_DEG
+        self.last_chance_color_gate = LAST_CHANCE_COLOR_GATE
+        self.last_chance_dist_weight = LAST_CHANCE_DIST_WEIGHT
+        self.last_chance_iou_weight = LAST_CHANCE_IOU_WEIGHT
+        self.reactivate_size_rollback_enable = REACTIVATE_SIZE_ROLLBACK_ENABLE
+        self.reactivate_size_rollback_frames = REACTIVATE_SIZE_ROLLBACK_FRAMES
+        self.reactivate_size_rollback_ratio_min = REACTIVATE_SIZE_ROLLBACK_RATIO_MIN
+        self.reactivate_size_rollback_ratio_max = REACTIVATE_SIZE_ROLLBACK_RATIO_MAX
+        self.split_guard_enable = SPLIT_GUARD_ENABLE
+        self.split_guard_close_dist_m = SPLIT_GUARD_CLOSE_DIST_M
+        self.split_guard_frames = SPLIT_GUARD_FRAMES
+        self.split_guard_dir_diff_max_deg = SPLIT_GUARD_DIR_DIFF_MAX_DEG
         self.prev_meas_count: Optional[int] = None
         self.last_metrics: Dict[str, int] = {}
         self.debug_logging = debug_logging
@@ -659,9 +722,7 @@ class SortTracker:
         detections_carla: np.ndarray,
         detection_colors: Optional[List[Optional[str]]] = None,
     ) -> np.ndarray:
-        """
-        새로운 프레임의 검출 결과로 트래커 상태를 갱신하고, 현재 활성 트랙을 반환
-        """
+        """Update tracks with current detections and return active results."""
         if detections_carla is None:
             detections_carla = np.zeros((0, 6), dtype=float)
         detections_carla = np.asarray(detections_carla, dtype=float)
@@ -683,62 +744,124 @@ class SortTracker:
                 })
 
         active_tracks = [t for t in self.tracks if t.state != TrackState.DELETED]
+        if self.split_guard_enable:
+            self._update_split_guard(active_tracks)
 
-        matched_indices: List[Tuple[int, int]] = []
-        unmatched_detections = list(range(len(detections_carla)))
-        unmatched_tracks = list(range(len(active_tracks)))
-        det_colors = self._prepare_detection_colors(detection_colors, len(detections_carla)) # 색상정규화, 길이맞추기
+        det_colors = self._prepare_detection_colors(detection_colors, len(detections_carla))
+        unmatched_detections = set(range(len(detections_carla)))
 
-        centers_cost = None
+        matched_stage1: List[Tuple[int, int]] = []
+        matched_stage2: List[Tuple[int, int]] = []
+        matched_last_chance: List[Tuple[int, int]] = []
+        matched_track_ids: set = set()
         debug_reasons: Counter = Counter()
-        if len(detections_carla) > 0 and len(active_tracks) > 0:
-            iou_matrix = iou_batch(detections_carla, active_tracks, return_iou=True)
+        centers_cost = None
+        cost_stats_stage1 = None
+        cost_stats_stage2 = None
+        cost_stats_last = None
+        cost_shape_stage1 = (0, 0)
+
+        tracked_tracks = [t for t in active_tracks if t.state in (TrackState.CONFIRMED, TrackState.TENTATIVE)]
+        if len(detections_carla) > 0 and tracked_tracks:
+            iou_matrix = iou_batch(detections_carla, tracked_tracks, return_iou=True)
             cost_matrix = 1.0 - iou_matrix
             if self.assoc_center_weight > 0.0:
-                centers_cost = self._center_distance_cost(detections_carla, active_tracks)
+                centers_cost = self._center_distance_cost(detections_carla, tracked_tracks)
                 cost_matrix = (1.0 - self.assoc_center_weight) * cost_matrix + self.assoc_center_weight * centers_cost
-            for i, det_color in enumerate(det_colors):
-                if not det_color:
-                    continue
-                for j, track in enumerate(active_tracks):
-                    cost_matrix[i, j] += self._color_cost(det_color, track.get_color())
 
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
             for r, c in zip(row_ind, col_ind):
-                iou_val = iou_matrix[r, c] if 'iou_matrix' in locals() else 1.0 - cost_matrix[r, c]
-                cfg = self._config_for(active_tracks[c].cls)
+                iou_val = iou_matrix[r, c]
+                cfg = self._config_for(tracked_tracks[c].cls)
                 if iou_val < self.iou_threshold:
-                    debug_reasons["below_iou"] += 1
+                    debug_reasons["tracked_below_iou"] += 1
                     continue
                 if cfg.jump_distance_gate:
                     if centers_cost is None:
-                        centers_cost = self._center_distance_cost(detections_carla, active_tracks)
+                        centers_cost = self._center_distance_cost(detections_carla, tracked_tracks)
                     if centers_cost[r, c] > cfg.jump_distance_gate / self.assoc_center_norm:
-                        debug_reasons["jump_gate"] += 1
+                        debug_reasons["tracked_jump_gate"] += 1
                         continue
-                matched_indices.append((r, c))
-                if r in unmatched_detections:
-                    unmatched_detections.remove(r)
-                if c in unmatched_tracks:
-                    unmatched_tracks.remove(c)
-        cost_stats = None
-        if self.debug_logging:
-            if len(detections_carla) > 0 and len(active_tracks) > 0:
-                flat = cost_matrix.flatten()
-                if flat.size > 0:
-                    cost_stats = {
-                        "min": float(np.min(flat)),
-                        "mean": float(np.mean(flat)),
-                        "max": float(np.max(flat)),
-                    }
-            else:
-                cost_stats = {"min": None, "mean": None, "max": None}
+                matched_stage1.append((r, c))
+                unmatched_detections.discard(r)
+            flat = cost_matrix.flatten()
+            if flat.size > 0:
+                cost_stats_stage1 = {
+                    "min": float(np.min(flat)),
+                    "mean": float(np.mean(flat)),
+                    "max": float(np.max(flat)),
+                }
+            cost_shape_stage1 = cost_matrix.shape
+        elif self.debug_logging:
+            cost_stats_stage1 = {"min": None, "mean": None, "max": None}
 
-        for det_idx, track_idx in matched_indices:
-            track = active_tracks[track_idx]
+        for det_idx, track_idx in matched_stage1:
+            track = tracked_tracks[track_idx]
             color = det_colors[det_idx] if det_colors else None
             track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
             self.last_matches.append((track.id, det_idx))
+            matched_track_ids.add(track.id)
+
+        lost_tracks = [t for t in active_tracks if t.state == TrackState.LOST]
+        if unmatched_detections and lost_tracks:
+            det_indices = list(unmatched_detections)
+            det_subset = detections_carla[det_indices]
+            iou_matrix = iou_batch(det_subset, lost_tracks, return_iou=True)
+            cost_matrix = (1.0 - iou_matrix).astype(float, copy=True)
+            for i, det_idx in enumerate(det_indices):
+                det = detections_carla[det_idx]
+                det_color = det_colors[det_idx] if det_colors else None
+                det_dir = self._det_direction_deg(det)
+                for j, track in enumerate(lost_tracks):
+                    dir_gate = self._dir_gate_for_track(self.reactivate_dir_diff_max_deg, track)
+                    if not self._passes_match_gates(
+                        det,
+                        track,
+                        det_color,
+                        det_dir,
+                        dist_gate_m=self.reactivate_center_dist_gate_m,
+                        size_ratio_min=self.reactivate_size_ratio_min,
+                        size_ratio_max=self.reactivate_size_ratio_max,
+                        aspect_ratio_max=self.reactivate_aspect_ratio_max,
+                        dir_diff_max_deg=dir_gate,
+                        color_gate=False,
+                        debug_reasons=debug_reasons,
+                        reason_prefix="reactivate",
+                    ):
+                        cost_matrix[i, j] = self.reactivate_gate_cost_inf
+                        continue
+                    penalty = self.reid_color_lambda * self._reid_color_penalty(det_color, track.get_color())
+                    penalty += self.reid_size_lambda * self._reid_size_penalty(det, track)
+                    penalty += self.reid_dir_lambda * self._reid_dir_penalty(det_dir, track)
+                    cost_matrix[i, j] += penalty
+
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            for r, c in zip(row_ind, col_ind):
+                if cost_matrix[r, c] >= self.reactivate_gate_cost_inf:
+                    continue
+                if iou_matrix[r, c] < self.reactivate_iou_threshold:
+                    debug_reasons["reactivate_below_iou"] += 1
+                    continue
+                det_idx = det_indices[r]
+                matched_stage2.append((det_idx, c))
+                unmatched_detections.discard(det_idx)
+            flat = cost_matrix.flatten()
+            if flat.size > 0:
+                cost_stats_stage2 = {
+                    "min": float(np.min(flat)),
+                    "mean": float(np.mean(flat)),
+                    "max": float(np.max(flat)),
+                }
+        elif self.debug_logging:
+            cost_stats_stage2 = {"min": None, "mean": None, "max": None}
+
+        for det_idx, track_idx in matched_stage2:
+            track = lost_tracks[track_idx]
+            color = det_colors[det_idx] if det_colors else None
+            self._mark_reactivated(track)
+            track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
+            self.last_matches.append((track.id, det_idx))
+            matched_track_ids.add(track.id)
 
         measurement_drop = (
             self.prev_meas_count is not None
@@ -746,8 +869,9 @@ class SortTracker:
             and len(detections_carla) < len(active_tracks)
         )
 
-        for track_idx in unmatched_tracks:
-            track = active_tracks[track_idx]
+        for track in active_tracks:
+            if track.id in matched_track_ids:
+                continue
             cfg = self._config_for(track.cls)
             if measurement_drop and track.state == TrackState.CONFIRMED:
                 pass
@@ -758,10 +882,79 @@ class SortTracker:
                     track.state = TrackState.DELETED
             elif track.state == TrackState.TENTATIVE:
                 track.state = TrackState.DELETED
-            if self.debug_logging:
-                debug_reasons["unmatched_track"] += 1
 
-        for det_idx in unmatched_detections:
+        last_chance_tracks: List[Track] = []
+        if unmatched_detections and self.last_chance_lookback > 0:
+            last_chance_tracks = [
+                t for t in self.tracks
+                if t.state == TrackState.LOST and t.time_since_update <= self.last_chance_lookback
+            ]
+            if last_chance_tracks:
+                det_indices = list(unmatched_detections)
+                det_subset = detections_carla[det_indices]
+                iou_matrix = iou_batch(det_subset, last_chance_tracks, return_iou=True)
+                cost_matrix = np.full(
+                    (len(det_indices), len(last_chance_tracks)),
+                    self.reactivate_gate_cost_inf,
+                    dtype=float,
+                )
+                for i, det_idx in enumerate(det_indices):
+                    det = detections_carla[det_idx]
+                    det_color = det_colors[det_idx] if det_colors else None
+                    det_dir = self._det_direction_deg(det)
+                    for j, track in enumerate(last_chance_tracks):
+                        dir_gate = self._dir_gate_for_track(self.last_chance_dir_diff_max_deg, track)
+                        if not self._passes_match_gates(
+                            det,
+                            track,
+                            det_color,
+                            det_dir,
+                            dist_gate_m=self.last_chance_center_dist_gate_m,
+                            size_ratio_min=self.last_chance_size_ratio_min,
+                            size_ratio_max=self.last_chance_size_ratio_max,
+                            aspect_ratio_max=self.last_chance_aspect_ratio_max,
+                            dir_diff_max_deg=dir_gate,
+                            color_gate=self.last_chance_color_gate,
+                            debug_reasons=debug_reasons,
+                            reason_prefix="last_chance",
+                        ):
+                            continue
+                        dist = self._center_distance_m(det, track)
+                        dist_norm = dist / max(self.last_chance_center_dist_gate_m, self.reid_size_eps)
+                        iou_cost = 1.0 - iou_matrix[i, j]
+                        cost_matrix[i, j] = (
+                            self.last_chance_dist_weight * dist_norm
+                            + self.last_chance_iou_weight * iou_cost
+                        )
+
+                row_ind, col_ind = linear_sum_assignment(cost_matrix)
+                for r, c in zip(row_ind, col_ind):
+                    if cost_matrix[r, c] >= self.reactivate_gate_cost_inf:
+                        continue
+                    det_idx = det_indices[r]
+                    matched_last_chance.append((det_idx, c))
+                    unmatched_detections.discard(det_idx)
+                flat = cost_matrix.flatten()
+                if flat.size > 0:
+                    cost_stats_last = {
+                        "min": float(np.min(flat)),
+                        "mean": float(np.mean(flat)),
+                        "max": float(np.max(flat)),
+                    }
+        elif self.debug_logging:
+            cost_stats_last = {"min": None, "mean": None, "max": None}
+
+        for det_idx, track_idx in matched_last_chance:
+            track = last_chance_tracks[track_idx]
+            color = det_colors[det_idx] if det_colors else None
+            self._mark_reactivated(track)
+            track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
+            self.last_matches.append((track.id, det_idx))
+            matched_track_ids.add(track.id)
+
+        self._apply_reactivation_size_guard(debug_reasons)
+
+        for det_idx in list(unmatched_detections):
             color = det_colors[det_idx] if det_colors else None
             cfg = self._config_for(detections_carla[det_idx][0] if len(detections_carla[det_idx]) > 0 else None)
             new_track = Track(
@@ -787,24 +980,35 @@ class SortTracker:
                 )
                 output_results.append(np.array([track.id, *state], dtype=float))
 
+        unmatched_track_ids = [
+            int(track.id) for track in self.tracks
+            if track.state != TrackState.DELETED and track.id not in matched_track_ids
+        ]
         self.last_metrics = {
             "num_tracks": len(active_tracks),
             "num_measurements": len(detections_carla),
-            "num_matched": len(matched_indices),
-            "num_unmatched_tracks": len(unmatched_tracks),
+            "num_matched": len(matched_stage1) + len(matched_stage2) + len(matched_last_chance),
+            "num_matched_stage1": len(matched_stage1),
+            "num_matched_stage2": len(matched_stage2),
+            "num_matched_last_chance": len(matched_last_chance),
+            "num_unmatched_tracks": len(unmatched_track_ids),
             "num_unmatched_measurements": len(unmatched_detections),
         }
         self.prev_meas_count = len(detections_carla)
         if self.debug_logging:
             self.last_debug_info = {
                 "predicted_tracks": predicted_states,
-                "matched": [(int(active_tracks[c].id), int(r)) for r, c in matched_indices],
-                "unmatched_tracks": [int(active_tracks[idx].id) for idx in unmatched_tracks],
-                "unmatched_detections": unmatched_detections.copy(),
+                "matched": [(int(tid), int(det_idx)) for tid, det_idx in self.last_matches],
+                "matched_stage1": [(int(tracked_tracks[c].id), int(r)) for r, c in matched_stage1],
+                "matched_stage2": [(int(lost_tracks[c].id), int(det_idx)) for det_idx, c in matched_stage2],
+                "matched_last_chance": [(int(last_chance_tracks[c].id), int(det_idx)) for det_idx, c in matched_last_chance],
+                "unmatched_tracks": unmatched_track_ids,
+                "unmatched_detections": sorted(unmatched_detections),
                 "unmatched_reasons": dict(debug_reasons),
-                "cost_stats": cost_stats,
-                "cost_matrix_shape": cost_matrix.shape if 'cost_matrix' in locals() else (0, 0),
-                "cost_matrix_sample": cost_matrix.tolist() if 'cost_matrix' in locals() and cost_matrix.size <= 100 else None,
+                "cost_stats": cost_stats_stage1,
+                "cost_stats_stage2": cost_stats_stage2,
+                "cost_stats_last_chance": cost_stats_last,
+                "cost_matrix_shape": cost_shape_stage1,
             }
         else:
             self.last_debug_info = {}
@@ -844,6 +1048,188 @@ class SortTracker:
                 dist = math.hypot(det[1] - pred_xc, det[2] - pred_yc) / norm
                 cost[i, j] = float(dist)
         return cost
+
+    def _center_distance_m(self, det: np.ndarray, track: "Track") -> float:
+        pred_xc, pred_yc = track.kf_pos.x[:2].flatten()
+        return float(math.hypot(det[1] - pred_xc, det[2] - pred_yc))
+
+    def _track_direction_deg(self, track: "Track") -> Optional[float]:
+        vx, vy = track.get_velocity()
+        speed = math.hypot(vx, vy)
+        if speed >= self.reid_dir_speed_min:
+            return wrap_deg(math.degrees(math.atan2(vy, vx)))
+        yaw = float(track.car_yaw)
+        if not math.isfinite(yaw):
+            return None
+        return wrap_deg(yaw)
+
+    def _det_direction_deg(self, det: np.ndarray) -> Optional[float]:
+        if det is None or len(det) < 6:
+            return None
+        yaw = float(det[5])
+        if not math.isfinite(yaw):
+            return None
+        return wrap_deg(yaw)
+
+    def _dir_gate_for_track(self, base_gate: float, track: "Track") -> float:
+        gate = base_gate
+        if self.split_guard_enable and track.split_guard_frames > 0 and self.split_guard_dir_diff_max_deg > 0.0:
+            if gate > 0.0:
+                gate = min(gate, self.split_guard_dir_diff_max_deg)
+            else:
+                gate = self.split_guard_dir_diff_max_deg
+        return gate
+
+    def _size_ratio_ok(self, det: np.ndarray, track: "Track", ratio_min: float, ratio_max: float) -> bool:
+        if ratio_min <= 0.0 or ratio_max <= 0.0:
+            return True
+        eps = self.reid_size_eps
+        det_l = max(float(det[3]), eps)
+        det_w = max(float(det[4]), eps)
+        tr_l = max(float(track.car_length), eps)
+        tr_w = max(float(track.car_width), eps)
+        ratio_l = det_l / tr_l
+        ratio_w = det_w / tr_w
+        return ratio_min <= ratio_l <= ratio_max and ratio_min <= ratio_w <= ratio_max
+
+    def _aspect_ratio_ok(self, det: np.ndarray, track: "Track", max_ratio: float) -> bool:
+        if max_ratio <= 0.0:
+            return True
+        eps = self.reid_size_eps
+        det_l = max(float(det[3]), eps)
+        det_w = max(float(det[4]), eps)
+        tr_l = max(float(track.car_length), eps)
+        tr_w = max(float(track.car_width), eps)
+        det_ar = det_l / max(det_w, eps)
+        tr_ar = tr_l / max(tr_w, eps)
+        ratio = det_ar / max(tr_ar, eps)
+        ratio = max(ratio, 1.0 / max(ratio, eps))
+        return ratio <= max_ratio
+
+    def _passes_match_gates(
+        self,
+        det: np.ndarray,
+        track: "Track",
+        det_color: Optional[str],
+        det_dir: Optional[float],
+        dist_gate_m: float,
+        size_ratio_min: float,
+        size_ratio_max: float,
+        aspect_ratio_max: float,
+        dir_diff_max_deg: float,
+        color_gate: bool,
+        debug_reasons: Optional[Counter] = None,
+        reason_prefix: str = "",
+    ) -> bool:
+        if dist_gate_m > 0.0:
+            dist = self._center_distance_m(det, track)
+            if dist > dist_gate_m:
+                if debug_reasons is not None:
+                    debug_reasons[f"{reason_prefix}_dist_gate"] += 1
+                return False
+        if not self._size_ratio_ok(det, track, size_ratio_min, size_ratio_max):
+            if debug_reasons is not None:
+                debug_reasons[f"{reason_prefix}_size_gate"] += 1
+            return False
+        if not self._aspect_ratio_ok(det, track, aspect_ratio_max):
+            if debug_reasons is not None:
+                debug_reasons[f"{reason_prefix}_aspect_gate"] += 1
+            return False
+        if dir_diff_max_deg > 0.0:
+            track_dir = self._track_direction_deg(track)
+            if det_dir is not None and track_dir is not None:
+                diff = abs(wrap_deg(det_dir - track_dir))
+                if diff > dir_diff_max_deg:
+                    if debug_reasons is not None:
+                        debug_reasons[f"{reason_prefix}_dir_gate"] += 1
+                    return False
+        if color_gate:
+            track_color = track.get_color()
+            if det_color and track_color and det_color != track_color:
+                if debug_reasons is not None:
+                    debug_reasons[f"{reason_prefix}_color_gate"] += 1
+                return False
+        return True
+
+    def _reid_color_penalty(self, det_color: Optional[str], track_color: Optional[str]) -> float:
+        if not det_color or not track_color:
+            return 0.0
+        if det_color == track_color:
+            return 0.0
+        return float(self.reid_color_mismatch_penalty)
+
+    def _reid_size_penalty(self, det: np.ndarray, track: "Track") -> float:
+        eps = self.reid_size_eps
+        det_l = max(float(det[3]), eps)
+        det_w = max(float(det[4]), eps)
+        tr_l = max(float(track.car_length), eps)
+        tr_w = max(float(track.car_width), eps)
+        ratio_l = det_l / tr_l
+        ratio_w = det_w / tr_w
+        return 0.5 * (abs(math.log(ratio_l)) + abs(math.log(ratio_w)))
+
+    def _reid_dir_penalty(self, det_dir: Optional[float], track: "Track") -> float:
+        if det_dir is None:
+            return 0.0
+        track_dir = self._track_direction_deg(track)
+        if track_dir is None:
+            return 0.0
+        diff = abs(wrap_deg(det_dir - track_dir))
+        return diff / float(YAW_PERIOD_DEG)
+
+    def _mark_reactivated(self, track: "Track") -> None:
+        if not self.reactivate_size_rollback_enable or self.reactivate_size_rollback_frames <= 0:
+            return
+        track.reactivation_guard_frames = self.reactivate_size_rollback_frames
+        track.reactivation_size_ref = (float(track.car_length), float(track.car_width))
+
+    def _apply_reactivation_size_guard(self, debug_reasons: Optional[Counter] = None) -> None:
+        if not self.reactivate_size_rollback_enable or self.reactivate_size_rollback_frames <= 0:
+            return
+        for track in self.tracks:
+            if track.reactivation_guard_frames <= 0:
+                continue
+            ref = track.reactivation_size_ref
+            if not ref:
+                track.reactivation_guard_frames = max(track.reactivation_guard_frames - 1, 0)
+                continue
+            ref_l, ref_w = ref
+            eps = self.reid_size_eps
+            ratio_l = max(float(track.car_length), eps) / max(float(ref_l), eps)
+            ratio_w = max(float(track.car_width), eps) / max(float(ref_w), eps)
+            if (
+                ratio_l < self.reactivate_size_rollback_ratio_min
+                or ratio_l > self.reactivate_size_rollback_ratio_max
+                or ratio_w < self.reactivate_size_rollback_ratio_min
+                or ratio_w > self.reactivate_size_rollback_ratio_max
+            ):
+                track.state = TrackState.LOST
+                track.time_since_update = max(track.time_since_update, 1)
+                track.reactivation_guard_frames = 0
+                track.reactivation_size_ref = None
+                if debug_reasons is not None:
+                    debug_reasons["reactivate_size_rollback"] += 1
+                continue
+            track.reactivation_guard_frames -= 1
+            if track.reactivation_guard_frames <= 0:
+                track.reactivation_size_ref = None
+
+    def _update_split_guard(self, tracks: List["Track"]) -> None:
+        if not self.split_guard_enable or self.split_guard_frames <= 0:
+            return
+        for track in tracks:
+            if track.split_guard_frames > 0:
+                track.split_guard_frames -= 1
+        candidates = [t for t in tracks if t.state in (TrackState.CONFIRMED, TrackState.TENTATIVE)]
+        for i in range(len(candidates)):
+            ti = candidates[i]
+            xi, yi = ti.kf_pos.x[:2].flatten()
+            for j in range(i + 1, len(candidates)):
+                tj = candidates[j]
+                xj, yj = tj.kf_pos.x[:2].flatten()
+                if math.hypot(xi - xj, yi - yj) <= self.split_guard_close_dist_m:
+                    ti.split_guard_frames = max(ti.split_guard_frames, self.split_guard_frames)
+                    tj.split_guard_frames = max(tj.split_guard_frames, self.split_guard_frames)
 
     def get_latest_matches(self) -> List[Tuple[int, int]]:
         return list(self.last_matches)
