@@ -7,13 +7,14 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 
 from utils.colors import normalize_color_label
-from utils.tracking.geometry import aabb_iou_axis_aligned, wrap_deg
+from utils.tracking.geometry import aabb_iou_axis_aligned, nearest_equivalent_deg, wrap_deg
 from utils.tracking._constants import (
     COLOR_BONUS,
     COLOR_PENALTY,
     IOU_CLUSTER_THR,
     IOU_FALLBACK_CENTER_RATIO,
     IOU_FALLBACK_SIZE_RATIO_MAX,
+    YAW_PERIOD_DEG,
 )
 
 
@@ -84,6 +85,11 @@ def _size_ratio_mismatch(b1: np.ndarray, b2: np.ndarray, ratio_max: float) -> bo
     ratio_l = max(l1, l2) / max(min(l1, l2), eps)
     ratio_w = max(w1, w2) / max(min(w1, w2), eps)
     return ratio_l > ratio_max or ratio_w > ratio_max
+
+
+def _yaw_diff_deg(yaw_a: float, yaw_b: float, period_deg: float) -> float:
+    aligned = nearest_equivalent_deg(yaw_b, yaw_a, period=period_deg)
+    return abs(wrap_deg(float(yaw_a) - float(aligned)))
 
 
 def _best_track_matches(
@@ -273,7 +279,10 @@ def cluster_by_aabb_iou(
                 continue
             is_obstacle_pair = (cls_a in OBSTACLE_CLASSES) and (cls_b in OBSTACLE_CLASSES)
             if not is_obstacle_pair:
-                if abs(wrap_deg(float(b1[4]) - float(b2[4]))) > cfg.yaw_diff_gate:
+                yaw_period = 360.0
+                if (cls_a in CAR_CLASSES) or (cls_b in CAR_CLASSES):
+                    yaw_period = YAW_PERIOD_DEG
+                if _yaw_diff_deg(float(b1[4]), float(b2[4]), yaw_period) > cfg.yaw_diff_gate:
                     debug_counts["yaw_gate"] += 1
                     continue
             neighbors[i].append(j)
