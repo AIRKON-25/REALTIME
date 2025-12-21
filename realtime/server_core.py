@@ -20,8 +20,8 @@ from utils.colors import (
 from utils.tracking.cluster import ClassMergePolicy, ClusterConfig, cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.geometry import aabb_iou_axis_aligned
-from utils.tracking.tracker import SortTracker
-from utils.tracking._constants import IOU_CLUSTER_THR
+from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
+from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
 from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
 
 class RealtimeServer:
@@ -46,6 +46,10 @@ class RealtimeServer:
         cluster_config: Optional[ClusterConfig] = None,
         class_merge_policy: ClassMergePolicy = ClassMergePolicy.STRICT, # 차-장애물 머지 허용하려면 ClassMergePolicy.ALLOW_CAR_OBSTACLE
         enable_cluster_split: bool = False, # 클러스터 분할 허용하려면 True
+        tracker_config_car: Optional[TrackerConfigCar] = None,
+        tracker_config_obstacle: Optional[TrackerConfigObstacle] = None,
+        assoc_center_weight: Optional[float] = None,
+        assoc_center_norm: Optional[float] = None,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -89,7 +93,17 @@ class RealtimeServer:
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
 
-        self.tracker = SortTracker() # 기본 파라미터로 SortTracker 초기화
+        car_cfg = tracker_config_car or TrackerConfigCar()
+        obs_cfg = tracker_config_obstacle or TrackerConfigObstacle()
+        assoc_w = assoc_center_weight if assoc_center_weight is not None else ASSOC_CENTER_WEIGHT
+        assoc_norm = assoc_center_norm if assoc_center_norm is not None else ASSOC_CENTER_NORM
+        self.tracker = SortTracker(
+            car_config=car_cfg,
+            obstacle_config=obs_cfg,
+            assoc_center_weight=assoc_w,
+            assoc_center_norm=assoc_norm,
+        ) # 기본 파라미터로 SortTracker 초기화
+        self.last_tracker_metrics: Dict[str, int] = {}
     
         self._next_log_ts = 0.0
 
@@ -589,6 +603,9 @@ class RealtimeServer:
                 # self._log_pipeline(stats, fused, tracks, now, timings)
                 if self.last_cluster_debug:
                     print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
+                tracker_metrics = self.tracker.get_last_metrics()
+                if tracker_metrics:
+                    print(f"[TrackerMetrics] {json.dumps(tracker_metrics, ensure_ascii=False)}")
 
     def start(self):
         self.inference_receiver.start() # 인지 결과 리시버 시작
