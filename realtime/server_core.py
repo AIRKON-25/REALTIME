@@ -75,6 +75,13 @@ class RealtimeServer:
         self._other_id_pool: List[int] = []
         self._next_other_id = self.car_id_max + 1
         self._track_id_map: Dict[int, int] = {}
+        self._external_to_internal: Dict[int, int] = {}
+        self._released_external: Dict[int, dict] = {}
+        self._track_state_cache: Dict[int, dict] = {}
+        self._reid_keep_secs = 2.0
+        self._reid_dist_gate_m = 4.0
+        self._reid_color_bonus = 0.6
+        self._reid_color_penalty = 1.0
         self.active_cams = set()
         self.color_bias_strength = COLOR_BIAS_STRENGTH
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
@@ -158,21 +165,106 @@ class RealtimeServer:
         ext_id = self._track_id_map.pop(internal_id, None)
         if ext_id is None:
             return
+        self._external_to_internal.pop(ext_id, None)
         if ext_id <= self.car_id_max:
             heapq.heappush(self._car_id_pool, ext_id)
         else:
             heapq.heappush(self._other_id_pool, ext_id)
 
-    def _map_track_ids(self, tracks: np.ndarray) -> Tuple[np.ndarray, Dict[int, dict]]:
+    def _stash_released_id(self, internal_id: int, now: float) -> None:
+        ext_id = self._track_id_map.pop(internal_id, None)
+        if ext_id is None:
+            return
+        self._external_to_internal.pop(ext_id, None)
+        info = self._track_state_cache.pop(internal_id, None)
+        is_car = bool(info) and int(info.get("cls", 1)) == 0
+        if ext_id <= self.car_id_max and is_car:
+            self._released_external[ext_id] = {
+                "ts": now,
+                "cls": 0,
+                "cx": float(info.get("cx", 0.0)),
+                "cy": float(info.get("cy", 0.0)),
+                "color": info.get("color"),
+            }
+            return
+        if ext_id <= self.car_id_max:
+            heapq.heappush(self._car_id_pool, ext_id)
+        else:
+            heapq.heappush(self._other_id_pool, ext_id)
+
+    def _prune_released_ids(self, now: float) -> None:
+        if self._reid_keep_secs <= 0.0:
+            for ext_id in list(self._released_external.keys()):
+                if ext_id <= self.car_id_max:
+                    heapq.heappush(self._car_id_pool, ext_id)
+                else:
+                    heapq.heappush(self._other_id_pool, ext_id)
+            self._released_external.clear()
+            return
+        for ext_id, info in list(self._released_external.items()):
+            if now - float(info.get("ts", 0.0)) <= self._reid_keep_secs:
+                continue
+            self._released_external.pop(ext_id, None)
+            if ext_id <= self.car_id_max:
+                heapq.heappush(self._car_id_pool, ext_id)
+            else:
+                heapq.heappush(self._other_id_pool, ext_id)
+
+    def _map_track_ids(self, tracks: np.ndarray, ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
+        now = float(ts) if ts is not None else time.time()
+        self._prune_released_ids(now)
         if tracks is None or len(tracks) == 0:
             for tid in list(self._track_id_map.keys()):
-                self._release_external_id(tid)
+                self._stash_released_id(tid, now)
+            self._external_to_internal = {}
             return tracks, {}
 
         active_ids = {int(row[0]) for row in tracks}
         for tid in list(self._track_id_map.keys()):
             if tid not in active_ids:
-                self._release_external_id(tid)
+                self._stash_released_id(tid, now)
+
+        new_track_rows = []
+        for row in tracks:
+            internal_id = int(row[0])
+            if internal_id in self._track_id_map:
+                continue
+            cls = int(row[1]) if len(row) > 1 else 0
+            meta = self.track_meta.get(internal_id, {})
+            color = normalize_color_label(meta.get("color"))
+            if not color:
+                color = hex_to_color_label(meta.get("color_hex"))
+            new_track_rows.append((internal_id, cls, float(row[2]), float(row[3]), color))
+
+        if self._released_external:
+            pairs = []
+            for internal_id, cls, cx, cy, color in new_track_rows:
+                if cls != 0:
+                    continue
+                for ext_id, info in self._released_external.items():
+                    if info.get("cls") != 0:
+                        continue
+                    dist = float(np.hypot(cx - float(info.get("cx", 0.0)), cy - float(info.get("cy", 0.0))))
+                    if dist > self._reid_dist_gate_m:
+                        continue
+                    cost = dist
+                    info_color = info.get("color")
+                    if color and info_color:
+                        if color == info_color:
+                            cost *= self._reid_color_bonus
+                        else:
+                            cost += self._reid_color_penalty
+                    pairs.append((cost, internal_id, ext_id))
+            pairs.sort(key=lambda v: v[0])
+            used_internal = set()
+            used_external = set()
+            for cost, internal_id, ext_id in pairs:
+                if internal_id in used_internal or ext_id in used_external:
+                    continue
+                self._track_id_map[internal_id] = ext_id
+                used_internal.add(internal_id)
+                used_external.add(ext_id)
+                self._released_external.pop(ext_id, None)
 
         id_map: Dict[int, int] = {}
         for row in tracks:
@@ -194,6 +286,25 @@ class RealtimeServer:
                 ext_id = self._assign_external_id(True)
                 self._track_id_map[internal_id] = ext_id
             id_map[internal_id] = ext_id
+
+        self._external_to_internal = {ext: internal for internal, ext in id_map.items()}
+
+        new_cache: Dict[int, dict] = {}
+        for row in tracks:
+            internal_id = int(row[0])
+            cls = int(row[1]) if len(row) > 1 else 0
+            meta = self.track_meta.get(internal_id, {})
+            color = normalize_color_label(meta.get("color"))
+            if not color:
+                color = hex_to_color_label(meta.get("color_hex"))
+            new_cache[internal_id] = {
+                "ts": now,
+                "cls": cls,
+                "cx": float(row[2]),
+                "cy": float(row[3]),
+                "color": color,
+            }
+        self._track_state_cache = new_cache
 
         mapped = tracks.copy()
         for idx, row in enumerate(tracks):
@@ -354,6 +465,15 @@ class RealtimeServer:
                 except queue.Full:
                     pass
 
+    def _resolve_external_track_id(self, external_id: int) -> Optional[int]:
+        internal_id = self._external_to_internal.get(external_id)
+        if internal_id is not None:
+            return internal_id
+        if external_id in self._track_id_map:
+            return external_id
+        return None
+
+
     def _handle_command_item(self, item: dict) -> dict: 
         """
         단일 명령 처리 yaw/색상 명령 처리
@@ -368,12 +488,15 @@ class RealtimeServer:
                 tid = int(track_id)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "track_id must be int"}
+            resolved_id = self._resolve_external_track_id(tid)
+            if resolved_id is None:
+                return {"status": "error", "message": f"track {tid} not found"}
             delta = payload.get("delta", 180.0)
             try:
                 delta = float(delta)
             except (TypeError, ValueError):
                 delta = 180.0
-            flipped = self.tracker.force_flip_yaw(tid, offset_deg=delta)
+            flipped = self.tracker.force_flip_yaw(resolved_id, offset_deg=delta)
             if flipped:
                 print(f"[Command] flipped track {tid} yaw by {delta:.1f}°")
                 return {"status": "ok", "track_id": tid, "delta": delta}
@@ -386,6 +509,9 @@ class RealtimeServer:
                 tid = int(track_id)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "track_id must be int"}
+            resolved_id = self._resolve_external_track_id(tid)
+            if resolved_id is None:
+                return {"status": "error", "message": f"track {tid} not found"}
             raw_color = payload.get("color")
             normalized_color = normalize_color_label(raw_color)
             if raw_color is not None and normalized_color is None:
@@ -393,7 +519,7 @@ class RealtimeServer:
                 if raw_str and raw_str != "none":
                     return {"status": "error", "message": f"invalid color '{raw_color}'"}
                 normalized_color = None
-            updated = self.tracker.force_set_color(tid, normalized_color)
+            updated = self.tracker.force_set_color(resolved_id, normalized_color)
             if updated:
                 print(f"[Command] set track {tid} color -> {normalized_color}")
                 return {"status": "ok", "track_id": tid, "color": normalized_color}
@@ -406,18 +532,29 @@ class RealtimeServer:
                 tid = int(track_id)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "track_id must be int"}
+            resolved_id = self._resolve_external_track_id(tid)
+            if resolved_id is None:
+                return {"status": "error", "message": f"track {tid} not found"}
             raw_yaw = payload.get("yaw")
             try:
                 yaw_val = float(raw_yaw)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "yaw must be float"}
-            updated = self.tracker.force_set_yaw(tid, yaw_val)
+            updated = self.tracker.force_set_yaw(resolved_id, yaw_val)
             if updated:
                 print(f"[Command] set track {tid} yaw -> {yaw_val:.1f}°")
                 return {"status": "ok", "track_id": tid, "yaw": yaw_val}
             return {"status": "error", "message": f"track {tid} not found"}
         if cmd == "list_tracks":
             tracks = self.tracker.list_tracks()
+            for item in tracks:
+                try:
+                    internal_id = int(item.get("id"))
+                except Exception:
+                    continue
+                ext_id = self._track_id_map.get(internal_id)
+                if ext_id is not None:
+                    item["id"] = ext_id
             return {"status": "ok", "tracks": tracks, "count": len(tracks)}
         return {"status": "error", "message": f"unknown command '{cmd}'"}
 
@@ -599,7 +736,7 @@ class RealtimeServer:
         """
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
-        mapped_tracks, mapped_meta = self._map_track_ids(tracks)
+        mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
         if self.track_tx:
             self.track_tx.send(mapped_tracks, mapped_meta, ts)
         if self.carla_tx:
