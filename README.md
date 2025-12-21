@@ -2,13 +2,15 @@
 실시간에서 동작하는 코드
 
 원격 접속을 한다 cam1: 192.168.0.101, cam3: 192.168.0.103  
-python -m server --conf 0.2 --homography H\cam1_H.json --udp-enable --weights tensorrt\yolo11m_fp16_real_ces_v3.engine --camera-id 1 --udp-host ~  
+python -m edge --conf 0.2 --homography H\cam1_H.json --udp-enable --weights tensorrt\yolo11m_fp16_real_ces_v3.engine --camera-id 1 --udp-host ~  
   
-python -m server --conf 0.2 --homography H\cam3_H.json --udp-enable --weights tensorrt\yolo11m_fp16_real_ces_v3.engine --camera-id 3 --udp-host ~  
+python -m edge --conf 0.2 --homography H\cam3_H.json --udp-enable --weights tensorrt\yolo11m_fp16_real_ces_v3.engine --camera-id 3 --udp-host ~  
   
 ==============  
 ### server
-python server.py --tx-host --tx-port  
+python server.py --tx-host --tx-port --log-udp-packets --no-log-pipeline    
+--log-udp-packets 주면 엣지에서 잘 오는지 확인하는 로그 켜짐  
+--no-log-pipeline 주면 트래킹까지 무사히 마치고 제어컴에 뭘 넘긴건지 확인하는 로그 꺼짐  
 
 ### yaw/color 수동 수정  
 "cmd": ["flip_yaw", "set_color", "set_yaw", "list_tracks"] 중에 골라쓰면 됨  
