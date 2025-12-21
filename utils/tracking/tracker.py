@@ -1,6 +1,6 @@
 import math
 import os
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -27,6 +27,20 @@ from utils.tracking._constants import (
     CAR_SIZE_PROCESS_NOISE,
     CAR_YAW_MEAS_NOISE,
     CAR_YAW_PROCESS_NOISE,
+    CLS_CAR_TO_OBS_ASPECT_RATIO_MAX,
+    CLS_CAR_TO_OBS_CENTER_DIST_MAX_M,
+    CLS_CAR_TO_OBS_IOU_MIN,
+    CLS_CAR_TO_OBS_REQUIRE_CENTER_DIST,
+    CLS_CAR_TO_OBS_REQUIRE_IOU,
+    CLS_CAR_TO_OBS_REQUIRE_LOW_SPEED,
+    CLS_CAR_TO_OBS_REQUIRE_SIZE_MISMATCH,
+    CLS_CAR_TO_OBS_SIZE_RATIO_MAX,
+    CLS_CAR_TO_OBS_SIZE_RATIO_MIN,
+    CLS_CAR_TO_OBS_SPEED_MAX,
+    CLS_CAR_TO_OBS_STOP_FRAMES,
+    CLS_HISTORY_LEN,
+    CLS_VOTE_K_CAR_TO_OBS,
+    CLS_VOTE_K_OBS_TO_CAR,
     DEFAULT_COLOR_LOCK_STREAK,
     DEFAULT_COLOR_PENALTY,
     DEFAULT_IOU_THRESHOLD,
@@ -230,6 +244,14 @@ class Track:
         Track.track_id_counter += 1
 
         self.cls = bbox_init[0]
+        try:
+            cls_init = int(bbox_init[0])
+        except (TypeError, ValueError):
+            cls_init = 0
+        self.cls_state = cls_init
+        self.cls_hist = deque([cls_init], maxlen=max(1, CLS_HISTORY_LEN))
+        self.last_cls_change_frame = 0
+        self.low_speed_streak = 0
         self.car_length = bbox_init[3]
         self.car_width = bbox_init[4]
         self.car_yaw = bbox_init[5]
@@ -514,8 +536,9 @@ class Track:
 
     def _assemble_state(self) -> np.ndarray:
         vx, vy = self.get_velocity()
+        cls_out = self.cls_state if self.cls_state is not None else self.cls
         return np.array([
-            self.cls,
+            cls_out,
             self.kf_pos.x[0, 0],
             self.kf_pos.x[1, 0],
             self.car_length,
@@ -544,8 +567,9 @@ class Track:
                 yaw_mean = wrap_deg(math.degrees(math.atan2(np.mean(np.sin(yaw_rad)), np.mean(np.cos(yaw_rad)))))
                 vel_vals = np.mean(stacked[:, 6:8], axis=0) if stacked.shape[1] >= 8 else np.zeros(2, dtype=float)
 
+                cls_out = self.cls_state if self.cls_state is not None else self.cls
                 out = np.array([
-                    self.cls,
+                    cls_out,
                     pos_size[0],
                     pos_size[1],
                     max(0.0, pos_size[2]),
@@ -712,6 +736,21 @@ class SortTracker:
         self.split_guard_close_dist_m = SPLIT_GUARD_CLOSE_DIST_M
         self.split_guard_frames = SPLIT_GUARD_FRAMES
         self.split_guard_dir_diff_max_deg = SPLIT_GUARD_DIR_DIFF_MAX_DEG
+        self.frame_idx = 0
+        self.cls_history_len = max(1, int(CLS_HISTORY_LEN))
+        self.cls_vote_k_car_to_obs = max(1, min(int(CLS_VOTE_K_CAR_TO_OBS), self.cls_history_len))
+        self.cls_vote_k_obs_to_car = max(1, min(int(CLS_VOTE_K_OBS_TO_CAR), self.cls_history_len))
+        self.cls_car_to_obs_require_iou = bool(CLS_CAR_TO_OBS_REQUIRE_IOU)
+        self.cls_car_to_obs_iou_min = float(CLS_CAR_TO_OBS_IOU_MIN)
+        self.cls_car_to_obs_require_center_dist = bool(CLS_CAR_TO_OBS_REQUIRE_CENTER_DIST)
+        self.cls_car_to_obs_center_dist_max_m = float(CLS_CAR_TO_OBS_CENTER_DIST_MAX_M)
+        self.cls_car_to_obs_require_size_mismatch = bool(CLS_CAR_TO_OBS_REQUIRE_SIZE_MISMATCH)
+        self.cls_car_to_obs_size_ratio_min = float(CLS_CAR_TO_OBS_SIZE_RATIO_MIN)
+        self.cls_car_to_obs_size_ratio_max = float(CLS_CAR_TO_OBS_SIZE_RATIO_MAX)
+        self.cls_car_to_obs_aspect_ratio_max = float(CLS_CAR_TO_OBS_ASPECT_RATIO_MAX)
+        self.cls_car_to_obs_require_low_speed = bool(CLS_CAR_TO_OBS_REQUIRE_LOW_SPEED)
+        self.cls_car_to_obs_speed_max = float(CLS_CAR_TO_OBS_SPEED_MAX)
+        self.cls_car_to_obs_stop_frames = max(1, int(CLS_CAR_TO_OBS_STOP_FRAMES))
         self.prev_meas_count: Optional[int] = None
         self.last_metrics: Dict[str, int] = {}
         self.debug_logging = debug_logging
@@ -727,6 +766,7 @@ class SortTracker:
             detections_carla = np.zeros((0, 6), dtype=float)
         detections_carla = np.asarray(detections_carla, dtype=float)
         self.last_matches = []
+        self.frame_idx += 1
 
         predicted_states: List[dict] = []
         for track in self.tracks:
@@ -797,8 +837,19 @@ class SortTracker:
 
         for det_idx, track_idx in matched_stage1:
             track = tracked_tracks[track_idx]
+            det = detections_carla[det_idx]
+            det_iou = self._det_track_iou(det, track)
+            det_dist = self._center_distance_m(det, track)
             color = det_colors[det_idx] if det_colors else None
-            track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
+            track.update(det, color=color, cfg=self._config_for(track.cls))
+            self._maybe_update_class(
+                track,
+                det[0],
+                self.frame_idx,
+                det_iou=det_iou,
+                det_center_dist_m=det_dist,
+                det=det,
+            )
             self.last_matches.append((track.id, det_idx))
             matched_track_ids.add(track.id)
 
@@ -857,9 +908,20 @@ class SortTracker:
 
         for det_idx, track_idx in matched_stage2:
             track = lost_tracks[track_idx]
+            det = detections_carla[det_idx]
+            det_iou = self._det_track_iou(det, track)
+            det_dist = self._center_distance_m(det, track)
             color = det_colors[det_idx] if det_colors else None
             self._mark_reactivated(track)
-            track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
+            track.update(det, color=color, cfg=self._config_for(track.cls))
+            self._maybe_update_class(
+                track,
+                det[0],
+                self.frame_idx,
+                det_iou=det_iou,
+                det_center_dist_m=det_dist,
+                det=det,
+            )
             self.last_matches.append((track.id, det_idx))
             matched_track_ids.add(track.id)
 
@@ -882,6 +944,7 @@ class SortTracker:
                     track.state = TrackState.DELETED
             elif track.state == TrackState.TENTATIVE:
                 track.state = TrackState.DELETED
+            track.low_speed_streak = 0
 
         last_chance_tracks: List[Track] = []
         if unmatched_detections and self.last_chance_lookback > 0:
@@ -946,9 +1009,20 @@ class SortTracker:
 
         for det_idx, track_idx in matched_last_chance:
             track = last_chance_tracks[track_idx]
+            det = detections_carla[det_idx]
+            det_iou = self._det_track_iou(det, track)
+            det_dist = self._center_distance_m(det, track)
             color = det_colors[det_idx] if det_colors else None
             self._mark_reactivated(track)
-            track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
+            track.update(det, color=color, cfg=self._config_for(track.cls))
+            self._maybe_update_class(
+                track,
+                det[0],
+                self.frame_idx,
+                det_iou=det_iou,
+                det_center_dist_m=det_dist,
+                det=det,
+            )
             self.last_matches.append((track.id, det_idx))
             matched_track_ids.add(track.id)
 
@@ -962,6 +1036,7 @@ class SortTracker:
                 color=color,
                 class_config=cfg,
             )
+            new_track.last_cls_change_frame = int(self.frame_idx)
             self.tracks.append(new_track)
 
         self.tracks = [t for t in self.tracks if t.state != TrackState.DELETED]
@@ -995,13 +1070,19 @@ class SortTracker:
             "num_unmatched_measurements": len(unmatched_detections),
         }
         self.prev_meas_count = len(detections_carla)
+        matched_meas_classes = None
         if self.debug_logging:
+            matched_meas_classes = [
+                (int(track_id), int(detections_carla[det_idx][0]))
+                for track_id, det_idx in self.last_matches
+            ]
             self.last_debug_info = {
                 "predicted_tracks": predicted_states,
                 "matched": [(int(tid), int(det_idx)) for tid, det_idx in self.last_matches],
                 "matched_stage1": [(int(tracked_tracks[c].id), int(r)) for r, c in matched_stage1],
                 "matched_stage2": [(int(lost_tracks[c].id), int(det_idx)) for det_idx, c in matched_stage2],
                 "matched_last_chance": [(int(last_chance_tracks[c].id), int(det_idx)) for det_idx, c in matched_last_chance],
+                "matched_measured_classes": matched_meas_classes,
                 "unmatched_tracks": unmatched_track_ids,
                 "unmatched_detections": sorted(unmatched_detections),
                 "unmatched_reasons": dict(debug_reasons),
@@ -1052,6 +1133,96 @@ class SortTracker:
     def _center_distance_m(self, det: np.ndarray, track: "Track") -> float:
         pred_xc, pred_yc = track.kf_pos.x[:2].flatten()
         return float(math.hypot(det[1] - pred_xc, det[2] - pred_yc))
+
+    def _det_track_iou(self, det: np.ndarray, track: "Track") -> float:
+        det_aabb = carla_to_aabb(det)
+        pred_xc, pred_yc = track.kf_pos.x[:2].flatten()
+        temp_obb = np.array([0, pred_xc, pred_yc, track.car_length, track.car_width, track.car_yaw])
+        pred_aabb = carla_to_aabb(temp_obb)
+        return float(iou_bbox(det_aabb, pred_aabb))
+
+    @staticmethod
+    def _is_car_class(cls_val: int) -> bool:
+        return int(cls_val) == 0
+
+    def _size_mismatch(self, det: Optional[np.ndarray], track: "Track") -> bool:
+        if det is None:
+            return False
+        ratio_min = self.cls_car_to_obs_size_ratio_min
+        ratio_max = self.cls_car_to_obs_size_ratio_max
+        if ratio_min > 0.0 and ratio_max > 0.0:
+            if not self._size_ratio_ok(det, track, ratio_min, ratio_max):
+                return True
+        if self.cls_car_to_obs_aspect_ratio_max > 0.0:
+            if not self._aspect_ratio_ok(det, track, self.cls_car_to_obs_aspect_ratio_max):
+                return True
+        return False
+
+    def _maybe_update_class(
+        self,
+        track: "Track",
+        det_cls_raw: Optional[float],
+        frame_idx: int,
+        det_iou: Optional[float] = None,
+        det_center_dist_m: Optional[float] = None,
+        det: Optional[np.ndarray] = None,
+    ) -> None:
+        if det_cls_raw is None:
+            return
+        try:
+            det_cls = int(det_cls_raw)
+        except (TypeError, ValueError):
+            return
+
+        if track.cls_state is None:
+            track.cls_state = det_cls
+
+        if self.cls_history_len > 0:
+            track.cls_hist.append(det_cls)
+
+        if self.cls_car_to_obs_require_low_speed:
+            speed = track.get_speed()
+            if speed <= self.cls_car_to_obs_speed_max:
+                track.low_speed_streak += 1
+            else:
+                track.low_speed_streak = 0
+
+        current_cls = int(track.cls_state)
+        if det_cls == current_cls:
+            return
+
+        current_is_car = self._is_car_class(current_cls)
+        target_is_car = self._is_car_class(det_cls)
+        if current_is_car == target_is_car:
+            return
+
+        if len(track.cls_hist) < self.cls_history_len:
+            return
+
+        votes = sum(1 for cls in track.cls_hist if self._is_car_class(cls) == target_is_car)
+        if current_is_car and not target_is_car:
+            if votes < self.cls_vote_k_car_to_obs:
+                return
+            if self.cls_car_to_obs_require_iou:
+                if det_iou is None or det_iou < self.cls_car_to_obs_iou_min:
+                    return
+            if self.cls_car_to_obs_require_center_dist:
+                if det_center_dist_m is None or det_center_dist_m > self.cls_car_to_obs_center_dist_max_m:
+                    return
+            if self.cls_car_to_obs_require_size_mismatch:
+                if not self._size_mismatch(det, track):
+                    return
+            if self.cls_car_to_obs_require_low_speed:
+                if track.low_speed_streak < self.cls_car_to_obs_stop_frames:
+                    return
+        else:
+            if votes < self.cls_vote_k_obs_to_car:
+                return
+
+        track.cls_state = det_cls
+        track.last_cls_change_frame = int(frame_idx)
+        track.cls_hist.clear()
+        track.cls_hist.append(det_cls)
 
     def _track_direction_deg(self, track: "Track") -> Optional[float]:
         vx, vy = track.get_velocity()
