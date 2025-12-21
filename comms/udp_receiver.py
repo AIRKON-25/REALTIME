@@ -67,7 +67,7 @@ class UDPReceiverSingle:
             try:
                 data, _ = self.sock.recvfrom(self.max_bytes)
                 # ts = time.time()
-                ts = data.decode("utf-8").find('"timestamp":') # 엣지에서 실제 전송 시각
+                ts = json.loads(data.decode("utf-8")).get("sent_ts", 0.0) # 엣지에서 실제 전송 시각
                 cam, dets = self._parse_payload(data)
                 if dets is None:
                     continue
