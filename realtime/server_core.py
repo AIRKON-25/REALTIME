@@ -524,13 +524,14 @@ class RealtimeServer:
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
             self._broadcast_tracks(tracks, now)
+            # print(len(raw_dets), len(fused), tracks.shape[0])
 
             if self._should_log(): # 1초에 한번 로그
                 stats = {}
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
-                # self._log_pipeline(stats, fused, tracks, now, timings)
+                self._log_pipeline(stats, fused, tracks, now, timings)
 
     def start(self):
         self.inference_receiver.start() # 인지 결과 리시버 시작

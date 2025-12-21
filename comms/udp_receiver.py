@@ -94,7 +94,7 @@ class UDPReceiverSingle:
                         "score": float(it.get("score", 0.0)),
                         "color_hex": it.get("color_hex"),
                     })
-                self._log_packet(cam, dets if dets else [], meta=msg)
+                # self._log_packet(cam, dets if dets else [], meta=msg)
                 return cam, dets if dets else []
         except Exception:
             pass
