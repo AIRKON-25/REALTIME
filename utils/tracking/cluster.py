@@ -8,7 +8,13 @@ import numpy as np
 
 from utils.colors import normalize_color_label
 from utils.tracking.geometry import aabb_iou_axis_aligned, wrap_deg
-from utils.tracking._constants import COLOR_BONUS, COLOR_PENALTY, IOU_CLUSTER_THR
+from utils.tracking._constants import (
+    COLOR_BONUS,
+    COLOR_PENALTY,
+    IOU_CLUSTER_THR,
+    IOU_FALLBACK_CENTER_RATIO,
+    IOU_FALLBACK_SIZE_RATIO_MAX,
+)
 
 
 class ClassMergePolicy(Enum):
@@ -24,6 +30,8 @@ class ClusterConfig:
     center_gate_car: float = 0.9
     center_gate_obstacle: float = 1.3
     iou_gate: Optional[float] = None
+    iou_fallback_center_ratio: float = IOU_FALLBACK_CENTER_RATIO
+    iou_fallback_size_ratio_max: float = IOU_FALLBACK_SIZE_RATIO_MAX
     aspect_ratio_gate: float = 1.8
     area_ratio_gate: float = 3.0
     yaw_diff_gate: float = 75.0
@@ -63,6 +71,19 @@ def _shape_mismatch(b1: np.ndarray, b2: np.ndarray, aspect_gate: float, area_gat
     area2 = abs(float(b2[2]) * float(b2[3]))
     area_ratio = max(area1, area2) / max(min(area1, area2), 1e-6)
     return aspect_ratio > aspect_gate or area_ratio > area_gate
+
+
+def _size_ratio_mismatch(b1: np.ndarray, b2: np.ndarray, ratio_max: float) -> bool:
+    if ratio_max <= 0.0:
+        return False
+    l1 = abs(float(b1[2]))
+    w1 = abs(float(b1[3]))
+    l2 = abs(float(b2[2]))
+    w2 = abs(float(b2[3]))
+    eps = 1e-6
+    ratio_l = max(l1, l2) / max(min(l1, l2), eps)
+    ratio_w = max(w1, w2) / max(min(w1, w2), eps)
+    return ratio_l > ratio_max or ratio_w > ratio_max
 
 
 def _best_track_matches(
@@ -217,7 +238,8 @@ def cluster_by_aabb_iou(
             center_thr = cfg.center_gate_obstacle
             if (cls_a in CAR_CLASSES) or (cls_b in CAR_CLASSES):
                 center_thr = cfg.center_gate_car
-            if _normalized_center_distance(b1, b2) > center_thr:
+            center_dist = _normalized_center_distance(b1, b2)
+            if center_dist > center_thr:
                 debug_counts["center_gate"] += 1
                 continue
             thr = cfg.iou_gate
@@ -234,14 +256,26 @@ def cluster_by_aabb_iou(
                 debug_counts["class_policy"] += 1
                 continue
             if iou_val < thr:
-                debug_counts["iou_gate"] += 1
-                continue
+                fallback_center = 0.0
+                if cfg.iou_fallback_center_ratio > 0.0:
+                    fallback_center = center_thr * cfg.iou_fallback_center_ratio
+                if (
+                    cfg.iou_fallback_center_ratio > 0.0
+                    and center_dist <= fallback_center
+                    and not _size_ratio_mismatch(b1, b2, cfg.iou_fallback_size_ratio_max)
+                ):
+                    debug_counts["iou_fallback"] += 1
+                else:
+                    debug_counts["iou_gate"] += 1
+                    continue
             if _shape_mismatch(b1, b2, cfg.aspect_ratio_gate, cfg.area_ratio_gate):
                 debug_counts["shape_gate"] += 1
                 continue
-            if abs(wrap_deg(float(b1[4]) - float(b2[4]))) > cfg.yaw_diff_gate:
-                debug_counts["yaw_gate"] += 1
-                continue
+            is_obstacle_pair = (cls_a in OBSTACLE_CLASSES) and (cls_b in OBSTACLE_CLASSES)
+            if not is_obstacle_pair:
+                if abs(wrap_deg(float(b1[4]) - float(b2[4]))) > cfg.yaw_diff_gate:
+                    debug_counts["yaw_gate"] += 1
+                    continue
             neighbors[i].append(j)
             neighbors[j].append(i)
     used = np.zeros(N, dtype=bool)
