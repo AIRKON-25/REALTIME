@@ -1,6 +1,7 @@
 import math
 import os
 from collections import Counter
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -16,6 +17,16 @@ from utils.tracking.geometry import (
 from utils.colors import normalize_color_label
 
 from utils.tracking._constants import (
+    ASSOC_CENTER_NORM,
+    ASSOC_CENTER_WEIGHT,
+    CAR_MAX_AGE,
+    CAR_MIN_HITS,
+    CAR_POS_MEAS_NOISE,
+    CAR_POS_PROCESS_NOISE,
+    CAR_SIZE_MEAS_NOISE,
+    CAR_SIZE_PROCESS_NOISE,
+    CAR_YAW_MEAS_NOISE,
+    CAR_YAW_PROCESS_NOISE,
     DEFAULT_COLOR_LOCK_STREAK,
     DEFAULT_COLOR_PENALTY,
     DEFAULT_IOU_THRESHOLD,
@@ -30,6 +41,17 @@ from utils.tracking._constants import (
     HEADING_UNLOCK_ANGLE_THR,
     KF_STATE_INIT_COV_SCALE,
     MEAS_GAP_SMOOTH_FACTOR,
+    OBSTACLE_JUMP_GATE_NORM_DIST,
+    OBSTACLE_MAX_AGE,
+    OBSTACLE_MIN_HITS,
+    OBSTACLE_OUTPUT_EMA_ALPHA,
+    OBSTACLE_POS_MEAS_NOISE,
+    OBSTACLE_POS_PROCESS_NOISE,
+    OBSTACLE_SIZE_MEAS_NOISE,
+    OBSTACLE_SIZE_PROCESS_NOISE,
+    OBSTACLE_VEL_DAMPING,
+    OBSTACLE_YAW_MEAS_NOISE,
+    OBSTACLE_YAW_PROCESS_NOISE,
     POS_INIT_COV_SCALE,
     POS_MEAS_NOISE_SCALE,
     POS_PROCESS_NOISE_SCALE,
@@ -39,19 +61,114 @@ from utils.tracking._constants import (
     YAW_MEAS_NOISE_SCALE,
     YAW_PERIOD_DEG,
     YAW_PROCESS_NOISE_SCALE,
+    OBSTACLE_OUTPUT_SNAP_EPS,
+    OBSTACLE_STOP_ALPHA_SCALE,
+    OBSTACLE_STOP_FRAMES,
+    OBSTACLE_STOP_Q_SCALE,
+    OBSTACLE_STOP_SPEED_THR,
+    CAR_OUTPUT_SNAP_EPS,
+    CAR_STOP_SPEED_THR,
+    CAR_STOP_ALPHA_SCALE,
+    CAR_STOP_FRAMES,
+    CAR_STOP_Q_SCALE,
 )
 
 
-def iou_batch(detections_carla: np.ndarray, tracks: List["Track"]) -> np.ndarray:
-    cost_matrix = np.zeros((len(detections_carla), len(tracks)), dtype=np.float32)
-    for i, det_carla in enumerate(detections_carla):
-        det_aabb = carla_to_aabb(det_carla)
-        for j, track in enumerate(tracks):
-            pred_xc, pred_yc = track.kf_pos.x[:2].flatten()
-            temp_obb = np.array([0, pred_xc, pred_yc, track.car_length, track.car_width, track.car_yaw])
-            pred_aabb = carla_to_aabb(temp_obb)
-            cost_matrix[i, j] = 1.0 - iou_bbox(det_aabb, pred_aabb)
-    return cost_matrix
+@dataclass
+class TrackerConfigBase:
+    max_age: int
+    min_hits: int
+    pos_process_noise_scale: float
+    pos_meas_noise_scale: float
+    yaw_process_noise_scale: float
+    yaw_meas_noise_scale: float
+    size_process_noise_scale: float
+    size_meas_noise_scale: float
+    smooth_window: int
+    vel_damping: float = 0.0
+    output_ema_alpha: Optional[float] = None
+    jump_distance_gate: Optional[float] = None
+    output_snap_eps: float = 0.0
+    stop_speed_thresh: float = 0.0
+    stop_frames: int = 0
+    stop_alpha_scale: float = 1.0
+    stop_q_scale: float = 1.0
+
+
+class TrackerConfigCar(TrackerConfigBase):
+    def __init__(
+        self,
+        max_age: int = CAR_MAX_AGE,
+        min_hits: int = CAR_MIN_HITS,
+        pos_process_noise_scale: float = CAR_POS_PROCESS_NOISE,
+        pos_meas_noise_scale: float = CAR_POS_MEAS_NOISE,
+        yaw_process_noise_scale: float = CAR_YAW_PROCESS_NOISE,
+        yaw_meas_noise_scale: float = CAR_YAW_MEAS_NOISE,
+        size_process_noise_scale: float = CAR_SIZE_PROCESS_NOISE,
+        size_meas_noise_scale: float = CAR_SIZE_MEAS_NOISE,
+        smooth_window: int = DEFAULT_SMOOTH_WINDOW,
+    ):
+        super().__init__(
+            max_age=max_age,
+            min_hits=min_hits,
+            pos_process_noise_scale=pos_process_noise_scale,
+            pos_meas_noise_scale=pos_meas_noise_scale,
+            yaw_process_noise_scale=yaw_process_noise_scale,
+            yaw_meas_noise_scale=yaw_meas_noise_scale,
+            size_process_noise_scale=size_process_noise_scale,
+            size_meas_noise_scale=size_meas_noise_scale,
+            smooth_window=smooth_window,
+            vel_damping=0.0,
+            output_ema_alpha=None,
+            jump_distance_gate=None,
+            output_snap_eps=CAR_OUTPUT_SNAP_EPS,
+            stop_speed_thresh=CAR_STOP_SPEED_THR,
+            stop_frames=CAR_STOP_FRAMES,
+            stop_alpha_scale=CAR_STOP_ALPHA_SCALE,
+            stop_q_scale=CAR_STOP_Q_SCALE,
+        )
+
+
+class TrackerConfigObstacle(TrackerConfigBase):
+    def __init__(
+        self,
+        max_age: int = OBSTACLE_MAX_AGE,
+        min_hits: int = OBSTACLE_MIN_HITS,
+        pos_process_noise_scale: float = OBSTACLE_POS_PROCESS_NOISE,
+        pos_meas_noise_scale: float = OBSTACLE_POS_MEAS_NOISE,
+        yaw_process_noise_scale: float = OBSTACLE_YAW_PROCESS_NOISE,
+        yaw_meas_noise_scale: float = OBSTACLE_YAW_MEAS_NOISE,
+        size_process_noise_scale: float = OBSTACLE_SIZE_PROCESS_NOISE,
+        size_meas_noise_scale: float = OBSTACLE_SIZE_MEAS_NOISE,
+        smooth_window: int = DEFAULT_SMOOTH_WINDOW,
+        vel_damping: float = OBSTACLE_VEL_DAMPING,
+        output_ema_alpha: Optional[float] = OBSTACLE_OUTPUT_EMA_ALPHA,
+        jump_distance_gate: Optional[float] = OBSTACLE_JUMP_GATE_NORM_DIST,
+        output_snap_eps: float = OBSTACLE_OUTPUT_SNAP_EPS,
+        stop_speed_thresh: float = OBSTACLE_STOP_SPEED_THR,
+        stop_frames: int = OBSTACLE_STOP_FRAMES,
+        stop_alpha_scale: float = OBSTACLE_STOP_ALPHA_SCALE,
+        stop_q_scale: float = OBSTACLE_STOP_Q_SCALE,
+    ):
+        super().__init__(
+            max_age=max_age,
+            min_hits=min_hits,
+            pos_process_noise_scale=pos_process_noise_scale,
+            pos_meas_noise_scale=pos_meas_noise_scale,
+            yaw_process_noise_scale=yaw_process_noise_scale,
+            yaw_meas_noise_scale=yaw_meas_noise_scale,
+            size_process_noise_scale=size_process_noise_scale,
+            size_meas_noise_scale=size_meas_noise_scale,
+            smooth_window=smooth_window,
+            vel_damping=vel_damping,
+            output_ema_alpha=output_ema_alpha,
+            jump_distance_gate=jump_distance_gate,
+            output_snap_eps=output_snap_eps,
+            stop_speed_thresh=stop_speed_thresh,
+            stop_frames=stop_frames,
+            stop_alpha_scale=stop_alpha_scale,
+            stop_q_scale=stop_q_scale,
+        )
 
 
 class TrackState:
@@ -76,6 +193,7 @@ class Track:
         yaw_meas_noise_scale: float = YAW_MEAS_NOISE_SCALE,
         size_process_noise_scale: float = SIZE_PROCESS_NOISE_SCALE,
         size_meas_noise_scale: float = SIZE_MEAS_NOISE_SCALE,
+        class_config: Optional[TrackerConfigBase] = None,
     ):
         # bbox_init: [class, x_c, y_c, l, w, yaw_deg]
         self.id = Track.track_id_counter
@@ -92,28 +210,34 @@ class Track:
         self.kf_pos.x[:2] = bbox_init[1:3].reshape((2, 1))
         self.last_pos = np.array(bbox_init[1:3], dtype=float)
         
-        # 💡 파라미터 조정
-        self.kf_pos.P *= POS_INIT_COV_SCALE
-        self.kf_pos.Q *= pos_process_noise_scale
-        self.kf_pos.R *= pos_meas_noise_scale
-        self._pos_base_R = self.kf_pos.R.copy()
+        self.kf_pos.P = np.eye(4) * POS_INIT_COV_SCALE
+        self.kf_pos.Q = np.eye(4) * POS_PROCESS_NOISE_SCALE
+        self.kf_pos.R = np.eye(2) * POS_MEAS_NOISE_SCALE
         self._gap_smooth_factor = MEAS_GAP_SMOOTH_FACTOR
 
         self.kf_yaw = self._init_2d_kf(
             initial_value=self.car_yaw,
-            Q_scale=yaw_process_noise_scale,
-            R_scale=yaw_meas_noise_scale,
+            Q_scale=YAW_PROCESS_NOISE_SCALE,
+            R_scale=YAW_MEAS_NOISE_SCALE,
         )
         self.kf_length = self._init_2d_kf(
             initial_value=self.car_length,
-            Q_scale=size_process_noise_scale,
-            R_scale=size_meas_noise_scale,
+            Q_scale=SIZE_PROCESS_NOISE_SCALE,
+            R_scale=SIZE_MEAS_NOISE_SCALE,
         )
         self.kf_width = self._init_2d_kf(
             initial_value=self.car_width,
-            Q_scale=size_process_noise_scale,
-            R_scale=size_meas_noise_scale,
+            Q_scale=SIZE_PROCESS_NOISE_SCALE,
+            R_scale=SIZE_MEAS_NOISE_SCALE,
         )
+        self.current_config: Optional[TrackerConfigBase] = None
+        self._pos_base_R = self.kf_pos.R.copy()
+        self._base_Q_pos = self.kf_pos.Q.copy()
+        self._base_Q_yaw = self.kf_yaw.Q.copy()
+        self._base_Q_size = self.kf_length.Q.copy()
+        self._ema_state: Optional[np.ndarray] = None
+        if class_config:
+            self.apply_config(class_config)
 
         self.time_since_update = 0
         self.hits = 1
@@ -147,7 +271,25 @@ class Track:
         kf.R *= R_scale
         return kf
 
-    def predict(self) -> None:
+    def apply_config(self, cfg: TrackerConfigBase) -> None:
+        self.current_config = cfg
+        self.min_hit = cfg.min_hits
+        self.kf_pos.Q = np.eye(4) * POS_PROCESS_NOISE_SCALE * cfg.pos_process_noise_scale
+        self.kf_pos.R = np.eye(2) * POS_MEAS_NOISE_SCALE * cfg.pos_meas_noise_scale
+        self._pos_base_R = self.kf_pos.R.copy()
+        self._base_Q_pos = self.kf_pos.Q.copy()
+        self.kf_yaw.Q = np.eye(2) * cfg.yaw_process_noise_scale
+        self.kf_yaw.R = np.eye(1) * cfg.yaw_meas_noise_scale
+        self._base_Q_yaw = self.kf_yaw.Q.copy()
+        self.kf_length.Q = np.eye(2) * cfg.size_process_noise_scale
+        self.kf_length.R = np.eye(1) * cfg.size_meas_noise_scale
+        self.kf_width.Q = np.eye(2) * cfg.size_process_noise_scale
+        self.kf_width.R = np.eye(1) * cfg.size_meas_noise_scale
+        self._base_Q_size = self.kf_length.Q.copy()
+
+    def predict(self, cfg: Optional[TrackerConfigBase] = None) -> None:
+        if cfg:
+            self.apply_config(cfg)
         self.kf_pos.predict()
         self.kf_yaw.predict()
         self.kf_length.predict()
@@ -158,13 +300,31 @@ class Track:
         self.car_length = max(0.0, self.kf_length.x[0, 0])
         self.car_width = max(0.0, self.kf_width.x[0, 0])
 
+        if cfg and cfg.vel_damping > 0.0:
+            damp = max(0.0, min(1.0, cfg.vel_damping))
+            self.kf_pos.x[2, 0] *= (1.0 - damp)
+            self.kf_pos.x[3, 0] *= (1.0 - damp)
+        if cfg and cfg.stop_q_scale < 1.0 and self._is_stopped(cfg):
+            scale = max(cfg.stop_q_scale, 0.0)
+            self.kf_pos.Q = self._base_Q_pos * scale
+            self.kf_yaw.Q = self._base_Q_yaw * scale
+            self.kf_length.Q = self._base_Q_size * scale
+            self.kf_width.Q = self._base_Q_size * scale
+        else:
+            self.kf_pos.Q = self._base_Q_pos
+            self.kf_yaw.Q = self._base_Q_yaw
+            self.kf_length.Q = self._base_Q_size
+            self.kf_width.Q = self._base_Q_size
+
         self.age += 1
         if self.state != TrackState.DELETED:
             self.time_since_update += 1
 
-    def update(self, bbox: np.ndarray, color: Optional[str] = None) -> None:
+    def update(self, bbox: np.ndarray, color: Optional[str] = None, cfg: Optional[TrackerConfigBase] = None) -> None:
         measurement = np.asarray(bbox, dtype=float)
         self.cls = measurement[0]
+        if cfg:
+            self.apply_config(cfg)
 
         missed_frames = max(0, int(self.time_since_update) - 1)
         meas_scale = 1.0 + missed_frames * self._gap_smooth_factor
@@ -332,36 +492,76 @@ class Track:
             vy,
         ], dtype=float)
 
-    def get_state(self, smooth_window: int = 1) -> np.ndarray:
+    def get_state(self, smooth_window: int = 1, ema_alpha: Optional[float] = None, snap_eps: float = 0.0, stop_alpha_scale: float = 1.0, is_stopped: bool = False) -> np.ndarray:
         base_state = self._assemble_state()
         if smooth_window <= 1:
-            return base_state
+            out = base_state
+        else:
+            samples: List[np.ndarray] = list(self.history[-smooth_window:])
+            if self.time_since_update > 0 or not samples:
+                samples.append(base_state)
+            samples = samples[-smooth_window:]
+            if not samples:
+                out = base_state
+            else:
+                stacked = np.vstack(samples)
+                pos_size = np.mean(stacked[:, 1:5], axis=0)
+                yaw_vals = stacked[:, 5]
+                yaw_rad = np.deg2rad(yaw_vals)
+                yaw_mean = wrap_deg(math.degrees(math.atan2(np.mean(np.sin(yaw_rad)), np.mean(np.cos(yaw_rad)))))
+                vel_vals = np.mean(stacked[:, 6:8], axis=0) if stacked.shape[1] >= 8 else np.zeros(2, dtype=float)
 
-        samples: List[np.ndarray] = list(self.history[-smooth_window:])
-        if self.time_since_update > 0 or not samples:
-            samples.append(base_state)
-        samples = samples[-smooth_window:]
-        if not samples:
-            return base_state
+                out = np.array([
+                    self.cls,
+                    pos_size[0],
+                    pos_size[1],
+                    max(0.0, pos_size[2]),
+                    max(0.0, pos_size[3]),
+                    yaw_mean,
+                    vel_vals[0],
+                    vel_vals[1],
+                ], dtype=float)
 
-        stacked = np.vstack(samples)
-        pos_size = np.mean(stacked[:, 1:5], axis=0)
-        yaw_vals = stacked[:, 5]
-        yaw_rad = np.deg2rad(yaw_vals)
-        yaw_mean = wrap_deg(math.degrees(math.atan2(np.mean(np.sin(yaw_rad)), np.mean(np.cos(yaw_rad)))))
-        vel_vals = np.mean(stacked[:, 6:8], axis=0) if stacked.shape[1] >= 8 else np.zeros(2, dtype=float)
+        last_output = self._ema_state
+        if snap_eps > 0.0 and last_output is not None:
+            disp = math.hypot(out[1] - last_output[1], out[2] - last_output[2])
+            if disp <= snap_eps:
+                out = last_output
 
-        smoothed_state = np.array([
-            self.cls,
-            pos_size[0],
-            pos_size[1],
-            max(0.0, pos_size[2]),
-            max(0.0, pos_size[3]),
-            yaw_mean,
-            vel_vals[0],
-            vel_vals[1],
-        ], dtype=float)
-        return smoothed_state
+        if ema_alpha is None or ema_alpha <= 0.0 or ema_alpha >= 1.0:
+            return out
+        alpha = ema_alpha
+        if is_stopped and stop_alpha_scale > 0.0:
+            alpha = max(min(alpha * stop_alpha_scale, 1.0), 0.0)
+        if self._ema_state is None:
+            self._ema_state = out.copy()
+        else:
+            beta = 1.0 - alpha
+            yaw_prev = self._ema_state[5]
+            yaw_new = out[5]
+            yaw_diff = wrap_deg(yaw_new - yaw_prev)
+            blended_yaw = wrap_deg(yaw_prev + alpha * yaw_diff)
+            blended = self._ema_state * beta + out * alpha
+            blended[5] = blended_yaw
+            self._ema_state = blended
+        return self._ema_state
+
+    def _is_stopped(self, cfg: TrackerConfigBase) -> bool:
+        if cfg.stop_frames <= 0 or cfg.stop_speed_thresh <= 0.0:
+            return False
+        recent = list(self.history[-cfg.stop_frames:]) if self.history else []
+        if len(recent) < cfg.stop_frames:
+            return False
+        speeds = []
+        for st in recent:
+            if len(st) >= 8:
+                vx, vy = st[6], st[7]
+            else:
+                vx, vy = 0.0, 0.0
+            speeds.append(math.hypot(vx, vy))
+        if not speeds:
+            return False
+        return float(np.mean(speeds)) <= cfg.stop_speed_thresh
 
     def _enforce_forward_heading(self, current_xy): # 이동방향과 yaw 맞추기
         if self.heading_locked:
@@ -416,6 +616,10 @@ class SortTracker:
         yaw_meas_noise_scale: float = YAW_MEAS_NOISE_SCALE,
         size_process_noise_scale: float = SIZE_PROCESS_NOISE_SCALE,
         size_meas_noise_scale: float = SIZE_MEAS_NOISE_SCALE,
+        car_config: Optional[TrackerConfigBase] = None,
+        obstacle_config: Optional[TrackerConfigBase] = None,
+        assoc_center_weight: float = ASSOC_CENTER_WEIGHT,
+        assoc_center_norm: float = ASSOC_CENTER_NORM,
     ):
         self.tracks: List[Track] = []
         self.max_age = max_age
@@ -429,6 +633,23 @@ class SortTracker:
         self.yaw_meas_noise_scale = float(yaw_meas_noise_scale)
         self.size_process_noise_scale = float(size_process_noise_scale)
         self.size_meas_noise_scale = float(size_meas_noise_scale)
+        self.config_car = car_config or TrackerConfigCar()
+        self.config_obstacle = obstacle_config or TrackerConfigObstacle()
+        self.default_config = TrackerConfigCar(
+            max_age=max_age,
+            min_hits=DEFAULT_MIN_HITS,
+            pos_process_noise_scale=pos_process_noise_scale,
+            pos_meas_noise_scale=pos_meas_noise_scale,
+            yaw_process_noise_scale=yaw_process_noise_scale,
+            yaw_meas_noise_scale=yaw_meas_noise_scale,
+            size_process_noise_scale=size_process_noise_scale,
+            size_meas_noise_scale=size_meas_noise_scale,
+            smooth_window=smooth_window,
+        )
+        self.assoc_center_weight = max(0.0, assoc_center_weight)
+        self.assoc_center_norm = max(assoc_center_norm, 1e-3)
+        self.prev_meas_count: Optional[int] = None
+        self.last_metrics: Dict[str, int] = {}
 
     def update(
         self,
@@ -444,7 +665,8 @@ class SortTracker:
         self.last_matches = []
 
         for track in self.tracks:
-            track.predict()
+            cfg = self._config_for(track.cls)
+            track.predict(cfg)
 
         active_tracks = [t for t in self.tracks if t.state != TrackState.DELETED]
 
@@ -453,8 +675,13 @@ class SortTracker:
         unmatched_tracks = list(range(len(active_tracks)))
         det_colors = self._prepare_detection_colors(detection_colors, len(detections_carla)) # 색상정규화, 길이맞추기
 
+        centers_cost = None
         if len(detections_carla) > 0 and len(active_tracks) > 0:
-            cost_matrix = iou_batch(detections_carla, active_tracks)
+            iou_matrix = iou_batch(detections_carla, active_tracks, return_iou=True)
+            cost_matrix = 1.0 - iou_matrix
+            if self.assoc_center_weight > 0.0:
+                centers_cost = self._center_distance_cost(detections_carla, active_tracks)
+                cost_matrix = (1.0 - self.assoc_center_weight) * cost_matrix + self.assoc_center_weight * centers_cost
             for i, det_color in enumerate(det_colors):
                 if not det_color:
                     continue
@@ -463,34 +690,53 @@ class SortTracker:
 
             row_ind, col_ind = linear_sum_assignment(cost_matrix)
             for r, c in zip(row_ind, col_ind):
-                if 1.0 - cost_matrix[r, c] >= self.iou_threshold:
-                    matched_indices.append((r, c))
-                    if r in unmatched_detections:
-                        unmatched_detections.remove(r)
-                    if c in unmatched_tracks:
-                        unmatched_tracks.remove(c)
+                iou_val = iou_matrix[r, c] if 'iou_matrix' in locals() else 1.0 - cost_matrix[r, c]
+                cfg = self._config_for(active_tracks[c].cls)
+                if iou_val < self.iou_threshold:
+                    continue
+                if cfg.jump_distance_gate:
+                    if centers_cost is None:
+                        centers_cost = self._center_distance_cost(detections_carla, active_tracks)
+                    if centers_cost[r, c] > cfg.jump_distance_gate / self.assoc_center_norm:
+                        continue
+                matched_indices.append((r, c))
+                if r in unmatched_detections:
+                    unmatched_detections.remove(r)
+                if c in unmatched_tracks:
+                    unmatched_tracks.remove(c)
 
         for det_idx, track_idx in matched_indices:
             track = active_tracks[track_idx]
             color = det_colors[det_idx] if det_colors else None
-            track.update(detections_carla[det_idx], color=color)
+            track.update(detections_carla[det_idx], color=color, cfg=self._config_for(track.cls))
             self.last_matches.append((track.id, det_idx))
+
+        measurement_drop = (
+            self.prev_meas_count is not None
+            and len(detections_carla) < self.prev_meas_count
+            and len(detections_carla) < len(active_tracks)
+        )
 
         for track_idx in unmatched_tracks:
             track = active_tracks[track_idx]
-            if track.state == TrackState.CONFIRMED:
+            cfg = self._config_for(track.cls)
+            if measurement_drop and track.state == TrackState.CONFIRMED:
+                pass
+            elif track.state == TrackState.CONFIRMED:
                 track.state = TrackState.LOST
             elif track.state == TrackState.LOST:
-                if track.time_since_update > self.max_age:
+                if track.time_since_update > cfg.max_age:
                     track.state = TrackState.DELETED
             elif track.state == TrackState.TENTATIVE:
                 track.state = TrackState.DELETED
 
         for det_idx in unmatched_detections:
             color = det_colors[det_idx] if det_colors else None
+            cfg = self._config_for(detections_carla[det_idx][0] if len(detections_carla[det_idx]) > 0 else None)
             new_track = Track(
                 bbox_init=detections_carla[det_idx],
                 color=color,
+                class_config=cfg,
             )
             self.tracks.append(new_track)
 
@@ -499,9 +745,25 @@ class SortTracker:
         output_results = []
         for track in self.tracks:
             if track.state in (TrackState.CONFIRMED, TrackState.LOST):
-                state = track.get_state(smooth_window=self.smooth_window)
+                cfg = self._config_for(track.cls)
+                stopped = track._is_stopped(cfg)
+                state = track.get_state(
+                    smooth_window=cfg.smooth_window,
+                    ema_alpha=cfg.output_ema_alpha,
+                    snap_eps=cfg.output_snap_eps,
+                    stop_alpha_scale=cfg.stop_alpha_scale,
+                    is_stopped=stopped,
+                )
                 output_results.append(np.array([track.id, *state], dtype=float))
 
+        self.last_metrics = {
+            "num_tracks": len(active_tracks),
+            "num_measurements": len(detections_carla),
+            "num_matched": len(matched_indices),
+            "num_unmatched_tracks": len(unmatched_tracks),
+            "num_unmatched_measurements": len(unmatched_detections),
+        }
+        self.prev_meas_count = len(detections_carla)
         return np.array(output_results) if output_results else np.array([])
 
     def _prepare_detection_colors(
@@ -527,6 +789,18 @@ class SortTracker:
             return 0.0
         return self.color_penalty
 
+    def _center_distance_cost(self, detections_carla: np.ndarray, tracks: List["Track"]) -> np.ndarray:
+        cost = np.zeros((len(detections_carla), len(tracks)), dtype=np.float32)
+        for i, det in enumerate(detections_carla):
+            dx = det[3] if len(det) > 3 else 1.0
+            dy = det[4] if len(det) > 4 else dx
+            norm = max(self.assoc_center_norm * 0.5 * (abs(dx) + abs(dy)), 1e-3)
+            for j, track in enumerate(tracks):
+                pred_xc, pred_yc = track.kf_pos.x[:2].flatten()
+                dist = math.hypot(det[1] - pred_xc, det[2] - pred_yc) / norm
+                cost[i, j] = float(dist)
+        return cost
+
     def get_latest_matches(self) -> List[Tuple[int, int]]:
         return list(self.last_matches)
 
@@ -542,6 +816,9 @@ class SortTracker:
                     "speed": track.get_speed(),
                 }
         return attrs
+
+    def get_last_metrics(self) -> Dict[str, int]:
+        return dict(self.last_metrics)
 
     @staticmethod
     def _state_name(state_val: int) -> str:
@@ -563,7 +840,14 @@ class SortTracker:
         for track in self.tracks:
             if track.state == TrackState.DELETED:
                 continue
-            state_vec = track.get_state(smooth_window=self.smooth_window)
+            cfg = self._config_for(track.cls)
+            state_vec = track.get_state(
+                smooth_window=cfg.smooth_window,
+                ema_alpha=cfg.output_ema_alpha,
+                snap_eps=cfg.output_snap_eps,
+                stop_alpha_scale=cfg.stop_alpha_scale,
+                is_stopped=track._is_stopped(cfg),
+            )
             items.append({
                 "id": track.id,
                 "state": self._state_name(track.state),
@@ -610,3 +894,27 @@ class SortTracker:
                 track.force_set_color(color)
                 return True
         return False
+
+    def _config_for(self, cls_id: Optional[float]) -> TrackerConfigBase:
+        if cls_id is None:
+            return self.default_config
+        if int(cls_id) == 0:
+            return self.config_car
+        return self.config_obstacle
+
+
+def iou_batch(detections_carla: np.ndarray, tracks: List["Track"], return_iou: bool = False) -> np.ndarray:
+    """
+    Calculate IoU or cost matrix between detections and predicted tracks.
+    If return_iou is True, returns IoU values; otherwise returns 1 - IoU cost.
+    """
+    cost_matrix = np.zeros((len(detections_carla), len(tracks)), dtype=np.float32)
+    for i, det_carla in enumerate(detections_carla):
+        det_aabb = carla_to_aabb(det_carla)
+        for j, track in enumerate(tracks):
+            pred_xc, pred_yc = track.kf_pos.x[:2].flatten()
+            temp_obb = np.array([0, pred_xc, pred_yc, track.car_length, track.car_width, track.car_yaw])
+            pred_aabb = carla_to_aabb(temp_obb)
+            iou_val = iou_bbox(det_aabb, pred_aabb)
+            cost_matrix[i, j] = iou_val if return_iou else 1.0 - iou_val
+    return cost_matrix

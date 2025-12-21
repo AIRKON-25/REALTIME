@@ -17,11 +17,12 @@ from utils.colors import (
     normalize_color_hex,
     normalize_color_label,
 )
-from utils.tracking.cluster import cluster_by_aabb_iou
+from utils.tracking.cluster import ClassMergePolicy, ClusterConfig, cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
-from utils.tracking.tracker import SortTracker
-from utils.tracking._constants import IOU_CLUSTER_THR
-from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES
+from utils.tracking.geometry import aabb_iou_axis_aligned
+from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
+from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
+from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
 
 class RealtimeServer:
     def __init__(
@@ -36,21 +37,40 @@ class RealtimeServer:
         tx_protocol: str = "udp",
         carla_host: Optional[str] = None,
         carla_port: int = 61000,
-        tracker_fixed_length: Optional[float] = None,
-        tracker_fixed_width: Optional[float] = None,
+        # tracker_fixed_length: Optional[float] = None,
+        # tracker_fixed_width: Optional[float] = None,
         command_host: Optional[str] = None,
         command_port: Optional[int] = None,
         ws_host: Optional[str] = "0.0.0.0",
         ws_port: int = 9001,
+        cluster_config: Optional[ClusterConfig] = None,
+        class_merge_policy: ClassMergePolicy = ClassMergePolicy.STRICT, # 차-장애물 머지 허용하려면 ClassMergePolicy.ALLOW_CAR_OBSTACLE
+        enable_cluster_split: bool = False, # 클러스터 분할 허용하려면 True
+        tracker_config_car: Optional[TrackerConfigCar] = None,
+        tracker_config_obstacle: Optional[TrackerConfigObstacle] = None,
+        assoc_center_weight: Optional[float] = None,
+        assoc_center_norm: Optional[float] = None,
+        log_pipeline: bool = True,
+        log_udp_packets: bool = False,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
         self.buffer_ttl = max(self.dt * 2.0, 1.0) # 버퍼 유효 시간 초
-        self.iou_thr = iou_cluster_thr
+        self.cluster_config = cluster_config or ClusterConfig(
+            iou_cluster_thr=iou_cluster_thr,
+            merge_policy=class_merge_policy,
+            allow_split_multi_modal=enable_cluster_split,
+        )
+        if self.cluster_config.iou_gate is None:
+            self.cluster_config.iou_gate = self.cluster_config.iou_cluster_thr
+        self.iou_thr = self.cluster_config.iou_cluster_thr
         self.track_meta: Dict[int, dict] = {}
         self.active_cams = set()
         self.color_bias_strength = COLOR_BIAS_STRENGTH
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
+        self._prev_tracks_for_cluster: Optional[np.ndarray] = None
+        self.last_cluster_debug: Dict[str, int] = {}
+        self.log_pipeline = log_pipeline
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -61,7 +81,7 @@ class RealtimeServer:
                 print(f"[WebSocketHub] init failed: {exc}")
                 self.ws_hub = None
 
-        self.inference_receiver = UDPReceiverSingle(single_port)
+        self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
         self.cam_xy: Dict[str, Tuple[float, float]] = {} # 카메라 위치 로드... json으로 뺄까?
 
@@ -76,7 +96,17 @@ class RealtimeServer:
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
 
-        self.tracker = SortTracker() # 기본 파라미터로 SortTracker 초기화
+        car_cfg = tracker_config_car or TrackerConfigCar()
+        obs_cfg = tracker_config_obstacle or TrackerConfigObstacle()
+        assoc_w = assoc_center_weight if assoc_center_weight is not None else ASSOC_CENTER_WEIGHT
+        assoc_norm = assoc_center_norm if assoc_center_norm is not None else ASSOC_CENTER_NORM
+        self.tracker = SortTracker(
+            car_config=car_cfg,
+            obstacle_config=obs_cfg,
+            assoc_center_weight=assoc_w,
+            assoc_center_norm=assoc_norm,
+        ) # 기본 파라미터로 SortTracker 초기화
+        self.last_tracker_metrics: Dict[str, int] = {}
     
         self._next_log_ts = 0.0
 
@@ -86,8 +116,8 @@ class RealtimeServer:
             self.command_queue = queue.Queue()
             self.command_server = CommandServer(command_host, command_port, self.command_queue)
 
-        self.tracker_fixed_length = float(tracker_fixed_length) if tracker_fixed_length is not None else None
-        self.tracker_fixed_width = float(tracker_fixed_width) if tracker_fixed_width is not None else None
+        self.tracker_fixed_length = vehicle_fixed_length
+        self.tracker_fixed_width = vehicle_fixed_width
 
     def _world_to_map_xy(self, cx: float, cy: float) -> Tuple[float, float]:
         x_min, x_max = -25.72432848384547, 25.744828483845467
@@ -321,24 +351,32 @@ class RealtimeServer:
 
     def _fuse_boxes(self, raw_detections: List[dict]) -> List[dict]:
         """
-        클러스터링 및 융합
+        클러스터링 및 대표값 생성: cls, 위치, 크기, 방향, 색상 기반
+        raw_detections: [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam"}, ...]
+        fused_list: [{"cx", "cy", "length","width","yaw","score","source_cams","color","color_votes","cls","cls_votes"}, ...]
         """
         if not raw_detections:
             return []
         boxes = np.array([[d["cls"], d["cx"], d["cy"], d["length"], d["width"], d["yaw"]] for d in raw_detections], dtype=float)
         cams = [d.get("cam", "?") for d in raw_detections]
         colors = [normalize_color_label(d.get("color")) for d in raw_detections]
-        clusters = cluster_by_aabb_iou(
+        clusters, cluster_debug = cluster_by_aabb_iou(
             boxes,
-            iou_cluster_thr=self.iou_thr,
-            color_labels=colors
+            config=self.cluster_config,
+            color_labels=colors,
+            track_hints=self._prev_tracks_for_cluster,
+            return_debug=True
         )
+        self.last_cluster_debug = cluster_debug.get("counters", {}) if isinstance(cluster_debug, dict) else {}
+        track_matches = cluster_debug.get("track_matches", []) if isinstance(cluster_debug, dict) else []
         fused_list = []
         for idxs in clusters:
             weight_bias = self._color_weight_biases(raw_detections, idxs)
+            iou_support = self._pairwise_iou_support(boxes, idxs)
+            extra_weights = self._compose_extra_weights(raw_detections, idxs, weight_bias, iou_support, track_matches)
             rep = fuse_cluster_weighted(
                 boxes, cams, idxs, self.cam_xy,
-                extra_weights=weight_bias
+                extra_weights=extra_weights
             )
             extras = self._aggregate_cluster(raw_detections, idxs, rep)
             fused_list.append({
@@ -370,6 +408,42 @@ class RealtimeServer:
             else:
                 biases.append(1.0)
         return biases
+
+    def _pairwise_iou_support(self, boxes: np.ndarray, idxs: List[int]) -> Dict[int, float]:
+        support = {idx: 0.0 for idx in idxs}
+        if len(idxs) <= 1:
+            return support
+        for a in range(len(idxs)):
+            ia = idxs[a]
+            for b in range(a + 1, len(idxs)):
+                ib = idxs[b]
+                iou = aabb_iou_axis_aligned(boxes[ia, -5:], boxes[ib, -5:])
+                support[ia] += iou
+                support[ib] += iou
+        return support
+
+    def _compose_extra_weights(
+        self,
+        detections: List[dict],
+        idxs: List[int],
+        base_weights: List[float],
+        iou_support: Dict[int, float],
+        track_matches: List[Tuple[Optional[int], float]],
+    ) -> List[float]:
+        weights: List[float] = []
+        cfg = self.cluster_config
+        for local_idx, det_idx in enumerate(idxs):
+            w = base_weights[local_idx] if local_idx < len(base_weights) else 1.0
+            score = float(detections[det_idx].get("score", 0.0) or 0.0)
+            track_score = 0.0
+            if track_matches and det_idx < len(track_matches):
+                track_score = float(track_matches[det_idx][1] or 0.0)
+            iou_sum = float(iou_support.get(det_idx, 0.0))
+            w *= (1.0 + cfg.weight_score_scale * score)
+            w *= (1.0 + cfg.weight_iou_scale * min(iou_sum, cfg.weight_iou_cap))
+            w *= (1.0 + cfg.weight_track_scale * track_score)
+            weights.append(max(w, 1e-4))
+        return weights
 
     def _aggregate_cluster(self, detections: List[dict], idxs: List[int], fused_box: Optional[np.ndarray] = None) -> dict:
         subset = [detections[i] for i in idxs]
@@ -513,7 +587,7 @@ class RealtimeServer:
             last = now
 
             t0 = time.perf_counter()
-            raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cam","ts"...}, ...]
+            raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam","ts"}, ...]
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
@@ -522,13 +596,19 @@ class RealtimeServer:
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
             self._broadcast_tracks(tracks, now)
+            self._prev_tracks_for_cluster = tracks.copy() if tracks is not None and len(tracks) else None
 
-            if self._should_log(): # 1초에 한번 로그
+            if self.log_pipeline and self._should_log(): # 1초에 한번 로그
                 stats = {}
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
                 self._log_pipeline(stats, fused, tracks, now, timings)
+                if self.last_cluster_debug:
+                    print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
+                tracker_metrics = self.tracker.get_last_metrics()
+                if tracker_metrics:
+                    print(f"[TrackerMetrics] {json.dumps(tracker_metrics, ensure_ascii=False)}")
 
     def start(self):
         self.inference_receiver.start() # 인지 결과 리시버 시작
