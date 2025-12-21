@@ -620,6 +620,7 @@ class SortTracker:
         obstacle_config: Optional[TrackerConfigBase] = None,
         assoc_center_weight: float = ASSOC_CENTER_WEIGHT,
         assoc_center_norm: float = ASSOC_CENTER_NORM,
+        debug_logging: bool = False,
     ):
         self.tracks: List[Track] = []
         self.max_age = max_age
@@ -650,6 +651,8 @@ class SortTracker:
         self.assoc_center_norm = max(assoc_center_norm, 1e-3)
         self.prev_meas_count: Optional[int] = None
         self.last_metrics: Dict[str, int] = {}
+        self.debug_logging = debug_logging
+        self.last_debug_info: Dict[str, object] = {}
 
     def update(
         self,
@@ -664,9 +667,20 @@ class SortTracker:
         detections_carla = np.asarray(detections_carla, dtype=float)
         self.last_matches = []
 
+        predicted_states: List[dict] = []
         for track in self.tracks:
             cfg = self._config_for(track.cls)
             track.predict(cfg)
+            if self.debug_logging and track.state != TrackState.DELETED:
+                predicted_states.append({
+                    "id": track.id,
+                    "cls": float(track.cls),
+                    "cx": float(track.kf_pos.x[0, 0]),
+                    "cy": float(track.kf_pos.x[1, 0]),
+                    "length": float(track.car_length),
+                    "width": float(track.car_width),
+                    "yaw": float(track.car_yaw),
+                })
 
         active_tracks = [t for t in self.tracks if t.state != TrackState.DELETED]
 
@@ -676,6 +690,7 @@ class SortTracker:
         det_colors = self._prepare_detection_colors(detection_colors, len(detections_carla)) # 색상정규화, 길이맞추기
 
         centers_cost = None
+        debug_reasons: Counter = Counter()
         if len(detections_carla) > 0 and len(active_tracks) > 0:
             iou_matrix = iou_batch(detections_carla, active_tracks, return_iou=True)
             cost_matrix = 1.0 - iou_matrix
@@ -693,17 +708,31 @@ class SortTracker:
                 iou_val = iou_matrix[r, c] if 'iou_matrix' in locals() else 1.0 - cost_matrix[r, c]
                 cfg = self._config_for(active_tracks[c].cls)
                 if iou_val < self.iou_threshold:
+                    debug_reasons["below_iou"] += 1
                     continue
                 if cfg.jump_distance_gate:
                     if centers_cost is None:
                         centers_cost = self._center_distance_cost(detections_carla, active_tracks)
                     if centers_cost[r, c] > cfg.jump_distance_gate / self.assoc_center_norm:
+                        debug_reasons["jump_gate"] += 1
                         continue
                 matched_indices.append((r, c))
                 if r in unmatched_detections:
                     unmatched_detections.remove(r)
                 if c in unmatched_tracks:
                     unmatched_tracks.remove(c)
+        cost_stats = None
+        if self.debug_logging:
+            if len(detections_carla) > 0 and len(active_tracks) > 0:
+                flat = cost_matrix.flatten()
+                if flat.size > 0:
+                    cost_stats = {
+                        "min": float(np.min(flat)),
+                        "mean": float(np.mean(flat)),
+                        "max": float(np.max(flat)),
+                    }
+            else:
+                cost_stats = {"min": None, "mean": None, "max": None}
 
         for det_idx, track_idx in matched_indices:
             track = active_tracks[track_idx]
@@ -729,6 +758,8 @@ class SortTracker:
                     track.state = TrackState.DELETED
             elif track.state == TrackState.TENTATIVE:
                 track.state = TrackState.DELETED
+            if self.debug_logging:
+                debug_reasons["unmatched_track"] += 1
 
         for det_idx in unmatched_detections:
             color = det_colors[det_idx] if det_colors else None
@@ -764,6 +795,19 @@ class SortTracker:
             "num_unmatched_measurements": len(unmatched_detections),
         }
         self.prev_meas_count = len(detections_carla)
+        if self.debug_logging:
+            self.last_debug_info = {
+                "predicted_tracks": predicted_states,
+                "matched": [(int(active_tracks[c].id), int(r)) for r, c in matched_indices],
+                "unmatched_tracks": [int(active_tracks[idx].id) for idx in unmatched_tracks],
+                "unmatched_detections": unmatched_detections.copy(),
+                "unmatched_reasons": dict(debug_reasons),
+                "cost_stats": cost_stats,
+                "cost_matrix_shape": cost_matrix.shape if 'cost_matrix' in locals() else (0, 0),
+                "cost_matrix_sample": cost_matrix.tolist() if 'cost_matrix' in locals() and cost_matrix.size <= 100 else None,
+            }
+        else:
+            self.last_debug_info = {}
         return np.array(output_results) if output_results else np.array([])
 
     def _prepare_detection_colors(
@@ -819,6 +863,9 @@ class SortTracker:
 
     def get_last_metrics(self) -> Dict[str, int]:
         return dict(self.last_metrics)
+
+    def get_last_debug_info(self) -> Dict[str, object]:
+        return dict(self.last_debug_info)
 
     @staticmethod
     def _state_name(state_val: int) -> str:

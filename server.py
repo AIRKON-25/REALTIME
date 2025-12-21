@@ -40,6 +40,7 @@ def main():
     ap.add_argument("--obs-min-hits", type=int, default=OBSTACLE_MIN_HITS)
     ap.add_argument("--assoc-center-weight", type=float, default=ASSOC_CENTER_WEIGHT)
     ap.add_argument("--assoc-center-norm", type=float, default=ASSOC_CENTER_NORM)
+    ap.add_argument("--debug-assoc", action="store_true", help="헝가리안 매칭/비용 행렬 디버그 로그")
     ap.add_argument("--log-pipeline", dest="log_pipeline", action="store_true", help="퓨전/트래킹 로그 출력")
     ap.add_argument("--no-log-pipeline", dest="log_pipeline", action="store_false", help="퓨전/트래킹 로그 비활성화")
     ap.add_argument("--log-udp-packets", dest="log_udp_packets", action="store_true", help="UDP 수신 패킷 로그 출력")
@@ -78,6 +79,7 @@ def main():
         tracker_config_obstacle=obs_cfg,
         assoc_center_weight=args.assoc_center_weight,
         assoc_center_norm=args.assoc_center_norm,
+        debug_assoc_logging=args.debug_assoc,
         log_pipeline=args.log_pipeline,
         log_udp_packets=args.log_udp_packets,
     )
