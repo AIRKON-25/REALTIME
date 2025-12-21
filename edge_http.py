@@ -377,6 +377,18 @@ def run_live_inference_http(args) -> None:
     target_hw = (target_h, target_w)
     strides = [float(s) for s in args.strides.split(",")]
     jpeg_quality = int(np.clip(args.jpeg_quality, 1, 100))
+    class_conf_map = None
+    if args.class_conf:
+        class_conf_map = {}
+        for tok in args.class_conf.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                cid, thr = tok.split(":")
+                class_conf_map[int(cid.strip())] = float(thr.strip())
+            except Exception:
+                print(f"[Warn] invalid --class-conf token '{tok}', expected format 'cls:thr'")
 
     runner = TensorRTTemporalRunner(
         args.weights,
@@ -488,6 +500,12 @@ def run_live_inference_http(args) -> None:
                         score_mode=args.score_mode,
                         use_gpu_nms=True
                     )[0]
+                    if class_conf_map:
+                        def _keep(d):
+                            cid = int(d.get("class_id", d.get("cls", 0)))
+                            thr = class_conf_map.get(cid, args.conf)
+                            return float(d.get("score", 0.0)) >= thr
+                        dets = [d for d in dets if _keep(d)]
                     dets = tiny_filter_on_dets(dets, min_area=20.0, min_edge=3.0)
 
                     tri_records, det_color_infos = [], []
@@ -575,6 +593,8 @@ def parse_args():
     parser.add_argument("--camera-size", type=str, default="1536,864", help="DepthAI output width,height")
     parser.add_argument("--score-mode", type=str, default="obj*cls", choices=["obj", "cls", "obj*cls"])
     parser.add_argument("--conf", type=float, default=0.30)
+    parser.add_argument("--class-conf", type=str, default=None,
+                        help="Optional per-class conf threshold, e.g., '0:0.2,1:0.35,2:0.35'")
     parser.add_argument("--nms-iou", type=float, default=0.2)
     parser.add_argument("--topk", type=int, default=50)
     parser.add_argument("--contain-thr", type=float, default=0.85)
