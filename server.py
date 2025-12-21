@@ -12,8 +12,8 @@ def main():
     ap.add_argument("--tracker-fixed-length", type=float, default=None)
     ap.add_argument("--tracker-fixed-width", type=float, default=None)
     ap.add_argument("--size-mode", choices=["bbox", "fixed", "mesh"], default="mesh")
-    ap.add_argument("--fixed-length", type=float, default=4.5)
-    ap.add_argument("--fixed-width", type=float, default=1.8)
+    # ap.add_argument("--fixed-length", type=float, default=4.4) # 인지에서 사용하는 기본값
+    # ap.add_argument("--fixed-width", type=float, default=2.7)
     ap.add_argument("--udp-port", type=int, default=50050, help="단일 UDP 포트로 모든 카메라 데이터 수신")
     ap.add_argument("--tx-host", default=None, help="트래킹 결과 전송 호스트(제어컴)")
     ap.add_argument("--tx-port", type=int, default=60050)
@@ -45,8 +45,8 @@ def main():
         tx_protocol=args.tx_protocol,
         carla_host=args.carla_host,
         carla_port=args.carla_port,
-        tracker_fixed_length=args.tracker_fixed_length,
-        tracker_fixed_width=args.tracker_fixed_width,
+        # tracker_fixed_length=args.tracker_fixed_length,
+        # tracker_fixed_width=args.tracker_fixed_width,
         command_host=args.cmd_host,
         command_port=args.cmd_port,
         ws_host=None if args.no_web else args.web_host,

@@ -21,7 +21,7 @@ from utils.tracking.cluster import cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.tracker import SortTracker
 from utils.tracking._constants import IOU_CLUSTER_THR
-from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES
+from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
 
 class RealtimeServer:
     def __init__(
@@ -36,8 +36,8 @@ class RealtimeServer:
         tx_protocol: str = "udp",
         carla_host: Optional[str] = None,
         carla_port: int = 61000,
-        tracker_fixed_length: Optional[float] = None,
-        tracker_fixed_width: Optional[float] = None,
+        # tracker_fixed_length: Optional[float] = None,
+        # tracker_fixed_width: Optional[float] = None,
         command_host: Optional[str] = None,
         command_port: Optional[int] = None,
         ws_host: Optional[str] = "0.0.0.0",
@@ -86,8 +86,8 @@ class RealtimeServer:
             self.command_queue = queue.Queue()
             self.command_server = CommandServer(command_host, command_port, self.command_queue)
 
-        self.tracker_fixed_length = float(tracker_fixed_length) if tracker_fixed_length is not None else None
-        self.tracker_fixed_width = float(tracker_fixed_width) if tracker_fixed_width is not None else None
+        self.tracker_fixed_length = vehicle_fixed_length
+        self.tracker_fixed_width = vehicle_fixed_width
 
     def _world_to_map_xy(self, cx: float, cy: float) -> Tuple[float, float]:
         x_min, x_max = -25.72432848384547, 25.744828483845467
@@ -321,7 +321,9 @@ class RealtimeServer:
 
     def _fuse_boxes(self, raw_detections: List[dict]) -> List[dict]:
         """
-        클러스터링 및 융합
+        클러스터링 및 대표값 생성: cls, 위치, 크기, 방향, 색상 기반
+        raw_detections: [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam"}, ...]
+        fused_list: [{"cx", "cy", "length","width","yaw","score","source_cams","color","color_votes","cls","cls_votes"}, ...]
         """
         if not raw_detections:
             return []
@@ -513,7 +515,7 @@ class RealtimeServer:
             last = now
 
             t0 = time.perf_counter()
-            raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cam","ts"...}, ...]
+            raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam","ts"}, ...]
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
@@ -528,7 +530,7 @@ class RealtimeServer:
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
-                self._log_pipeline(stats, fused, tracks, now, timings)
+                # self._log_pipeline(stats, fused, tracks, now, timings)
 
     def start(self):
         self.inference_receiver.start() # 인지 결과 리시버 시작

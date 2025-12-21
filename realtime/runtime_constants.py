@@ -4,3 +4,11 @@
 # color
 COLOR_BIAS_STRENGTH = 0.3 # 색상 보정 강도 (0~1)
 COLOR_BIAS_MIN_VOTES = 2 # 색상 보정에 필요한 최소 누적 관측 수
+
+# size
+vehicle_fixed_length = 4.4  # 차량 고정 길이 기본값
+vehicle_fixed_width = 2.7   # 차량 고정 너비 기본값
+rubberCone_fixed_length = 0.5  # 라바콘 고정 길이
+rubberCone_fixed_width = 0.5   # 라바콘 고정 너비
+barricade_fixed_length = 1.0  # 바리케이드 고정 길이
+barricade_fixed_width = 0.5   # 바리케이드 고정 너비

@@ -66,7 +66,8 @@ class UDPReceiverSingle:
         while self.running:
             try:
                 data, _ = self.sock.recvfrom(self.max_bytes)
-                ts = time.time()
+                # ts = time.time()
+                ts = data.decode("utf-8").find('"timestamp":') # 엣지에서 실제 전송 시각
                 cam, dets = self._parse_payload(data)
                 if dets is None:
                     continue
@@ -83,7 +84,6 @@ class UDPReceiverSingle:
                 dets = []
                 for it in msg.get("items", []):
                     cx, cy = it["center"]
-                    color = normalize_color_label(it.get("color"))
                     dets.append({
                         "cls": int(it.get("class_id", 0)),
                         "cx": float(cx),
@@ -92,10 +92,9 @@ class UDPReceiverSingle:
                         "width": float(it.get("width", 0.0)),
                         "yaw": float(it.get("yaw", 0.0)),
                         "score": float(it.get("score", 0.0)),
-                        "color": color,
                         "color_hex": it.get("color_hex"),
                     })
-                # self._log_packet(cam, dets if dets else [], meta=msg)
+                self._log_packet(cam, dets if dets else [], meta=msg)
                 return cam, dets if dets else []
         except Exception:
             pass
