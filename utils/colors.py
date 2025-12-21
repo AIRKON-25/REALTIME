@@ -34,7 +34,7 @@ def normalize_color_label(value: Optional[str]) -> Optional[str]:
     color = str(value).strip().lower()
     if not color or color == "none":
         return None
-    return VALID_COLORS.get(color)
+    return color if color in VALID_COLORS else None
 
 
 def color_label_to_hex(color: Optional[str]) -> Optional[str]:
