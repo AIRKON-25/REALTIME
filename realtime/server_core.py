@@ -1,3 +1,4 @@
+import heapq
 import json
 import queue
 import random
@@ -66,6 +67,14 @@ class RealtimeServer:
             self.cluster_config.iou_gate = self.cluster_config.iou_cluster_thr
         self.iou_thr = self.cluster_config.iou_cluster_thr
         self.track_meta: Dict[int, dict] = {}
+        # External ID mapping: keep car IDs fixed in 1..5.
+        self.car_id_min = 1
+        self.car_id_max = 5
+        self._car_id_pool = list(range(self.car_id_min, self.car_id_max + 1))
+        heapq.heapify(self._car_id_pool)
+        self._other_id_pool: List[int] = []
+        self._next_other_id = self.car_id_max + 1
+        self._track_id_map: Dict[int, int] = {}
         self.active_cams = set()
         self.color_bias_strength = COLOR_BIAS_STRENGTH
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
@@ -136,7 +145,67 @@ class RealtimeServer:
         v = 1.0 - _norm(cy, y_min, y_max)
         return u, v
 
-    def _build_ui_snapshot(self, tracks: np.ndarray, ts: float) -> Optional[dict]:
+    def _assign_external_id(self, prefer_car: bool) -> int:
+        if prefer_car and self._car_id_pool:
+            return heapq.heappop(self._car_id_pool)
+        if self._other_id_pool:
+            return heapq.heappop(self._other_id_pool)
+        ext_id = self._next_other_id
+        self._next_other_id += 1
+        return ext_id
+
+    def _release_external_id(self, internal_id: int) -> None:
+        ext_id = self._track_id_map.pop(internal_id, None)
+        if ext_id is None:
+            return
+        if ext_id <= self.car_id_max:
+            heapq.heappush(self._car_id_pool, ext_id)
+        else:
+            heapq.heappush(self._other_id_pool, ext_id)
+
+    def _map_track_ids(self, tracks: np.ndarray) -> Tuple[np.ndarray, Dict[int, dict]]:
+        if tracks is None or len(tracks) == 0:
+            for tid in list(self._track_id_map.keys()):
+                self._release_external_id(tid)
+            return tracks, {}
+
+        active_ids = {int(row[0]) for row in tracks}
+        for tid in list(self._track_id_map.keys()):
+            if tid not in active_ids:
+                self._release_external_id(tid)
+
+        id_map: Dict[int, int] = {}
+        for row in tracks:
+            internal_id = int(row[0])
+            cls = int(row[1]) if len(row) > 1 else 0
+            is_car = cls == 0
+            ext_id = self._track_id_map.get(internal_id)
+            if ext_id is None:
+                ext_id = self._assign_external_id(is_car)
+                self._track_id_map[internal_id] = ext_id
+            elif not is_car and ext_id <= self.car_id_max:
+                # Keep obstacles out of the reserved car ID range.
+                self._release_external_id(internal_id)
+                ext_id = self._assign_external_id(False)
+                self._track_id_map[internal_id] = ext_id
+            elif is_car and ext_id > self.car_id_max and self._car_id_pool:
+                # Prefer reserved IDs for cars when slots open up.
+                self._release_external_id(internal_id)
+                ext_id = self._assign_external_id(True)
+                self._track_id_map[internal_id] = ext_id
+            id_map[internal_id] = ext_id
+
+        mapped = tracks.copy()
+        for idx, row in enumerate(tracks):
+            internal_id = int(row[0])
+            mapped[idx, 0] = float(id_map.get(internal_id, row[0]))
+        mapped_meta = {
+            id_map[int(row[0])]: self.track_meta.get(int(row[0]), {})
+            for row in tracks
+        }
+        return mapped, mapped_meta
+
+    def _build_ui_snapshot(self, tracks: np.ndarray, track_meta: Dict[int, dict], ts: float) -> Optional[dict]:
         if tracks is None or len(tracks) == 0:
             cars_on_map = []
             cars_status = []
@@ -152,7 +221,7 @@ class RealtimeServer:
                 width = float(row[5])
                 yaw = float(row[6])
 
-                meta = self.track_meta.get(tid, {})
+                meta = track_meta.get(tid, {})
                 color_hex = meta.get("color_hex")
                 color_label = hex_to_color_label(color_hex)
                 ui_color = color_hex or color_label_to_hex(color_label) or "#22c55e"
@@ -530,12 +599,13 @@ class RealtimeServer:
         """
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
+        mapped_tracks, mapped_meta = self._map_track_ids(tracks)
         if self.track_tx:
-            self.track_tx.send(tracks, self.track_meta, ts)
+            self.track_tx.send(mapped_tracks, mapped_meta, ts)
         if self.carla_tx:
-            self.carla_tx.send(tracks, self.track_meta, ts)
+            self.carla_tx.send(mapped_tracks, mapped_meta, ts)
         if self.ws_hub:
-            snapshot = self._build_ui_snapshot(tracks, ts)
+            snapshot = self._build_ui_snapshot(mapped_tracks, mapped_meta, ts)
             if snapshot is not None:
                 self.ws_hub.broadcast(snapshot)
 
