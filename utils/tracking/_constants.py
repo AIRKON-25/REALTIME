@@ -27,8 +27,8 @@ DEFAULT_SMOOTH_WINDOW = 5 # 최근 이만큼의 프레임을 반영해서 부드
 
 # Tracking defaults and shared thresholds
 DEFAULT_COLOR_LOCK_STREAK = 5
-DEFAULT_MAX_AGE = 3
-DEFAULT_MIN_HITS = 3
+DEFAULT_MAX_AGE = 3 # 소멸되기 전까지 허용되는 최대 프레임 수
+DEFAULT_MIN_HITS = 3 # 컨펌되기 위한 최소 히트 수
 DEFAULT_IOU_THRESHOLD = 0.3
 DEFAULT_COLOR_PENALTY = 0.3
 YAW_PERIOD_DEG = 180.0
