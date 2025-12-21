@@ -50,6 +50,7 @@ class RealtimeServer:
         tracker_config_obstacle: Optional[TrackerConfigObstacle] = None,
         assoc_center_weight: Optional[float] = None,
         assoc_center_norm: Optional[float] = None,
+        debug_assoc_logging: bool = False,
         log_pipeline: bool = True,
         log_udp_packets: bool = False,
     ):
@@ -70,6 +71,7 @@ class RealtimeServer:
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
         self._prev_tracks_for_cluster: Optional[np.ndarray] = None
         self.last_cluster_debug: Dict[str, int] = {}
+        self.debug_assoc_logging = debug_assoc_logging
         self.log_pipeline = log_pipeline
 
         self.ws_hub: Optional[WebSocketHub] = None
@@ -105,6 +107,7 @@ class RealtimeServer:
             obstacle_config=obs_cfg,
             assoc_center_weight=assoc_w,
             assoc_center_norm=assoc_norm,
+            debug_logging=self.debug_assoc_logging,
         ) # 기본 파라미터로 SortTracker 초기화
         self.last_tracker_metrics: Dict[str, int] = {}
     
@@ -609,6 +612,20 @@ class RealtimeServer:
                 tracker_metrics = self.tracker.get_last_metrics()
                 if tracker_metrics:
                     print(f"[TrackerMetrics] {json.dumps(tracker_metrics, ensure_ascii=False)}")
+                if self.debug_assoc_logging:
+                    assoc_debug = self.tracker.get_last_debug_info()
+                    if assoc_debug:
+                        payload = {
+                            "clusters": fused,
+                            "pred_tracks": assoc_debug.get("predicted_tracks", []),
+                            "matches": assoc_debug.get("matched", []),
+                            "unmatched_tracks": assoc_debug.get("unmatched_tracks", []),
+                            "unmatched_dets": assoc_debug.get("unmatched_detections", []),
+                            "unmatched_reasons": assoc_debug.get("unmatched_reasons", {}),
+                            "cost_stats": assoc_debug.get("cost_stats"),
+                            "cost_shape": assoc_debug.get("cost_matrix_shape"),
+                        }
+                        print(f"[AssocDebug] {json.dumps(payload, ensure_ascii=False)}")
 
     def start(self):
         self.inference_receiver.start() # 인지 결과 리시버 시작
