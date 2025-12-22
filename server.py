@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--web-host", default="0.0.0.0", help="웹소켓 서버 바인드 호스트")
     ap.add_argument("--web-port", type=int, default=18000)
     ap.add_argument("--no-web", action="store_true")
+    ap.add_argument("--car-count", type=int, default=5, help="number of cars to lock into IDs 1..N (1-5)")
     ap.add_argument("--cmd-host", default="0.0.0.0", help="yaw/색상 명령 서버 바인드 호스트(미입력시 비활성)")
     ap.add_argument("--cmd-port", type=int, default=18100, help="yaw/색상 명령 서버 포트")
     ap.add_argument("--car-max-age", type=int, default=CAR_MAX_AGE)
@@ -47,6 +48,8 @@ def main():
     ap.add_argument("--no-log-udp-packets", dest="log_udp_packets", action="store_false", help="UDP 수신 패킷 로그 비활성화")
     ap.set_defaults(log_pipeline=True, log_udp_packets=False)
     args = ap.parse_args()
+    if args.car_count < 1 or args.car_count > 5:
+        ap.error("--car-count must be between 1 and 5")
 
     cam_ports = {
         "cam1": 101,
@@ -69,6 +72,7 @@ def main():
         tx_protocol=args.tx_protocol,
         carla_host=args.carla_host,
         carla_port=args.carla_port,
+        car_id_count=args.car_count,
         # tracker_fixed_length=args.tracker_fixed_length,
         # tracker_fixed_width=args.tracker_fixed_width,
         command_host=args.cmd_host,
