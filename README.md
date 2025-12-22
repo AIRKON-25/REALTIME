@@ -35,6 +35,9 @@ python -c "import socket, json; s=socket.create_connection(('127.0.0.1',18100));
 - 트랙 리스트 보고 싶다 
 python -c "import socket, json; s=socket.create_connection(('127.0.0.1',18100)); s.sendall((json.dumps({'cmd':'list_tracks'})+'\n').encode()); print(s.recv(4096).decode()); s.close()"  
 
+- car-count가 바뀌었다
+python -c "import socket, json; s=socket.create_connection(('127.0.0.1',18100)); s.sendall((json.dumps({'cmd':'set_car_count', 'car_count':4})+'\n').encode()); print(s.recv(4096).decode()); s.close()"  
+
 
 ### WEB   
 node js 설치   

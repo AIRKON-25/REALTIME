@@ -818,6 +818,37 @@ class RealtimeServer:
                 print(f"[Command] set track {tid} yaw -> {yaw_val:.1f}°")
                 return {"status": "ok", "track_id": tid, "yaw": yaw_val}
             return {"status": "error", "message": f"track {tid} not found"}
+        if cmd == "set_car_count":
+            raw_count = payload.get("car_count", payload.get("count"))
+            if raw_count is None:
+                return {"status": "error", "message": "car_count required"}
+            try:
+                car_count = int(raw_count)
+            except (TypeError, ValueError):
+                return {"status": "error", "message": "car_count must be int"}
+            if not (self.car_id_min <= car_count <= self.car_id_ceiling):
+                return {
+                    "status": "error",
+                    "message": f"car_count must be between {self.car_id_min} and {self.car_id_ceiling}",
+                }
+            if car_count == self.car_id_max:
+                return {"status": "ok", "car_count": self.car_id_max}
+            prev_count = self.car_id_max
+            self.car_id_max = car_count
+            used_ext_ids = set(self._track_id_map.values())
+            if car_count < prev_count:
+                disabled_ids = set(range(car_count + 1, self.car_id_ceiling + 1))
+                for internal_id, ext_id in list(self._track_id_map.items()):
+                    if ext_id in disabled_ids:
+                        new_ext = self._assign_external_id(False, None, None, used_ext_ids)
+                        self._track_id_map[internal_id] = new_ext
+                        self._external_to_internal.pop(ext_id, None)
+                        self._external_to_internal[new_ext] = internal_id
+                        used_ext_ids.discard(ext_id)
+                        used_ext_ids.add(new_ext)
+            self._refresh_id_pools(used_ext_ids)
+            print(f"[Command] set car_count -> {self.car_id_max}")
+            return {"status": "ok", "car_count": self.car_id_max}
         if cmd == "swap_ids":
             track_id_a = payload.get("track_id_a", payload.get("id_a"))
             track_id_b = payload.get("track_id_b", payload.get("id_b"))
@@ -832,12 +863,33 @@ class RealtimeServer:
                 return {"status": "error", "message": "track IDs must be different"}
             internal_a = self._resolve_external_track_id(tid_a)
             internal_b = self._resolve_external_track_id(tid_b)
-            if internal_a is None or internal_b is None:
+            if internal_a is None and internal_b is None:
                 return {"status": "error", "message": "track not found"}
+            if internal_a is None or internal_b is None:
+                internal_target = internal_b if internal_a is None else internal_a
+                desired_ext = tid_a if internal_a is None else tid_b
+                if desired_ext <= 0:
+                    return {"status": "error", "message": "external id must be positive"}
+                current_ext = self._track_id_map.get(internal_target)
+                if current_ext is None:
+                    return {"status": "error", "message": "track not found"}
+                if desired_ext == current_ext:
+                    return {"status": "ok", "track_id": desired_ext, "previous": current_ext}
+                self._released_external.pop(desired_ext, None)
+                self._external_to_internal.pop(current_ext, None)
+                self._track_id_map[internal_target] = desired_ext
+                self._external_to_internal[desired_ext] = internal_target
+                self._recycle_external_id(current_ext)
+                used_ext_ids = set(self._track_id_map.values())
+                self._refresh_id_pools(used_ext_ids)
+                print(f"[Command] set external ID {current_ext} -> {desired_ext}")
+                return {"status": "ok", "track_id": desired_ext, "previous": current_ext}
             ext_a = self._track_id_map.get(internal_a)
             ext_b = self._track_id_map.get(internal_b)
             if ext_a is None or ext_b is None:
                 return {"status": "error", "message": "track not found"}
+            self._released_external.pop(ext_a, None)
+            self._released_external.pop(ext_b, None)
             self._track_id_map[internal_a] = ext_b
             self._track_id_map[internal_b] = ext_a
             self._external_to_internal[ext_a] = internal_b
