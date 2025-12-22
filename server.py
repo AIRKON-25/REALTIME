@@ -2,7 +2,16 @@ import argparse
 import time
 
 from realtime.server_core import RealtimeServer
-from utils.tracking._constants import IOU_CLUSTER_THR
+from utils.tracking.tracker import TrackerConfigCar, TrackerConfigObstacle
+from utils.tracking._constants import (
+    ASSOC_CENTER_NORM,
+    ASSOC_CENTER_WEIGHT,
+    IOU_CLUSTER_THR,
+    CAR_MAX_AGE,
+    CAR_MIN_HITS,
+    OBSTACLE_MAX_AGE,
+    OBSTACLE_MIN_HITS,
+)
 
 def main():
     ap = argparse.ArgumentParser() # 현장에서 바로 바뀌는 파라미터들만 인자로 빼자
@@ -25,6 +34,18 @@ def main():
     ap.add_argument("--no-web", action="store_true")
     ap.add_argument("--cmd-host", default="0.0.0.0", help="yaw/색상 명령 서버 바인드 호스트(미입력시 비활성)")
     ap.add_argument("--cmd-port", type=int, default=18100, help="yaw/색상 명령 서버 포트")
+    ap.add_argument("--car-max-age", type=int, default=CAR_MAX_AGE)
+    ap.add_argument("--car-min-hits", type=int, default=CAR_MIN_HITS)
+    ap.add_argument("--obs-max-age", type=int, default=OBSTACLE_MAX_AGE)
+    ap.add_argument("--obs-min-hits", type=int, default=OBSTACLE_MIN_HITS)
+    ap.add_argument("--assoc-center-weight", type=float, default=ASSOC_CENTER_WEIGHT)
+    ap.add_argument("--assoc-center-norm", type=float, default=ASSOC_CENTER_NORM)
+    ap.add_argument("--debug-assoc", action="store_true", help="헝가리안 매칭/비용 행렬 디버그 로그")
+    ap.add_argument("--log-pipeline", dest="log_pipeline", action="store_true", help="퓨전/트래킹 로그 출력")
+    ap.add_argument("--no-log-pipeline", dest="log_pipeline", action="store_false", help="퓨전/트래킹 로그 비활성화")
+    ap.add_argument("--log-udp-packets", dest="log_udp_packets", action="store_true", help="UDP 수신 패킷 로그 출력")
+    ap.add_argument("--no-log-udp-packets", dest="log_udp_packets", action="store_false", help="UDP 수신 패킷 로그 비활성화")
+    ap.set_defaults(log_pipeline=True, log_udp_packets=False)
     args = ap.parse_args()
 
     cam_ports = {
@@ -33,6 +54,9 @@ def main():
         "cam3": 103,
         "cam4": 104,
     }
+
+    car_cfg = TrackerConfigCar(max_age=args.car_max_age, min_hits=args.car_min_hits)
+    obs_cfg = TrackerConfigObstacle(max_age=args.obs_max_age, min_hits=args.obs_min_hits)
 
     server = RealtimeServer(
         cam_ports=cam_ports,
@@ -51,6 +75,13 @@ def main():
         command_port=args.cmd_port,
         ws_host=None if args.no_web else args.web_host,
         ws_port=args.web_port,
+        tracker_config_car=car_cfg,
+        tracker_config_obstacle=obs_cfg,
+        assoc_center_weight=args.assoc_center_weight,
+        assoc_center_norm=args.assoc_center_norm,
+        debug_assoc_logging=args.debug_assoc,
+        log_pipeline=args.log_pipeline,
+        log_udp_packets=args.log_udp_packets,
     )
     server.start()
     try:

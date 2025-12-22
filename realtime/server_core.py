@@ -1,3 +1,4 @@
+import heapq
 import json
 import queue
 import random
@@ -17,10 +18,11 @@ from utils.colors import (
     normalize_color_hex,
     normalize_color_label,
 )
-from utils.tracking.cluster import cluster_by_aabb_iou
+from utils.tracking.cluster import ClassMergePolicy, ClusterConfig, cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
-from utils.tracking.tracker import SortTracker
-from utils.tracking._constants import IOU_CLUSTER_THR
+from utils.tracking.geometry import aabb_iou_axis_aligned
+from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
+from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
 from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
 
 class RealtimeServer:
@@ -42,15 +44,51 @@ class RealtimeServer:
         command_port: Optional[int] = None,
         ws_host: Optional[str] = "0.0.0.0",
         ws_port: int = 9001,
+        cluster_config: Optional[ClusterConfig] = None,
+        class_merge_policy: ClassMergePolicy = ClassMergePolicy.STRICT, # 차-장애물 머지 허용하려면 ClassMergePolicy.ALLOW_CAR_OBSTACLE
+        enable_cluster_split: bool = False, # 클러스터 분할 허용하려면 True
+        tracker_config_car: Optional[TrackerConfigCar] = None,
+        tracker_config_obstacle: Optional[TrackerConfigObstacle] = None,
+        assoc_center_weight: Optional[float] = None,
+        assoc_center_norm: Optional[float] = None,
+        debug_assoc_logging: bool = False,
+        log_pipeline: bool = True,
+        log_udp_packets: bool = False,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
         self.buffer_ttl = max(self.dt * 2.0, 1.0) # 버퍼 유효 시간 초
-        self.iou_thr = iou_cluster_thr
+        self.cluster_config = cluster_config or ClusterConfig(
+            iou_cluster_thr=iou_cluster_thr,
+            merge_policy=class_merge_policy,
+            allow_split_multi_modal=enable_cluster_split,
+        )
+        if self.cluster_config.iou_gate is None:
+            self.cluster_config.iou_gate = self.cluster_config.iou_cluster_thr
+        self.iou_thr = self.cluster_config.iou_cluster_thr
         self.track_meta: Dict[int, dict] = {}
+        # External ID mapping: keep car IDs fixed in 1..5.
+        self.car_id_min = 1
+        self.car_id_max = 5
+        self._car_id_pool = list(range(self.car_id_min, self.car_id_max + 1))
+        heapq.heapify(self._car_id_pool)
+        self._other_id_pool: List[int] = []
+        self._next_other_id = self.car_id_max + 1
+        self._track_id_map: Dict[int, int] = {}
+        self._external_to_internal: Dict[int, int] = {}
+        self._released_external: Dict[int, dict] = {}
+        self._track_state_cache: Dict[int, dict] = {}
+        self._reid_keep_secs = 2.0
+        self._reid_dist_gate_m = 4.0
+        self._reid_color_bonus = 0.6
+        self._reid_color_penalty = 1.0
         self.active_cams = set()
         self.color_bias_strength = COLOR_BIAS_STRENGTH
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
+        self._prev_tracks_for_cluster: Optional[np.ndarray] = None
+        self.last_cluster_debug: Dict[str, int] = {}
+        self.debug_assoc_logging = debug_assoc_logging
+        self.log_pipeline = log_pipeline
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -61,7 +99,7 @@ class RealtimeServer:
                 print(f"[WebSocketHub] init failed: {exc}")
                 self.ws_hub = None
 
-        self.inference_receiver = UDPReceiverSingle(single_port)
+        self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
         self.cam_xy: Dict[str, Tuple[float, float]] = {} # 카메라 위치 로드... json으로 뺄까?
 
@@ -76,7 +114,18 @@ class RealtimeServer:
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
 
-        self.tracker = SortTracker() # 기본 파라미터로 SortTracker 초기화
+        car_cfg = tracker_config_car or TrackerConfigCar()
+        obs_cfg = tracker_config_obstacle or TrackerConfigObstacle()
+        assoc_w = assoc_center_weight if assoc_center_weight is not None else ASSOC_CENTER_WEIGHT
+        assoc_norm = assoc_center_norm if assoc_center_norm is not None else ASSOC_CENTER_NORM
+        self.tracker = SortTracker(
+            car_config=car_cfg,
+            obstacle_config=obs_cfg,
+            assoc_center_weight=assoc_w,
+            assoc_center_norm=assoc_norm,
+            debug_logging=self.debug_assoc_logging,
+        ) # 기본 파라미터로 SortTracker 초기화
+        self.last_tracker_metrics: Dict[str, int] = {}
     
         self._next_log_ts = 0.0
 
@@ -103,7 +152,171 @@ class RealtimeServer:
         v = 1.0 - _norm(cy, y_min, y_max)
         return u, v
 
-    def _build_ui_snapshot(self, tracks: np.ndarray, ts: float) -> Optional[dict]:
+    def _assign_external_id(self, prefer_car: bool) -> int:
+        if prefer_car and self._car_id_pool:
+            return heapq.heappop(self._car_id_pool)
+        if self._other_id_pool:
+            return heapq.heappop(self._other_id_pool)
+        ext_id = self._next_other_id
+        self._next_other_id += 1
+        return ext_id
+
+    def _release_external_id(self, internal_id: int) -> None:
+        ext_id = self._track_id_map.pop(internal_id, None)
+        if ext_id is None:
+            return
+        self._external_to_internal.pop(ext_id, None)
+        if ext_id <= self.car_id_max:
+            heapq.heappush(self._car_id_pool, ext_id)
+        else:
+            heapq.heappush(self._other_id_pool, ext_id)
+
+    def _stash_released_id(self, internal_id: int, now: float) -> None:
+        ext_id = self._track_id_map.pop(internal_id, None)
+        if ext_id is None:
+            return
+        self._external_to_internal.pop(ext_id, None)
+        info = self._track_state_cache.pop(internal_id, None)
+        is_car = bool(info) and int(info.get("cls", 1)) == 0
+        if ext_id <= self.car_id_max and is_car:
+            self._released_external[ext_id] = {
+                "ts": now,
+                "cls": 0,
+                "cx": float(info.get("cx", 0.0)),
+                "cy": float(info.get("cy", 0.0)),
+                "color": info.get("color"),
+            }
+            return
+        if ext_id <= self.car_id_max:
+            heapq.heappush(self._car_id_pool, ext_id)
+        else:
+            heapq.heappush(self._other_id_pool, ext_id)
+
+    def _prune_released_ids(self, now: float) -> None:
+        if self._reid_keep_secs <= 0.0:
+            for ext_id in list(self._released_external.keys()):
+                if ext_id <= self.car_id_max:
+                    heapq.heappush(self._car_id_pool, ext_id)
+                else:
+                    heapq.heappush(self._other_id_pool, ext_id)
+            self._released_external.clear()
+            return
+        for ext_id, info in list(self._released_external.items()):
+            if now - float(info.get("ts", 0.0)) <= self._reid_keep_secs:
+                continue
+            self._released_external.pop(ext_id, None)
+            if ext_id <= self.car_id_max:
+                heapq.heappush(self._car_id_pool, ext_id)
+            else:
+                heapq.heappush(self._other_id_pool, ext_id)
+
+    def _map_track_ids(self, tracks: np.ndarray, ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
+        now = float(ts) if ts is not None else time.time()
+        self._prune_released_ids(now)
+        if tracks is None or len(tracks) == 0:
+            for tid in list(self._track_id_map.keys()):
+                self._stash_released_id(tid, now)
+            self._external_to_internal = {}
+            return tracks, {}
+
+        active_ids = {int(row[0]) for row in tracks}
+        for tid in list(self._track_id_map.keys()):
+            if tid not in active_ids:
+                self._stash_released_id(tid, now)
+
+        new_track_rows = []
+        for row in tracks:
+            internal_id = int(row[0])
+            if internal_id in self._track_id_map:
+                continue
+            cls = int(row[1]) if len(row) > 1 else 0
+            meta = self.track_meta.get(internal_id, {})
+            color = normalize_color_label(meta.get("color"))
+            if not color:
+                color = hex_to_color_label(meta.get("color_hex"))
+            new_track_rows.append((internal_id, cls, float(row[2]), float(row[3]), color))
+
+        if self._released_external:
+            pairs = []
+            for internal_id, cls, cx, cy, color in new_track_rows:
+                if cls != 0:
+                    continue
+                for ext_id, info in self._released_external.items():
+                    if info.get("cls") != 0:
+                        continue
+                    dist = float(np.hypot(cx - float(info.get("cx", 0.0)), cy - float(info.get("cy", 0.0))))
+                    if dist > self._reid_dist_gate_m:
+                        continue
+                    cost = dist
+                    info_color = info.get("color")
+                    if color and info_color:
+                        if color == info_color:
+                            cost *= self._reid_color_bonus
+                        else:
+                            cost += self._reid_color_penalty
+                    pairs.append((cost, internal_id, ext_id))
+            pairs.sort(key=lambda v: v[0])
+            used_internal = set()
+            used_external = set()
+            for cost, internal_id, ext_id in pairs:
+                if internal_id in used_internal or ext_id in used_external:
+                    continue
+                self._track_id_map[internal_id] = ext_id
+                used_internal.add(internal_id)
+                used_external.add(ext_id)
+                self._released_external.pop(ext_id, None)
+
+        id_map: Dict[int, int] = {}
+        for row in tracks:
+            internal_id = int(row[0])
+            cls = int(row[1]) if len(row) > 1 else 0
+            is_car = cls == 0
+            ext_id = self._track_id_map.get(internal_id)
+            if ext_id is None:
+                ext_id = self._assign_external_id(is_car)
+                self._track_id_map[internal_id] = ext_id
+            elif not is_car and ext_id <= self.car_id_max:
+                # Keep obstacles out of the reserved car ID range.
+                self._release_external_id(internal_id)
+                ext_id = self._assign_external_id(False)
+                self._track_id_map[internal_id] = ext_id
+            elif is_car and ext_id > self.car_id_max and self._car_id_pool:
+                # Prefer reserved IDs for cars when slots open up.
+                self._release_external_id(internal_id)
+                ext_id = self._assign_external_id(True)
+                self._track_id_map[internal_id] = ext_id
+            id_map[internal_id] = ext_id
+
+        self._external_to_internal = {ext: internal for internal, ext in id_map.items()}
+
+        new_cache: Dict[int, dict] = {}
+        for row in tracks:
+            internal_id = int(row[0])
+            cls = int(row[1]) if len(row) > 1 else 0
+            meta = self.track_meta.get(internal_id, {})
+            color = normalize_color_label(meta.get("color"))
+            if not color:
+                color = hex_to_color_label(meta.get("color_hex"))
+            new_cache[internal_id] = {
+                "ts": now,
+                "cls": cls,
+                "cx": float(row[2]),
+                "cy": float(row[3]),
+                "color": color,
+            }
+        self._track_state_cache = new_cache
+
+        mapped = tracks.copy()
+        for idx, row in enumerate(tracks):
+            internal_id = int(row[0])
+            mapped[idx, 0] = float(id_map.get(internal_id, row[0]))
+        mapped_meta = {
+            id_map[int(row[0])]: self.track_meta.get(int(row[0]), {})
+            for row in tracks
+        }
+        return mapped, mapped_meta
+
+    def _build_ui_snapshot(self, tracks: np.ndarray, track_meta: Dict[int, dict], ts: float) -> Optional[dict]:
         if tracks is None or len(tracks) == 0:
             cars_on_map = []
             cars_status = []
@@ -119,7 +332,7 @@ class RealtimeServer:
                 width = float(row[5])
                 yaw = float(row[6])
 
-                meta = self.track_meta.get(tid, {})
+                meta = track_meta.get(tid, {})
                 color_hex = meta.get("color_hex")
                 color_label = hex_to_color_label(color_hex)
                 ui_color = color_hex or color_label_to_hex(color_label) or "#22c55e"
@@ -252,6 +465,15 @@ class RealtimeServer:
                 except queue.Full:
                     pass
 
+    def _resolve_external_track_id(self, external_id: int) -> Optional[int]:
+        internal_id = self._external_to_internal.get(external_id)
+        if internal_id is not None:
+            return internal_id
+        if external_id in self._track_id_map:
+            return external_id
+        return None
+
+
     def _handle_command_item(self, item: dict) -> dict: 
         """
         단일 명령 처리 yaw/색상 명령 처리
@@ -266,12 +488,15 @@ class RealtimeServer:
                 tid = int(track_id)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "track_id must be int"}
+            resolved_id = self._resolve_external_track_id(tid)
+            if resolved_id is None:
+                return {"status": "error", "message": f"track {tid} not found"}
             delta = payload.get("delta", 180.0)
             try:
                 delta = float(delta)
             except (TypeError, ValueError):
                 delta = 180.0
-            flipped = self.tracker.force_flip_yaw(tid, offset_deg=delta)
+            flipped = self.tracker.force_flip_yaw(resolved_id, offset_deg=delta)
             if flipped:
                 print(f"[Command] flipped track {tid} yaw by {delta:.1f}°")
                 return {"status": "ok", "track_id": tid, "delta": delta}
@@ -284,6 +509,9 @@ class RealtimeServer:
                 tid = int(track_id)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "track_id must be int"}
+            resolved_id = self._resolve_external_track_id(tid)
+            if resolved_id is None:
+                return {"status": "error", "message": f"track {tid} not found"}
             raw_color = payload.get("color")
             normalized_color = normalize_color_label(raw_color)
             if raw_color is not None and normalized_color is None:
@@ -291,7 +519,7 @@ class RealtimeServer:
                 if raw_str and raw_str != "none":
                     return {"status": "error", "message": f"invalid color '{raw_color}'"}
                 normalized_color = None
-            updated = self.tracker.force_set_color(tid, normalized_color)
+            updated = self.tracker.force_set_color(resolved_id, normalized_color)
             if updated:
                 print(f"[Command] set track {tid} color -> {normalized_color}")
                 return {"status": "ok", "track_id": tid, "color": normalized_color}
@@ -304,18 +532,29 @@ class RealtimeServer:
                 tid = int(track_id)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "track_id must be int"}
+            resolved_id = self._resolve_external_track_id(tid)
+            if resolved_id is None:
+                return {"status": "error", "message": f"track {tid} not found"}
             raw_yaw = payload.get("yaw")
             try:
                 yaw_val = float(raw_yaw)
             except (TypeError, ValueError):
                 return {"status": "error", "message": "yaw must be float"}
-            updated = self.tracker.force_set_yaw(tid, yaw_val)
+            updated = self.tracker.force_set_yaw(resolved_id, yaw_val)
             if updated:
                 print(f"[Command] set track {tid} yaw -> {yaw_val:.1f}°")
                 return {"status": "ok", "track_id": tid, "yaw": yaw_val}
             return {"status": "error", "message": f"track {tid} not found"}
         if cmd == "list_tracks":
             tracks = self.tracker.list_tracks()
+            for item in tracks:
+                try:
+                    internal_id = int(item.get("id"))
+                except Exception:
+                    continue
+                ext_id = self._track_id_map.get(internal_id)
+                if ext_id is not None:
+                    item["id"] = ext_id
             return {"status": "ok", "tracks": tracks, "count": len(tracks)}
         return {"status": "error", "message": f"unknown command '{cmd}'"}
 
@@ -330,17 +569,23 @@ class RealtimeServer:
         boxes = np.array([[d["cls"], d["cx"], d["cy"], d["length"], d["width"], d["yaw"]] for d in raw_detections], dtype=float)
         cams = [d.get("cam", "?") for d in raw_detections]
         colors = [normalize_color_label(d.get("color")) for d in raw_detections]
-        clusters = cluster_by_aabb_iou(
+        clusters, cluster_debug = cluster_by_aabb_iou(
             boxes,
-            iou_cluster_thr=self.iou_thr,
-            color_labels=colors
+            config=self.cluster_config,
+            color_labels=colors,
+            track_hints=self._prev_tracks_for_cluster,
+            return_debug=True
         )
+        self.last_cluster_debug = cluster_debug.get("counters", {}) if isinstance(cluster_debug, dict) else {}
+        track_matches = cluster_debug.get("track_matches", []) if isinstance(cluster_debug, dict) else []
         fused_list = []
         for idxs in clusters:
             weight_bias = self._color_weight_biases(raw_detections, idxs)
+            iou_support = self._pairwise_iou_support(boxes, idxs)
+            extra_weights = self._compose_extra_weights(raw_detections, idxs, weight_bias, iou_support, track_matches)
             rep = fuse_cluster_weighted(
                 boxes, cams, idxs, self.cam_xy,
-                extra_weights=weight_bias
+                extra_weights=extra_weights
             )
             extras = self._aggregate_cluster(raw_detections, idxs, rep)
             fused_list.append({
@@ -372,6 +617,42 @@ class RealtimeServer:
             else:
                 biases.append(1.0)
         return biases
+
+    def _pairwise_iou_support(self, boxes: np.ndarray, idxs: List[int]) -> Dict[int, float]:
+        support = {idx: 0.0 for idx in idxs}
+        if len(idxs) <= 1:
+            return support
+        for a in range(len(idxs)):
+            ia = idxs[a]
+            for b in range(a + 1, len(idxs)):
+                ib = idxs[b]
+                iou = aabb_iou_axis_aligned(boxes[ia, -5:], boxes[ib, -5:])
+                support[ia] += iou
+                support[ib] += iou
+        return support
+
+    def _compose_extra_weights(
+        self,
+        detections: List[dict],
+        idxs: List[int],
+        base_weights: List[float],
+        iou_support: Dict[int, float],
+        track_matches: List[Tuple[Optional[int], float]],
+    ) -> List[float]:
+        weights: List[float] = []
+        cfg = self.cluster_config
+        for local_idx, det_idx in enumerate(idxs):
+            w = base_weights[local_idx] if local_idx < len(base_weights) else 1.0
+            score = float(detections[det_idx].get("score", 0.0) or 0.0)
+            track_score = 0.0
+            if track_matches and det_idx < len(track_matches):
+                track_score = float(track_matches[det_idx][1] or 0.0)
+            iou_sum = float(iou_support.get(det_idx, 0.0))
+            w *= (1.0 + cfg.weight_score_scale * score)
+            w *= (1.0 + cfg.weight_iou_scale * min(iou_sum, cfg.weight_iou_cap))
+            w *= (1.0 + cfg.weight_track_scale * track_score)
+            weights.append(max(w, 1e-4))
+        return weights
 
     def _aggregate_cluster(self, detections: List[dict], idxs: List[int], fused_box: Optional[np.ndarray] = None) -> dict:
         subset = [detections[i] for i in idxs]
@@ -455,12 +736,13 @@ class RealtimeServer:
         """
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
+        mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
         if self.track_tx:
-            self.track_tx.send(tracks, self.track_meta, ts)
+            self.track_tx.send(mapped_tracks, mapped_meta, ts)
         if self.carla_tx:
-            self.carla_tx.send(tracks, self.track_meta, ts)
+            self.carla_tx.send(mapped_tracks, mapped_meta, ts)
         if self.ws_hub:
-            snapshot = self._build_ui_snapshot(tracks, ts)
+            snapshot = self._build_ui_snapshot(mapped_tracks, mapped_meta, ts)
             if snapshot is not None:
                 self.ws_hub.broadcast(snapshot)
 
@@ -524,14 +806,33 @@ class RealtimeServer:
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
             self._broadcast_tracks(tracks, now)
-            # print(len(raw_dets), len(fused), tracks.shape[0])
+            self._prev_tracks_for_cluster = tracks.copy() if tracks is not None and len(tracks) else None
 
-            if self._should_log(): # 1초에 한번 로그
+            if self.log_pipeline and self._should_log(): # 1초에 한번 로그
                 stats = {}
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
                 self._log_pipeline(stats, fused, tracks, now, timings)
+                if self.last_cluster_debug:
+                    print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
+                tracker_metrics = self.tracker.get_last_metrics()
+                if tracker_metrics:
+                    print(f"[TrackerMetrics] {json.dumps(tracker_metrics, ensure_ascii=False)}")
+                if self.debug_assoc_logging:
+                    assoc_debug = self.tracker.get_last_debug_info()
+                    if assoc_debug:
+                        payload = {
+                            "clusters": fused,
+                            "pred_tracks": assoc_debug.get("predicted_tracks", []),
+                            "matches": assoc_debug.get("matched", []),
+                            "unmatched_tracks": assoc_debug.get("unmatched_tracks", []),
+                            "unmatched_dets": assoc_debug.get("unmatched_detections", []),
+                            "unmatched_reasons": assoc_debug.get("unmatched_reasons", {}),
+                            "cost_stats": assoc_debug.get("cost_stats"),
+                            "cost_shape": assoc_debug.get("cost_matrix_shape"),
+                        }
+                        print(f"[AssocDebug] {json.dumps(payload, ensure_ascii=False)}")
 
     def start(self):
         self.inference_receiver.start() # 인지 결과 리시버 시작
