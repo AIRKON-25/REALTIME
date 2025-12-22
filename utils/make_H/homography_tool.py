@@ -202,8 +202,8 @@ def make_deltaH(tx: float, ty: float, theta_deg: float, scale: float) -> np.ndar
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cam", required=True, help="camera image path")
-    ap.add_argument("--map", required=True, help="global map image path")
-    ap.add_argument("--map2world", default=None, help="json with 4 corners: map image px -> world xy")
+    ap.add_argument("--map", default="utils/make_H/ces_real_map.png" ,help="global map image path")
+    ap.add_argument("--map2world", default="utils/make_H/ces_real_img2world.json", help="json with 4 corners: map image px -> world xy")
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--ransac-th", type=float, default=3.0, help="RANSAC reprojection threshold in pixels")
     ap.add_argument("--alpha", type=float, default=0.55, help="overlay alpha for warped cam on map")
