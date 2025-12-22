@@ -102,7 +102,7 @@ def parse_args():
     parser.add_argument("--verbose", action="store_true", help="Print each payload as it is sent")
     return parser.parse_args()
 
-
+# python utils/replay/replay_udp.py --file utils\replay\replay_1220\run1.ndjson --loop --fps 30 
 def main():
     args = parse_args()
     run(args)

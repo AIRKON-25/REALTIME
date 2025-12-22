@@ -372,6 +372,62 @@ def highlight_vehicle_front_faces(vis_frame: np.ndarray,
             cv2.line(vis_frame, tuple(base[idx]), tuple(top[idx]), front_color, 2, cv2.LINE_AA)
 
 
+def load_roi_mask(npz_path: str,
+                  expect_hw: Tuple[int, int]) -> Tuple[np.ndarray, List[np.ndarray], Optional[dict]]:
+    """
+    Load ROI mask from .npz (fields: mask, optional polygon, meta).
+    Resizes to expected H,W if needed.
+    """
+    H_exp, W_exp = expect_hw
+    with np.load(npz_path, allow_pickle=True) as data:
+        if "mask" not in data:
+            raise ValueError("ROI npz missing 'mask' field")
+        mask_raw = data["mask"]
+        mask = np.asarray(mask_raw, dtype=np.uint8)
+        if mask.ndim == 3:
+            mask = mask[:, :, 0]
+        if mask.shape != (H_exp, W_exp):
+            mask = cv2.resize(mask, (W_exp, H_exp), interpolation=cv2.INTER_NEAREST)
+            print(f"[ROI] Resized mask from {mask_raw.shape} to {(H_exp, W_exp)}")
+        polygon = None
+        if "polygon" in data:
+            polygon = np.asarray(data["polygon"], dtype=np.int32)
+        meta = None
+        if "meta" in data:
+            try:
+                meta = json.loads(str(data["meta"][0]))
+            except Exception:
+                meta = None
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    return mask, contours, meta
+
+
+def filter_dets_by_roi(dets,
+                       roi_mask: Optional[np.ndarray],
+                       scale_to_orig_x: float,
+                       scale_to_orig_y: float) -> List[dict]:
+    """Keep detections whose P0 lies inside roi_mask."""
+    if roi_mask is None:
+        return dets
+    H, W = roi_mask.shape[:2]
+    kept = []
+    for det in dets:
+        tri = det.get("tri")
+        if tri is None:
+            continue
+        tri_np = np.asarray(tri, dtype=np.float32)
+        if tri_np.shape != (3, 2):
+            continue
+        p0 = tri_np[0]
+        x = int(round(float(p0[0] * scale_to_orig_x)))
+        y = int(round(float(p0[1] * scale_to_orig_y)))
+        if x < 0 or y < 0 or x >= W or y >= H:
+            continue
+        if roi_mask[y, x] > 0:
+            kept.append(det)
+    return kept
+
+
 def run_live_inference_http(args) -> None:
     target_h, target_w = map(int, args.img_size.split(","))
     target_hw = (target_h, target_w)
@@ -397,6 +453,17 @@ def run_live_inference_http(args) -> None:
     )
 
     cam_w, cam_h = map(int, args.camera_size.split(","))
+    roi_mask = None
+    roi_meta = None
+    if args.roi_path:
+        try:
+            roi_mask, _, roi_meta = load_roi_mask(args.roi_path, (cam_h, cam_w))
+            print(f"[ROI] Loaded mask {roi_mask.shape} from {args.roi_path}")
+            if roi_meta:
+                print(f"[ROI] meta: {roi_meta}")
+        except Exception as exc:
+            print(f"[ROI] WARN: failed to load ROI '{args.roi_path}': {exc}")
+            roi_mask = None
 
     save_dir = None
     if args.save_dir:
@@ -507,6 +574,12 @@ def run_live_inference_http(args) -> None:
                             return float(d.get("score", 0.0)) >= thr
                         dets = [d for d in dets if _keep(d)]
                     dets = tiny_filter_on_dets(dets, min_area=20.0, min_edge=3.0)
+                    dets = filter_dets_by_roi(
+                        dets,
+                        roi_mask,
+                        prep["scale_to_orig_x"],
+                        prep["scale_to_orig_y"]
+                    )
 
                     tri_records, det_color_infos = [], []
                     if dets:
@@ -627,6 +700,8 @@ def parse_args():
                         help="Override vehicle length in UDP payloads (meters)")
     parser.add_argument("--udp-fixed-width", type=float, default=2.7,
                         help="Override vehicle width in UDP payloads (meters)")
+    parser.add_argument("--roi-path", type=str, default=None,
+                        help="Optional ROI npz (mask) path; only detections inside ROI (P0) are kept")
     parser.add_argument("--front-highlight", dest="front_highlight", action="store_true", default=True,
                         help="Highlight vehicle front faces in visualization (default: on)")
     parser.add_argument("--no-front-highlight", dest="front_highlight", action="store_false",
