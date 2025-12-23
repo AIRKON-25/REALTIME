@@ -130,7 +130,7 @@ class RealtimeServer:
         ]
         self._ui_cameras_status = [
             {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
-            {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.101:8081/stream"},
+            {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.102:8080/stream"},
             {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.106:8080/stream"},
         ]
         self._ui_cam_status: Optional[dict] = None
