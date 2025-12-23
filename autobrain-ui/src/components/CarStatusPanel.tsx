@@ -7,7 +7,7 @@ const normalizeCarColor = (
   fallback?: CarColor
 ): CarColor | undefined => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
-  const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple"];
+  const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
   if (allowed.includes(normalized as CarColor)) return normalized as CarColor;
   return fallback;
 };

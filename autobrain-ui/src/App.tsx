@@ -250,7 +250,7 @@ function App() {
   const routeChanges = serverState.routeChanges;
 
   const carColorById = useMemo(() => {
-    const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple"];
+    const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
     const normalize = (color: string | undefined): CarColor | undefined => {
       const normalized = (color ?? "").toString().trim().toLowerCase();
       return allowed.includes(normalized as CarColor)

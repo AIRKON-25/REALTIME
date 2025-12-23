@@ -17,7 +17,7 @@ import CameraIconVerticalActive from "../assets/camera-icon-vertical-active.svg"
 
 const normalizeCarColor = (color: string | undefined) => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
-  const allowed = ["red", "green", "blue", "yellow", "purple"] as const;
+  const allowed = ["red", "green", "blue", "yellow", "purple", "white"] as const;
   return (allowed as readonly string[]).includes(normalized) ? normalized : "red";
 };
 

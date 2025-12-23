@@ -3,7 +3,7 @@ export type CameraId = string;
 export type CarId = string;
 export type IncidentId = string;
 
-export type CarColor = "red" | "green" | "blue" | "yellow" | "purple";
+export type CarColor = "red" | "green" | "blue" | "yellow" | "purple" | "white";
 
 export type ViewMode =
   | "default"          // 기본: 맵 + CarStatus + Incident(옵션)
