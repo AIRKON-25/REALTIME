@@ -823,6 +823,86 @@ body {
   overflow-x: auto;
 }
 
+.admin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-selected {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.admin-selected__value {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.admin-notice {
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.admin-notice--ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.admin-notice--error {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.admin-actions__grid {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.admin-inline-label {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.admin-inline-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-input--compact,
+.admin-select--compact {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.admin-button--compact {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.admin-compact {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 @media (max-width: 1280px) {
   .admin-page {
     padding: 0 24px 28px;

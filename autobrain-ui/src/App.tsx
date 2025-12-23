@@ -17,7 +17,7 @@ import type {
 } from "./types";
 
 import { Header } from "./components/Header";
-import { AdminPage } from "./components/AdminPage";
+import { AdminControlsPanel } from "./components/AdminControlsPanel";
 import { Layout } from "./components/Layout";
 import { MapView } from "./components/MapView";
 import { CarStatusPanel } from "./components/CarStatusPanel";
@@ -173,10 +173,6 @@ function App() {
   //  1) WebSocket 연결 목업쓸떈 제외
   // ===========================
   useEffect(() => {
-    if (appMode !== "monitor") {
-      return;
-    }
-    setHasCamStatus(false);
     let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
 
@@ -238,7 +234,7 @@ function App() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       ws?.close();
     };
-  }, [appMode]);
+  }, []);
 
   // 서버에서 아직 아무것도 안 보냈을 때의 기본 값들
   const carsOnMap = serverState.carsOnMap;
@@ -381,36 +377,33 @@ function App() {
   return (
     <div className="app-root">
       <Header mode={appMode} onModeChange={handleModeChange} />
-      {appMode === "admin" ? (
-        <AdminPage wsUrl={WS_URL} />
-      ) : (
-        <Layout
-          viewMode={viewMode}
-          hasIncident={!!incident}
-        >
-          {/* LEFT: MAP */}
-          <div className="layout__map-inner">
-            {isLoading && (
-              <div className="map__loading">Waiting for server data...</div>
-            )}
+      <Layout
+        viewMode={viewMode}
+        hasIncident={!!incident}
+      >
+        {/* LEFT: MAP */}
+        <div className="layout__map-inner">
+          {isLoading && (
+            <div className="map__loading">Waiting for server data...</div>
+          )}
 
-            <MapView
-              mapImage="/assets/map-track.png"
-              carsOnMap={carsOnMap}
-              camerasOnMap={camerasOnMap}
-              obstacles={obstaclesOnMap}
-              activeCameraIds={monitoringCameraIds}
-              activeCarId={selectedCarId}
-              routeChanges={visibleRouteChanges}
-              onCarClick={handleCarClick}
-              onCameraClick={handleCameraClick}
-            />
-          </div>
+          <MapView
+            mapImage="/assets/map-track.png"
+            carsOnMap={carsOnMap}
+            camerasOnMap={camerasOnMap}
+            obstacles={obstaclesOnMap}
+            activeCameraIds={monitoringCameraIds}
+            activeCarId={selectedCarId}
+            routeChanges={visibleRouteChanges}
+            onCarClick={handleCarClick}
+            onCameraClick={handleCameraClick}
+          />
+        </div>
 
-          {/* RIGHT: PANELS */}
-          <div className="right-panels">
-            {/* Car Status 영역 */}
-            {viewMode === "default" && (
+        {/* RIGHT: PANELS */}
+        <div className="right-panels">
+          {appMode === "admin" ? (
+            <>
               <CarStatusPanel
                 cars={carsStatusForPanel}
                 carColorById={carColorById}
@@ -418,57 +411,74 @@ function App() {
                 onCarClick={handleCarClick}
                 scrollable
               />
-            )}
-
-            {viewMode === "carFocused" && selectedCarId && (
-              <CarStatusPanel
-                cars={carsStatusForPanel}
-                carColorById={carColorById}
+              <AdminControlsPanel
+                wsUrl={WS_URL}
                 selectedCarId={selectedCarId}
-                onCarClick={handleCarClick}
-                detailOnly
               />
-            )}
-
-            {viewMode === "incidentFocused" && selectedCarId && (
-              <CarStatusPanel
-                cars={vehiclesInIncidentView}
-                selectedCarId={selectedCarId}
-                onCarClick={handleCarClick}
-                detailOnly
-              />
-            )}
-
-            {viewMode === "incidentFocused" &&
-              !selectedCarId &&
-              vehiclesInIncidentView.length > 0 && (
+            </>
+          ) : (
+            <>
+              {/* Car Status 영역 */}
+              {viewMode === "default" && (
                 <CarStatusPanel
-                  cars={vehiclesInIncidentView}
+                  cars={carsStatusForPanel}
                   carColorById={carColorById}
-                  selectedCarId={null}
+                  selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}
                   scrollable
                 />
               )}
 
-            {/* Incident */}
-            {(viewMode === "default" || viewMode === "incidentFocused") && (
-              <IncidentPanel
-                incident={incident}
-                isActive={isIncidentActive}
-                onClick={handleIncidentClick}
-              />
-            )}
+              {viewMode === "carFocused" && selectedCarId && (
+                <CarStatusPanel
+                  cars={carsStatusForPanel}
+                  carColorById={carColorById}
+                  selectedCarId={selectedCarId}
+                  onCarClick={handleCarClick}
+                  detailOnly
+                />
+              )}
 
-            {/* Monitoring View */}
-            {(viewMode === "cameraFocused" ||
-              viewMode === "carFocused" ||
-              viewMode === "incidentFocused") && (
-              <MonitoringPanel cameras={monitoringCameras} />
-            )}
-          </div>
-        </Layout>
-      )}
+              {viewMode === "incidentFocused" && selectedCarId && (
+                <CarStatusPanel
+                  cars={vehiclesInIncidentView}
+                  selectedCarId={selectedCarId}
+                  onCarClick={handleCarClick}
+                  detailOnly
+                />
+              )}
+
+              {viewMode === "incidentFocused" &&
+                !selectedCarId &&
+                vehiclesInIncidentView.length > 0 && (
+                  <CarStatusPanel
+                    cars={vehiclesInIncidentView}
+                    carColorById={carColorById}
+                    selectedCarId={null}
+                    onCarClick={handleCarClick}
+                    scrollable
+                  />
+                )}
+
+              {/* Incident */}
+              {(viewMode === "default" || viewMode === "incidentFocused") && (
+                <IncidentPanel
+                  incident={incident}
+                  isActive={isIncidentActive}
+                  onClick={handleIncidentClick}
+                />
+              )}
+
+              {/* Monitoring View */}
+              {(viewMode === "cameraFocused" ||
+                viewMode === "carFocused" ||
+                viewMode === "incidentFocused") && (
+                  <MonitoringPanel cameras={monitoringCameras} />
+                )}
+            </>
+          )}
+        </div>
+      </Layout>
     </div>
   );
 }
