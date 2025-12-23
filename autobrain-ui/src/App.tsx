@@ -8,9 +8,13 @@ import type {
   IncidentId,
   RouteChangeStep,
   ViewMode,
-  ServerSnapshot,
-  ServerMessage,
-  CameraStatus, 
+  MonitorState,
+  RealtimeMessage,
+  CameraStatus,
+  CarStatusPacket,
+  ObstacleStatusPacket,
+  RouteChangePacket,
+  CarRouteChange,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -27,10 +31,121 @@ const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
 const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
 const USE_MOCK = false; // true면 mockSnapshot만 사용
 
+const emptyState: MonitorState = {
+  carsOnMap: [],
+  carsStatus: [],
+  camerasOnMap: [],
+  camerasStatus: [],
+  obstaclesOnMap: [],
+  obstaclesStatus: [],
+  incident: null,
+  routeChanges: [],
+};
+
+const mergeByKey = <T,>(
+  prev: T[],
+  upserts: T[] | undefined,
+  deletes: string[] | undefined,
+  keyFn: (item: T) => string
+): T[] => {
+  if ((!upserts || upserts.length === 0) && (!deletes || deletes.length === 0)) {
+    return prev;
+  }
+  const byKey = new Map(prev.map((item) => [keyFn(item), item]));
+  if (deletes) {
+    deletes.forEach((id) => byKey.delete(id));
+  }
+  if (upserts) {
+    upserts.forEach((item) => byKey.set(keyFn(item), item));
+  }
+  return Array.from(byKey.values());
+};
+
+const applyCarStatus = (
+  prev: MonitorState,
+  data: CarStatusPacket
+): MonitorState => {
+  if (data.mode === "delta") {
+    const carsOnMap = mergeByKey(
+      prev.carsOnMap,
+      data.carsOnMapUpserts,
+      data.carsOnMapDeletes,
+      (item) => item.carId
+    );
+    const carsStatus = mergeByKey(
+      prev.carsStatus,
+      data.carsStatusUpserts,
+      data.carsStatusDeletes,
+      (item) => item.id
+    );
+    return { ...prev, carsOnMap, carsStatus };
+  }
+  return { ...prev, carsOnMap: data.carsOnMap, carsStatus: data.carsStatus };
+};
+
+const applyObstacleStatus = (
+  prev: MonitorState,
+  data: ObstacleStatusPacket
+): MonitorState => {
+  let next = prev;
+  if (data.mode === "delta") {
+    const obstaclesOnMap = mergeByKey(
+      prev.obstaclesOnMap,
+      data.upserts,
+      data.deletes,
+      (item) => item.obstacleId
+    );
+    const obstaclesStatus = mergeByKey(
+      prev.obstaclesStatus,
+      data.statusUpserts,
+      data.statusDeletes,
+      (item) => item.id
+    );
+    next = { ...prev, obstaclesOnMap, obstaclesStatus };
+  } else {
+    next = {
+      ...prev,
+      obstaclesOnMap: data.obstaclesOnMap,
+      obstaclesStatus: data.obstaclesStatus ?? prev.obstaclesStatus,
+    };
+  }
+  if (Object.prototype.hasOwnProperty.call(data, "incident")) {
+    const incident = data.incident ?? null;
+    return { ...next, incident, routeChanges: incident ? next.routeChanges : [] };
+  }
+  return next;
+};
+
+const deriveRouteSteps = (
+  changes: CarRouteChange[] | undefined
+): RouteChangeStep[] => {
+  if (!changes || changes.length === 0) {
+    return [];
+  }
+  const steps: RouteChangeStep[] = [];
+  changes.forEach((change) => {
+    const from = change.oldRoute[change.oldRoute.length - 1];
+    const to = change.newRoute[0];
+    if (!from || !to) return;
+    steps.push({ carId: change.carId, from, to });
+  });
+  return steps;
+};
+
+const applyRouteChange = (
+  prev: MonitorState,
+  data: RouteChangePacket
+): MonitorState => {
+  const steps = data.steps ?? deriveRouteSteps(data.changes);
+  return { ...prev, routeChanges: steps };
+};
+
 function App() {
   // 🔹 서버에서 오는 전체 상태
-  const [serverState, setServerState] = useState<ServerSnapshot | null>((
-  USE_MOCK ? mockSnapshot : null));
+  const [serverState, setServerState] = useState<MonitorState>(
+    USE_MOCK ? mockSnapshot : emptyState
+  );
+  const [hasCamStatus, setHasCamStatus] = useState<boolean>(USE_MOCK);
 
   // 🔹 뷰 모드 관련 상태 (사용자 인터랙션용)
   const [viewMode, setViewMode] = useState<ViewMode>("default");
@@ -64,16 +179,27 @@ function App() {
 
       ws.onmessage = (event) => {
         try {
-          const msg: ServerMessage = JSON.parse(event.data);
-
+          const msg: RealtimeMessage = JSON.parse(event.data);
+          if (msg.type === "camStatus") {
+            setHasCamStatus(true);
+          }
           setServerState((prev) => {
-            if (msg.type === "snapshot") {
-              return msg.payload;
+            switch (msg.type) {
+              case "camStatus":
+                return {
+                  ...prev,
+                  camerasOnMap: msg.data.camerasOnMap,
+                  camerasStatus: msg.data.camerasStatus,
+                };
+              case "carStatus":
+                return applyCarStatus(prev, msg.data);
+              case "obstacleStatus":
+                return applyObstacleStatus(prev, msg.data);
+              case "carRouteChange":
+                return applyRouteChange(prev, msg.data);
+              default:
+                return prev;
             }
-            if (msg.type === "partial") {
-              return prev ? { ...prev, ...msg.payload } : (msg.payload as ServerSnapshot);
-            }
-            return prev;
           });
         } catch (e) {
           console.error("Invalid message from server:", e);
@@ -105,12 +231,13 @@ function App() {
   }, []);
 
   // 서버에서 아직 아무것도 안 보냈을 때의 기본 값들
-  const carsOnMap = serverState?.carsOnMap ?? [];
-  const carsStatus = serverState?.carsStatus ?? [];
-  const camerasOnMap = serverState?.camerasOnMap ?? [];
-  const camerasStatus = serverState?.camerasStatus ?? [];
-  const incident = serverState?.incident ?? null;
-  const routeSequence: RouteChangeStep[] = serverState?.routeChanges ?? [];
+  const carsOnMap = serverState.carsOnMap;
+  const carsStatus = serverState.carsStatus;
+  const camerasOnMap = serverState.camerasOnMap;
+  const camerasStatus = serverState.camerasStatus;
+  const obstaclesOnMap = serverState.obstaclesOnMap;
+  const incident = serverState.incident;
+  const routeSequence: RouteChangeStep[] = serverState.routeChanges;
 
   const carColorById = useMemo(() => {
     const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple"];
@@ -245,7 +372,7 @@ function App() {
   }, [monitoringCameraId, camerasStatus]);
 
 
-  const isLoading = !serverState;
+  const isLoading = !hasCamStatus;
   const showBackButton =
     viewMode !== "default" || !!selectedCarId || !!selectedCameraId || !!incident;
 
@@ -273,9 +400,7 @@ function App() {
             carsOnMap={carsOnMap}
             carsStatus={carsStatus}
             camerasOnMap={camerasOnMap}
-            obstacles={
-              isIncidentActive && incident?.obstacle ? [incident.obstacle] : []
-            }
+            obstacles={isIncidentActive ? obstaclesOnMap : []}
             activeCameraId={monitoringCameraId}
             activeCarId={selectedCarId}
             activeRouteStep={activeRouteStep}

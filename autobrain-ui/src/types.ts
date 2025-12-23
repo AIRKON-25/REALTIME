@@ -29,11 +29,17 @@ export interface CameraOnMap extends MapObjectBase {
   cameraId: CameraId;
 }
 
-export type ObstacleClass = "cone" | "block" | "pedestrian";
+export type ObstacleClass = "rubberCone" | "barricade";
 
 export interface ObstacleOnMap extends MapObjectBase {
   obstacleId: string;
   kind: ObstacleClass;
+}
+
+export interface ObstacleStatus {
+  id: string;
+  class: number;
+  cameraId?: CameraId;
 }
 
 export interface CarStatus {
@@ -64,23 +70,85 @@ export interface Incident {
   relatedCarIds?: CarId[];
 }
 
-export interface RouteChangeStep {
-  carId: CarId;
-  from: { x: number; y: number };
-  to: { x: number; y: number };
+export interface RoutePoint {
+  x: number;
+  y: number;
 }
 
-export interface ServerSnapshot { // wkddoanfdpeogksdjWJrn
+export interface RouteChangeStep {
+  carId: CarId;
+  from: RoutePoint;
+  to: RoutePoint;
+}
+
+export interface CarRouteChange {
+  carId: CarId;
+  incidentId?: IncidentId;
+  oldRoute: RoutePoint[];
+  newRoute: RoutePoint[];
+  reasonObstacleId?: string;
+  validFromTs?: number;
+}
+
+export interface CamStatusPacket {
+  camerasOnMap: CameraOnMap[];
+  camerasStatus: CameraStatus[];
+}
+
+export interface CarStatusSnapshot {
+  mode?: "snapshot";
+  carsOnMap: CarOnMap[];
+  carsStatus: CarStatus[];
+}
+
+export interface CarStatusDelta {
+  mode: "delta";
+  carsOnMapUpserts?: CarOnMap[];
+  carsOnMapDeletes?: CarId[];
+  carsStatusUpserts?: CarStatus[];
+  carsStatusDeletes?: CarId[];
+}
+
+export type CarStatusPacket = CarStatusSnapshot | CarStatusDelta;
+
+export interface ObstacleStatusSnapshot {
+  mode?: "snapshot";
+  obstaclesOnMap: ObstacleOnMap[];
+  obstaclesStatus?: ObstacleStatus[];
+  incident?: Incident | null;
+}
+
+export interface ObstacleStatusDelta {
+  mode: "delta";
+  upserts?: ObstacleOnMap[];
+  deletes?: string[];
+  statusUpserts?: ObstacleStatus[];
+  statusDeletes?: string[];
+  incident?: Incident | null;
+}
+
+export type ObstacleStatusPacket = ObstacleStatusSnapshot | ObstacleStatusDelta;
+
+export interface RouteChangePacket {
+  incidentId?: IncidentId;
+  changes?: CarRouteChange[];
+  steps?: RouteChangeStep[];
+}
+
+export interface MonitorState {
   carsOnMap: CarOnMap[];
   carsStatus: CarStatus[];
   camerasOnMap: CameraOnMap[];
   camerasStatus: CameraStatus[];
+  obstaclesOnMap: ObstacleOnMap[];
+  obstaclesStatus: ObstacleStatus[];
   incident: Incident | null;
   routeChanges: RouteChangeStep[];
 }
 
 // 서버에서 보내주는 메시지 타입
-export type ServerMessage =
-  | { type: "snapshot"; payload: ServerSnapshot }
-  | { type: "partial"; payload: Partial<ServerSnapshot> };
-  // partial은 선택사항: 일부만 업데이트하고 싶을 때 사용
+export type RealtimeMessage =
+  | { type: "camStatus"; ts: number; data: CamStatusPacket }
+  | { type: "carStatus"; ts: number; data: CarStatusPacket }
+  | { type: "obstacleStatus"; ts: number; data: ObstacleStatusPacket }
+  | { type: "carRouteChange"; ts: number; data: RouteChangePacket };

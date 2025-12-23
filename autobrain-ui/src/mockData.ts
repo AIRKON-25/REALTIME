@@ -6,8 +6,9 @@ import type {
   CarStatus,
   Incident,
   ObstacleOnMap,
+  ObstacleStatus,
   RouteChangeStep,
-  ServerSnapshot,
+  MonitorState,
 } from "./types";
 
 const mockCamerasOnMap: CameraOnMap[] = [
@@ -125,8 +126,16 @@ const mockObstacle: ObstacleOnMap = {
   obstacleId: "ob-1",
   x: 0.5,
   y: 0.1,
-  kind: "cone",
+  kind: "rubberCone",
 };
+
+const mockObstaclesStatus: ObstacleStatus[] = [
+  {
+    id: "ob-1",
+    class: 1,
+    cameraId: "cam-3",
+  },
+];
 
 const mockIncident: Incident = {
   id: "inc-1",
@@ -151,11 +160,13 @@ const mockRouteSteps: RouteChangeStep[] = [
 ];
 
 // ✅ 실제로 App에서 쓸 하나짜리 스냅샷
-export const mockSnapshot: ServerSnapshot = {
+export const mockSnapshot: MonitorState = {
   carsOnMap: mockCarsOnMap,
   carsStatus: mockCarsStatus,
   camerasOnMap: mockCamerasOnMap,
   camerasStatus: mockCamerasStatus,
+  obstaclesOnMap: [mockObstacle],
+  obstaclesStatus: mockObstaclesStatus,
   incident: mockIncident,
   routeChanges: mockRouteSteps,
 };

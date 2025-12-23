@@ -19,12 +19,23 @@ class WebSocketHub:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._clients: "set[websockets.WebSocketServerProtocol]" = set()
         self._thread: Optional[threading.Thread] = None
+        self._initial_messages: list[dict] = []
+        self._initial_lock = threading.Lock()
 
     async def _handler(self, websocket):
         # websockets 15.x에서는 websocket.path 가 None 또는 '' 인 경우가 많음
         # 따라서 경로 체크는 제거하는 것이 안전하다.
         self._clients.add(websocket)
         print(f"[WebSocketHub] client connected ({len(self._clients)} total)")
+        with self._initial_lock:
+            initial_messages = list(self._initial_messages)
+        if initial_messages:
+            for message in initial_messages:
+                try:
+                    await websocket.send(json.dumps(message, ensure_ascii=False))
+                except Exception as exc:
+                    print(f"[WebSocketHub] initial send failed: {exc}")
+                    break
 
         try:
             async for _ in websocket:
@@ -51,6 +62,10 @@ class WebSocketHub:
 
         self._thread = threading.Thread(target=_runner, daemon=True)
         self._thread.start()
+
+    def set_initial_messages(self, messages: list[dict]):
+        with self._initial_lock:
+            self._initial_messages = list(messages)
 
     def broadcast(self, message: dict):
         """
