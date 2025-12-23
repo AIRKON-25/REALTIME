@@ -44,6 +44,7 @@ interface MapViewProps {
   routeChanges: CarRouteChange[];
   onCarClick?: (carId: CarId) => void;
   onCameraClick?: (cameraId: CameraId) => void;
+  sizeScale?: number; // optional: tweak overlay element sizing together
 }
 
 export const MapView = ({
@@ -56,6 +57,7 @@ export const MapView = ({
   routeChanges,
   onCarClick,
   onCameraClick,
+  sizeScale = 1,
 }: MapViewProps) => {
   const mapContentRef = useRef<HTMLDivElement | null>(null);
   const mapImageRef = useRef<HTMLImageElement | null>(null);
@@ -128,9 +130,10 @@ export const MapView = ({
   const mapScale = useMemo(() => {
     const basisWidth = mapLayout.mapWidth || mapLayout.contentWidth;
     if (!basisWidth) return 1;
-    const scale = basisWidth / 1000;
-    return Math.min(1.4, Math.max(0.6, scale));
-  }, [mapLayout]);
+    const normalizedSizeScale = sizeScale > 0 ? sizeScale : 1;
+    const scale = (basisWidth / 1000) * normalizedSizeScale;
+    return Math.min(1.4, Math.max(0.4, scale));
+  }, [mapLayout, sizeScale]);
 
   const points = [
     { x: 0, y: 0 },
