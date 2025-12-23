@@ -871,9 +871,9 @@ def parse_args():
     parser.add_argument("--udp-host", type=str, default="192.168.0.165")
     parser.add_argument("--udp-port", type=int, default=50050)
     parser.add_argument("--udp-format", choices=["json", "text"], default="json")
-    parser.add_argument("--udp-fixed-length", type=float, default=4.4,
+    parser.add_argument("--udp-fixed-length", type=float, default=None,
                         help="Override vehicle length in UDP payloads (meters)")
-    parser.add_argument("--udp-fixed-width", type=float, default=2.7,
+    parser.add_argument("--udp-fixed-width", type=float, default=None,
                         help="Override vehicle width in UDP payloads (meters)")
     parser.add_argument("--roi-path", type=str, default=None,
                         help="Optional ROI npz (mask) path; only detections inside ROI (P0) are kept")
