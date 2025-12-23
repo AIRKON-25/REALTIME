@@ -70,7 +70,7 @@ export interface RouteChangeStep {
   to: { x: number; y: number };
 }
 
-export interface ServerSnapshot {
+export interface ServerSnapshot { // wkddoanfdpeogksdjWJrn
   carsOnMap: CarOnMap[];
   carsStatus: CarStatus[];
   camerasOnMap: CameraOnMap[];

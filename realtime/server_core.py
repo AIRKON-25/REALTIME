@@ -38,6 +38,7 @@ class RealtimeServer:
         tx_protocol: str = "udp",
         carla_host: Optional[str] = None,
         carla_port: int = 61000,
+        car_id_count: int = 5,
         # tracker_fixed_length: Optional[float] = None,
         # tracker_fixed_width: Optional[float] = None,
         command_host: Optional[str] = None,
@@ -67,21 +68,38 @@ class RealtimeServer:
             self.cluster_config.iou_gate = self.cluster_config.iou_cluster_thr
         self.iou_thr = self.cluster_config.iou_cluster_thr
         self.track_meta: Dict[int, dict] = {}
-        # External ID mapping: keep car IDs fixed in 1..5.
+        # External ID mapping: use 1..car_id_count for cars, overflow IDs start at 6.
         self.car_id_min = 1
-        self.car_id_max = 5
+        self.car_id_ceiling = 5
+        if car_id_count is None:
+            car_id_count = self.car_id_ceiling
+        try:
+            car_id_count = int(car_id_count)
+        except (TypeError, ValueError):
+            car_id_count = self.car_id_ceiling
+        if not (self.car_id_min <= car_id_count <= self.car_id_ceiling):
+            raise ValueError(
+                f"car_id_count must be between {self.car_id_min} and {self.car_id_ceiling}"
+            )
+        self.car_id_max = car_id_count
         self._car_id_pool = list(range(self.car_id_min, self.car_id_max + 1))
         heapq.heapify(self._car_id_pool)
         self._other_id_pool: List[int] = []
-        self._next_other_id = self.car_id_max + 1
+        self._other_id_start = self.car_id_ceiling + 1
+        self._next_other_id = self._other_id_start
         self._track_id_map: Dict[int, int] = {}
         self._external_to_internal: Dict[int, int] = {}
         self._released_external: Dict[int, dict] = {}
         self._track_state_cache: Dict[int, dict] = {}
+        self._external_history: Dict[int, dict] = {}
         self._reid_keep_secs = 2.0
         self._reid_dist_gate_m = 4.0
         self._reid_color_bonus = 0.6
         self._reid_color_penalty = 1.0
+        self._reid_dir_weight = 1.5
+        self._reid_speed_weight = 0.5
+        self._reid_yaw_weight = 0.5
+        self._reid_min_speed_mps = 0.3
         self.active_cams = set()
         self.color_bias_strength = COLOR_BIAS_STRENGTH
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
@@ -152,24 +170,198 @@ class RealtimeServer:
         v = 1.0 - _norm(cy, y_min, y_max)
         return u, v
 
-    def _assign_external_id(self, prefer_car: bool) -> int:
+    def _compute_reid_cost(self, track_info: dict, prev_info: dict, now: float) -> Tuple[float, float]:
+        ts = prev_info.get("ts")
+        try:
+            ts = float(ts)
+        except (TypeError, ValueError):
+            ts = now
+        dt = max(0.0, now - ts)
+        pred_cx = float(prev_info.get("cx", 0.0))
+        pred_cy = float(prev_info.get("cy", 0.0))
+        vx = prev_info.get("vx")
+        vy = prev_info.get("vy")
+        if vx is not None and vy is not None:
+            pred_cx += float(vx) * dt
+            pred_cy += float(vy) * dt
+        cx = float(track_info.get("cx", 0.0))
+        cy = float(track_info.get("cy", 0.0))
+        dist = float(np.hypot(cx - pred_cx, cy - pred_cy))
+        cost = dist
+
+        nvx = track_info.get("vx")
+        nvy = track_info.get("vy")
+        if vx is not None and vy is not None and nvx is not None and nvy is not None:
+            speed_a = float(np.hypot(float(vx), float(vy)))
+            speed_b = float(np.hypot(float(nvx), float(nvy)))
+            if speed_a > self._reid_min_speed_mps and speed_b > self._reid_min_speed_mps:
+                cos = (float(vx) * float(nvx) + float(vy) * float(nvy)) / (speed_a * speed_b)
+                cos = max(-1.0, min(1.0, cos))
+                cost += (1.0 - cos) * self._reid_dir_weight
+        else:
+            yaw_a = prev_info.get("yaw")
+            yaw_b = track_info.get("yaw")
+            if yaw_a is not None and yaw_b is not None:
+                diff = abs(((float(yaw_a) - float(yaw_b) + 180.0) % 360.0) - 180.0)
+                cost += (diff / 180.0) * self._reid_yaw_weight
+
+        speed_a = prev_info.get("speed")
+        speed_b = track_info.get("speed")
+        if speed_a is None and vx is not None and vy is not None:
+            speed_a = float(np.hypot(float(vx), float(vy)))
+        if speed_b is None and nvx is not None and nvy is not None:
+            speed_b = float(np.hypot(float(nvx), float(nvy)))
+        if speed_a is not None and speed_b is not None:
+            cost += abs(float(speed_a) - float(speed_b)) * self._reid_speed_weight
+
+        color = track_info.get("color")
+        info_color = prev_info.get("color")
+        if color and info_color:
+            if color == info_color:
+                cost *= self._reid_color_bonus
+            else:
+                cost += self._reid_color_penalty
+        return cost, dist
+
+    def _select_car_id(
+        self,
+        track_info: dict,
+        now: Optional[float],
+        used_ext_ids: Optional[set] = None,
+    ) -> Optional[int]:
+        if not self._car_id_pool:
+            return None
+        if now is None:
+            now = time.time()
+        used = used_ext_ids or set()
+        candidates = list(self._car_id_pool)
+        best_id = None
+        best_cost = None
+        for ext_id in candidates:
+            if ext_id in used:
+                continue
+            history = self._external_history.get(ext_id)
+            if not history:
+                continue
+            cost, _ = self._compute_reid_cost(track_info, history, now)
+            if best_cost is None or cost < best_cost:
+                best_cost = cost
+                best_id = ext_id
+        if best_id is None:
+            for ext_id in candidates:
+                if ext_id not in used:
+                    best_id = ext_id
+                    break
+        if best_id is None:
+            return None
+        self._car_id_pool.remove(best_id)
+        heapq.heapify(self._car_id_pool)
+        return best_id
+
+    def _assign_external_id(
+        self,
+        prefer_car: bool,
+        track_info: Optional[dict] = None,
+        now: Optional[float] = None,
+        used_ext_ids: Optional[set] = None,
+    ) -> int:
+        used = used_ext_ids or set()
         if prefer_car and self._car_id_pool:
-            return heapq.heappop(self._car_id_pool)
-        if self._other_id_pool:
-            return heapq.heappop(self._other_id_pool)
+            if track_info:
+                selected = self._select_car_id(track_info, now, used)
+                if selected is not None:
+                    return selected
+            while self._car_id_pool:
+                ext_id = heapq.heappop(self._car_id_pool)
+                if ext_id not in used:
+                    return ext_id
+        while self._other_id_pool:
+            ext_id = heapq.heappop(self._other_id_pool)
+            if ext_id >= self._other_id_start and ext_id not in used:
+                return ext_id
         ext_id = self._next_other_id
-        self._next_other_id += 1
+        while ext_id in used:
+            ext_id += 1
+        self._next_other_id = ext_id + 1
         return ext_id
+
+    def _recycle_external_id(self, ext_id: int) -> None:
+        if ext_id <= self.car_id_max:
+            heapq.heappush(self._car_id_pool, ext_id)
+        elif ext_id >= self._other_id_start:
+            heapq.heappush(self._other_id_pool, ext_id)
+
+    def _refresh_id_pools(self, used_ext_ids: Optional[set] = None) -> None:
+        used = used_ext_ids or set()
+        blocked = used | set(self._released_external.keys())
+        reserved = range(self.car_id_min, self.car_id_max + 1)
+        self._car_id_pool = [ext_id for ext_id in reserved if ext_id not in blocked]
+        heapq.heapify(self._car_id_pool)
+        if self._other_id_pool:
+            self._other_id_pool = [
+                ext_id for ext_id in self._other_id_pool
+                if ext_id >= self._other_id_start and ext_id not in used
+            ]
+            heapq.heapify(self._other_id_pool)
+        if used:
+            while self._next_other_id in used:
+                self._next_other_id += 1
+
+    def _dedupe_external_ids(
+        self,
+        active_internal_ids: List[int],
+        track_info_by_id: Dict[int, dict],
+        now: float,
+    ) -> None:
+        ext_to_internal: Dict[int, List[int]] = {}
+        for tid in active_internal_ids:
+            ext_id = self._track_id_map.get(tid)
+            if ext_id is None:
+                continue
+            ext_to_internal.setdefault(ext_id, []).append(tid)
+
+        used_ext_ids = set()
+        to_reassign: List[int] = []
+        for ext_id, tids in ext_to_internal.items():
+            if len(tids) == 1:
+                used_ext_ids.add(ext_id)
+                continue
+            history = self._external_history.get(ext_id)
+            if history:
+                best_tid = min(
+                    tids,
+                    key=lambda tid: self._compute_reid_cost(
+                        track_info_by_id.get(tid, {}),
+                        history,
+                        now,
+                    )[0],
+                )
+            else:
+                best_tid = min(tids)
+            used_ext_ids.add(ext_id)
+            for tid in tids:
+                if tid != best_tid:
+                    self._track_id_map.pop(tid, None)
+                    to_reassign.append(tid)
+
+        for tid in active_internal_ids:
+            if self._track_id_map.get(tid) is None and tid not in to_reassign:
+                to_reassign.append(tid)
+
+        self._refresh_id_pools(used_ext_ids)
+        for tid in to_reassign:
+            info = track_info_by_id.get(tid, {})
+            prefer_car = int(info.get("cls", 1)) == 0
+            ext_id = self._assign_external_id(prefer_car, info, now, used_ext_ids)
+            self._track_id_map[tid] = ext_id
+            used_ext_ids.add(ext_id)
 
     def _release_external_id(self, internal_id: int) -> None:
         ext_id = self._track_id_map.pop(internal_id, None)
         if ext_id is None:
             return
         self._external_to_internal.pop(ext_id, None)
-        if ext_id <= self.car_id_max:
-            heapq.heappush(self._car_id_pool, ext_id)
-        else:
-            heapq.heappush(self._other_id_pool, ext_id)
+        self._recycle_external_id(ext_id)
 
     def _stash_released_id(self, internal_id: int, now: float) -> None:
         ext_id = self._track_id_map.pop(internal_id, None)
@@ -178,6 +370,8 @@ class RealtimeServer:
         self._external_to_internal.pop(ext_id, None)
         info = self._track_state_cache.pop(internal_id, None)
         is_car = bool(info) and int(info.get("cls", 1)) == 0
+        if info:
+            self._external_history[ext_id] = info
         if ext_id <= self.car_id_max and is_car:
             self._released_external[ext_id] = {
                 "ts": now,
@@ -185,30 +379,79 @@ class RealtimeServer:
                 "cx": float(info.get("cx", 0.0)),
                 "cy": float(info.get("cy", 0.0)),
                 "color": info.get("color"),
+                "vx": info.get("vx"),
+                "vy": info.get("vy"),
+                "speed": info.get("speed"),
+                "yaw": info.get("yaw"),
             }
             return
-        if ext_id <= self.car_id_max:
-            heapq.heappush(self._car_id_pool, ext_id)
-        else:
-            heapq.heappush(self._other_id_pool, ext_id)
+        self._recycle_external_id(ext_id)
 
     def _prune_released_ids(self, now: float) -> None:
         if self._reid_keep_secs <= 0.0:
             for ext_id in list(self._released_external.keys()):
-                if ext_id <= self.car_id_max:
-                    heapq.heappush(self._car_id_pool, ext_id)
-                else:
-                    heapq.heappush(self._other_id_pool, ext_id)
+                self._recycle_external_id(ext_id)
             self._released_external.clear()
             return
         for ext_id, info in list(self._released_external.items()):
             if now - float(info.get("ts", 0.0)) <= self._reid_keep_secs:
                 continue
             self._released_external.pop(ext_id, None)
-            if ext_id <= self.car_id_max:
-                heapq.heappush(self._car_id_pool, ext_id)
-            else:
-                heapq.heappush(self._other_id_pool, ext_id)
+            self._recycle_external_id(ext_id)
+
+    def _enforce_car_id_cap(self, car_internal_ids: List[int], track_info_by_id: Dict[int, dict], now: float) -> None:
+        if len(car_internal_ids) > self.car_id_max:
+            return
+        reserved_ids = set(range(self.car_id_min, self.car_id_max + 1))
+        active_reserved = {
+            self._track_id_map.get(tid)
+            for tid in car_internal_ids
+            if self._track_id_map.get(tid) in reserved_ids
+        }
+        available = sorted(reserved_ids - active_reserved)
+        needs = [
+            tid for tid in car_internal_ids
+            if self._track_id_map.get(tid) not in reserved_ids
+        ]
+        if not needs:
+            self._car_id_pool = list(available)
+            heapq.heapify(self._car_id_pool)
+            return
+        pairs: List[Tuple[float, int, int]] = []
+        for tid in needs:
+            info = track_info_by_id.get(tid)
+            if not info:
+                continue
+            for ext_id in available:
+                history = self._external_history.get(ext_id)
+                if not history:
+                    continue
+                cost, _ = self._compute_reid_cost(info, history, now)
+                pairs.append((cost, tid, ext_id))
+        pairs.sort(key=lambda v: v[0])
+        used_internal = set()
+        used_external = set()
+        for cost, internal_id, ext_id in pairs:
+            if internal_id in used_internal or ext_id in used_external:
+                continue
+            self._track_id_map[internal_id] = ext_id
+            used_internal.add(internal_id)
+            used_external.add(ext_id)
+        available = [ext_id for ext_id in available if ext_id not in used_external]
+        remaining = [tid for tid in needs if tid not in used_internal]
+        for internal_id, ext_id in zip(remaining, available):
+            self._track_id_map[internal_id] = ext_id
+        for internal_id in needs:
+            ext_id = self._track_id_map.get(internal_id)
+            if ext_id in self._released_external:
+                self._released_external.pop(ext_id, None)
+        assigned_now = {
+            self._track_id_map.get(tid)
+            for tid in car_internal_ids
+            if self._track_id_map.get(tid) in reserved_ids
+        }
+        self._car_id_pool = list(reserved_ids - assigned_now)
+        heapq.heapify(self._car_id_pool)
 
     def _map_track_ids(self, tracks: np.ndarray, ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
         now = float(ts) if ts is not None else time.time()
@@ -224,37 +467,60 @@ class RealtimeServer:
             if tid not in active_ids:
                 self._stash_released_id(tid, now)
 
-        new_track_rows = []
+        track_info_by_id: Dict[int, dict] = {}
+        new_track_rows: List[dict] = []
         for row in tracks:
             internal_id = int(row[0])
-            if internal_id in self._track_id_map:
-                continue
             cls = int(row[1]) if len(row) > 1 else 0
             meta = self.track_meta.get(internal_id, {})
             color = normalize_color_label(meta.get("color"))
             if not color:
                 color = hex_to_color_label(meta.get("color_hex"))
-            new_track_rows.append((internal_id, cls, float(row[2]), float(row[3]), color))
+            vel = meta.get("velocity")
+            vx = vy = None
+            if vel is not None and len(vel) == 2:
+                try:
+                    vx = float(vel[0])
+                    vy = float(vel[1])
+                except (TypeError, ValueError):
+                    vx = None
+                    vy = None
+            speed = meta.get("speed")
+            try:
+                speed = float(speed) if speed is not None else None
+            except (TypeError, ValueError):
+                speed = None
+            yaw = float(row[6]) if len(row) > 6 else None
+            info = {
+                "internal_id": internal_id,
+                "ts": now,
+                "cls": cls,
+                "cx": float(row[2]),
+                "cy": float(row[3]),
+                "color": color,
+                "vx": vx,
+                "vy": vy,
+                "speed": speed,
+                "yaw": yaw,
+            }
+            track_info_by_id[internal_id] = info
+            if internal_id in self._track_id_map:
+                continue
+            new_track_rows.append(info)
 
         if self._released_external:
             pairs = []
-            for internal_id, cls, cx, cy, color in new_track_rows:
-                if cls != 0:
+            relax_gate = not self._car_id_pool
+            for track_info in new_track_rows:
+                if track_info.get("cls") != 0:
                     continue
-                for ext_id, info in self._released_external.items():
-                    if info.get("cls") != 0:
+                for ext_id, released_info in self._released_external.items():
+                    if released_info.get("cls") != 0:
                         continue
-                    dist = float(np.hypot(cx - float(info.get("cx", 0.0)), cy - float(info.get("cy", 0.0))))
-                    if dist > self._reid_dist_gate_m:
+                    cost, dist = self._compute_reid_cost(track_info, released_info, now)
+                    if not relax_gate and dist > self._reid_dist_gate_m:
                         continue
-                    cost = dist
-                    info_color = info.get("color")
-                    if color and info_color:
-                        if color == info_color:
-                            cost *= self._reid_color_bonus
-                        else:
-                            cost += self._reid_color_penalty
-                    pairs.append((cost, internal_id, ext_id))
+                    pairs.append((cost, track_info["internal_id"], ext_id))
             pairs.sort(key=lambda v: v[0])
             used_internal = set()
             used_external = set()
@@ -272,38 +538,45 @@ class RealtimeServer:
             cls = int(row[1]) if len(row) > 1 else 0
             is_car = cls == 0
             ext_id = self._track_id_map.get(internal_id)
+            track_info = track_info_by_id.get(internal_id)
             if ext_id is None:
-                ext_id = self._assign_external_id(is_car)
+                ext_id = self._assign_external_id(is_car, track_info, now)
                 self._track_id_map[internal_id] = ext_id
-            elif not is_car and ext_id <= self.car_id_max:
+            elif not is_car and ext_id < self._other_id_start:
                 # Keep obstacles out of the reserved car ID range.
                 self._release_external_id(internal_id)
-                ext_id = self._assign_external_id(False)
+                ext_id = self._assign_external_id(False, None, now)
                 self._track_id_map[internal_id] = ext_id
             elif is_car and ext_id > self.car_id_max and self._car_id_pool:
                 # Prefer reserved IDs for cars when slots open up.
                 self._release_external_id(internal_id)
-                ext_id = self._assign_external_id(True)
+                ext_id = self._assign_external_id(True, track_info, now)
                 self._track_id_map[internal_id] = ext_id
             id_map[internal_id] = ext_id
 
+        car_internal_ids = [
+            int(row[0]) for row in tracks
+            if int(row[1]) == 0
+        ]
+        if car_internal_ids:
+            self._enforce_car_id_cap(car_internal_ids, track_info_by_id, now)
+        active_internal_ids = [int(row[0]) for row in tracks]
+        self._dedupe_external_ids(active_internal_ids, track_info_by_id, now)
+
+        id_map = {
+            int(row[0]): self._track_id_map.get(int(row[0]), int(row[0]))
+            for row in tracks
+        }
         self._external_to_internal = {ext: internal for internal, ext in id_map.items()}
 
         new_cache: Dict[int, dict] = {}
         for row in tracks:
             internal_id = int(row[0])
-            cls = int(row[1]) if len(row) > 1 else 0
-            meta = self.track_meta.get(internal_id, {})
-            color = normalize_color_label(meta.get("color"))
-            if not color:
-                color = hex_to_color_label(meta.get("color_hex"))
-            new_cache[internal_id] = {
-                "ts": now,
-                "cls": cls,
-                "cx": float(row[2]),
-                "cy": float(row[3]),
-                "color": color,
-            }
+            info = track_info_by_id.get(internal_id, {})
+            new_cache[internal_id] = info
+            ext_id = id_map.get(internal_id)
+            if ext_id is not None:
+                self._external_history[ext_id] = info
         self._track_state_cache = new_cache
 
         mapped = tracks.copy()
@@ -549,6 +822,84 @@ class RealtimeServer:
                 print(f"[Command] set track {tid} yaw -> {yaw_val:.1f}°")
                 return {"status": "ok", "track_id": tid, "yaw": yaw_val}
             return {"status": "error", "message": f"track {tid} not found"}
+        if cmd == "set_car_count":
+            raw_count = payload.get("car_count", payload.get("count"))
+            if raw_count is None:
+                return {"status": "error", "message": "car_count required"}
+            try:
+                car_count = int(raw_count)
+            except (TypeError, ValueError):
+                return {"status": "error", "message": "car_count must be int"}
+            if not (self.car_id_min <= car_count <= self.car_id_ceiling):
+                return {
+                    "status": "error",
+                    "message": f"car_count must be between {self.car_id_min} and {self.car_id_ceiling}",
+                }
+            if car_count == self.car_id_max:
+                return {"status": "ok", "car_count": self.car_id_max}
+            prev_count = self.car_id_max
+            self.car_id_max = car_count
+            used_ext_ids = set(self._track_id_map.values())
+            if car_count < prev_count:
+                disabled_ids = set(range(car_count + 1, self.car_id_ceiling + 1))
+                for internal_id, ext_id in list(self._track_id_map.items()):
+                    if ext_id in disabled_ids:
+                        new_ext = self._assign_external_id(False, None, None, used_ext_ids)
+                        self._track_id_map[internal_id] = new_ext
+                        self._external_to_internal.pop(ext_id, None)
+                        self._external_to_internal[new_ext] = internal_id
+                        used_ext_ids.discard(ext_id)
+                        used_ext_ids.add(new_ext)
+            self._refresh_id_pools(used_ext_ids)
+            print(f"[Command] set car_count -> {self.car_id_max}")
+            return {"status": "ok", "car_count": self.car_id_max}
+        if cmd == "swap_ids":
+            track_id_a = payload.get("track_id_a", payload.get("id_a"))
+            track_id_b = payload.get("track_id_b", payload.get("id_b"))
+            if track_id_a is None or track_id_b is None:
+                return {"status": "error", "message": "track_id_a and track_id_b required"}
+            try:
+                tid_a = int(track_id_a)
+                tid_b = int(track_id_b)
+            except (TypeError, ValueError):
+                return {"status": "error", "message": "track_id_a/track_id_b must be int"}
+            if tid_a == tid_b:
+                return {"status": "error", "message": "track IDs must be different"}
+            internal_a = self._resolve_external_track_id(tid_a)
+            internal_b = self._resolve_external_track_id(tid_b)
+            if internal_a is None and internal_b is None:
+                return {"status": "error", "message": "track not found"}
+            if internal_a is None or internal_b is None:
+                internal_target = internal_b if internal_a is None else internal_a
+                desired_ext = tid_a if internal_a is None else tid_b
+                if desired_ext <= 0:
+                    return {"status": "error", "message": "external id must be positive"}
+                current_ext = self._track_id_map.get(internal_target)
+                if current_ext is None:
+                    return {"status": "error", "message": "track not found"}
+                if desired_ext == current_ext:
+                    return {"status": "ok", "track_id": desired_ext, "previous": current_ext}
+                self._released_external.pop(desired_ext, None)
+                self._external_to_internal.pop(current_ext, None)
+                self._track_id_map[internal_target] = desired_ext
+                self._external_to_internal[desired_ext] = internal_target
+                self._recycle_external_id(current_ext)
+                used_ext_ids = set(self._track_id_map.values())
+                self._refresh_id_pools(used_ext_ids)
+                print(f"[Command] set external ID {current_ext} -> {desired_ext}")
+                return {"status": "ok", "track_id": desired_ext, "previous": current_ext}
+            ext_a = self._track_id_map.get(internal_a)
+            ext_b = self._track_id_map.get(internal_b)
+            if ext_a is None or ext_b is None:
+                return {"status": "error", "message": "track not found"}
+            self._released_external.pop(ext_a, None)
+            self._released_external.pop(ext_b, None)
+            self._track_id_map[internal_a] = ext_b
+            self._track_id_map[internal_b] = ext_a
+            self._external_to_internal[ext_a] = internal_b
+            self._external_to_internal[ext_b] = internal_a
+            print(f"[Command] swapped external IDs {ext_a} <-> {ext_b}")
+            return {"status": "ok", "swapped": [ext_a, ext_b]}
         if cmd == "list_tracks":
             tracks = self.tracker.list_tracks()
             for item in tracks:
