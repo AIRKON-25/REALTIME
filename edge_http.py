@@ -868,7 +868,8 @@ def parse_args():
                         help="Path to 3x3 homography (.npy or JSON with correspondences)")
     parser.add_argument("--udp-enable", action="store_true",
                         help="Enable UDP streaming of BEV detections (same format as main.py)")
-    parser.add_argument("--udp-host", type=str, default="192.168.0.165")
+    parser.add_argument("--udp-host", type=str, default="192.168.0.165",
+                        help="Destination IP or comma-separated IPs for UDP payloads")
     parser.add_argument("--udp-port", type=int, default=50050)
     parser.add_argument("--udp-format", choices=["json", "text"], default="json")
     parser.add_argument("--udp-fixed-length", type=float, default=None,
