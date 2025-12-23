@@ -396,26 +396,18 @@ body {
 
 .map__obstacle-icon {
   display: block;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 4px rgba(15, 23, 42, 0.35));
 }
 
 .map__obstacle--cone .map__obstacle-icon {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #f97316;
-  box-shadow: 0 0 8px rgba(249, 115, 22, 0.45);
+  width: 20px;
+  height: 20px;
 }
 
 .map__obstacle--barricade .map__obstacle-icon {
-  width: 28px;
-  height: 12px;
-  border-radius: 3px;
-  border: 2px solid #111827;
-  background: repeating-linear-gradient(
-    135deg,
-    #f59e0b 0 6px,
-    #111827 6px 12px
-  );
+  width: 32px;
+  height: 18px;
 }
 
 /* 경로 변경 */

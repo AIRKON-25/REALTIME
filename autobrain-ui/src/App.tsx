@@ -1,5 +1,5 @@
 // App.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import type {
   CameraId,
@@ -27,6 +27,8 @@ import { MonitoringPanel } from "./components/MonitoringPanel";
 const WS_HOST = import.meta.env.VITE_WS_HOST || window.location.hostname;
 const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
 const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
+const ROUTE_FLASH_MS = 600;
+const ROUTE_FLASH_GAP_MS = 250;
 
 const emptyState: MonitorState = {
   carsOnMap: [],
@@ -108,7 +110,7 @@ const applyObstacleStatus = (
   }
   if (Object.prototype.hasOwnProperty.call(data, "incident")) {
     const incident = data.incident ?? null;
-    return { ...next, incident, routeChanges: incident ? next.routeChanges : [] };
+    return { ...next, incident };
   }
   return next;
 };
@@ -150,6 +152,10 @@ function App() {
   const [activeIncidentId, setActiveIncidentId] = useState<IncidentId | null>(
     null
   );
+  const [routeFlashPhase, setRouteFlashPhase] = useState<
+    "none" | "old" | "new"
+  >("none");
+  const routeFlashTimersRef = useRef<number[]>([]);
 
   // ===========================
   //  1) WebSocket 연결 목업쓸떈 제외
@@ -250,6 +256,33 @@ function App() {
   const isIncidentActive =
     !!incident && activeIncidentId === incident.id;
 
+  useEffect(() => {
+    routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    routeFlashTimersRef.current = [];
+    if (routeChanges.length === 0) {
+      setRouteFlashPhase("none");
+      return;
+    }
+    setRouteFlashPhase("old");
+    const hideOld = window.setTimeout(
+      () => setRouteFlashPhase("none"),
+      ROUTE_FLASH_MS
+    );
+    const showNew = window.setTimeout(
+      () => setRouteFlashPhase("new"),
+      ROUTE_FLASH_MS + ROUTE_FLASH_GAP_MS
+    );
+    const hideNew = window.setTimeout(
+      () => setRouteFlashPhase("none"),
+      ROUTE_FLASH_MS + ROUTE_FLASH_GAP_MS + ROUTE_FLASH_MS
+    );
+    routeFlashTimersRef.current = [hideOld, showNew, hideNew];
+    return () => {
+      routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      routeFlashTimersRef.current = [];
+    };
+  }, [routeChanges]);
+
   // ===========================
   //  2) 뷰 모드 계산
   // ===========================
@@ -310,6 +343,16 @@ function App() {
     );
   }, [incident, carsStatusForPanel]);
 
+  const visibleRouteChanges = useMemo(() => {
+    if (routeFlashPhase === "old") {
+      return routeChanges.map((change) => ({ ...change, newRoute: [] }));
+    }
+    if (routeFlashPhase === "new") {
+      return routeChanges.map((change) => ({ ...change, oldRoute: [] }));
+    }
+    return [];
+  }, [routeChanges, routeFlashPhase]);
+
 // Monitoring에 실제로 띄울 카메라 선택 로직
   const monitoringCameraId: CameraId | null = useMemo(() => {
     if (selectedCameraId) return selectedCameraId;
@@ -358,7 +401,7 @@ function App() {
             obstacles={obstaclesOnMap}
             activeCameraId={monitoringCameraId}
             activeCarId={selectedCarId}
-            routeChanges={routeChanges}
+            routeChanges={visibleRouteChanges}
             onCarClick={handleCarClick}
             onCameraClick={handleCameraClick}
           />

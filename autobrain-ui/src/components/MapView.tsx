@@ -9,11 +9,27 @@ import type {
 } from "../types";
 
 import CameraIcon from "../assets/camera-icon.svg";
+import CameraIconActive from "../assets/camera-icon-active.svg";
+import CameraIconVertical from "../assets/camera-icon_vertical.svg";
+import CameraIconVerticalActive from "../assets/camera-icon-vertical-active.svg";
 
 const normalizeCarColor = (color: string | undefined) => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
   const allowed = ["red", "green", "blue", "yellow", "purple"] as const;
   return (allowed as readonly string[]).includes(normalized) ? normalized : "red";
+};
+
+const isSideCamera = (cam: CameraOnMap) => {
+  const distX = Math.min(cam.x, 1 - cam.x);
+  const distY = Math.min(cam.y, 1 - cam.y);
+  return distX < distY;
+};
+
+const getCameraIconSrc = (cam: CameraOnMap, isActive: boolean) => {
+  if (isSideCamera(cam)) {
+    return isActive ? CameraIconVerticalActive : CameraIconVertical;
+  }
+  return isActive ? CameraIconActive : CameraIcon;
 };
 
 interface MapViewProps {
@@ -71,26 +87,31 @@ export const MapView = ({
         </div>
 
         {/* Cameras */}
-        {camerasOnMap.map((cam) => (
-          <img
-            key={cam.id}
-            src={CameraIcon}
-            className={
-              cam.cameraId === activeCameraId
-                ? "map__camera-icon map__camera-icon--active"
-                : "map__camera-icon"
-            }
-            style={{
-              position: "absolute",
-              left: `${cam.x * 100}%`,
-              top: `${cam.y * 100}%`,
-              width: 60,
-              height: 60,
-              transform: "translate(-50%, -50%)",
-            }}
-            onClick={() => onCameraClick?.(cam.cameraId)}
-          />
-        ))}
+        {camerasOnMap.map((cam) => {
+          const isActive = cam.cameraId === activeCameraId;
+          const iconSrc = getCameraIconSrc(cam, isActive);
+          return (
+            <img
+              key={cam.id}
+              src={iconSrc}
+              alt={`${cam.cameraId} camera`}
+              className={
+                isActive
+                  ? "map__camera-icon map__camera-icon--active"
+                  : "map__camera-icon"
+              }
+              style={{
+                position: "absolute",
+                left: `${cam.x * 100}%`,
+                top: `${cam.y * 100}%`,
+                width: 60,
+                height: 60,
+                transform: "translate(-50%, -50%)",
+              }}
+              onClick={() => onCameraClick?.(cam.cameraId)}
+            />
+          );
+        })}
 
         {/* Cars */}
         {carsOnMap.map((car) => {
@@ -127,23 +148,29 @@ export const MapView = ({
         })}
 
         {/* Obstacles */}
-        {obstacles.map((ob) => (
-          <div
-            key={ob.id}
-            className={`map__obstacle ${
-              ob.kind === "barricade"
-                ? "map__obstacle--barricade"
-                : "map__obstacle--cone"
-            }`}
-            style={{
-              left: `${ob.x * 100}%`,
-              top: `${ob.y * 100}%`,
-              transform: "translate(-50%, -100%)",
-            }}
-          >
-            <span className="map__obstacle-icon" />
-          </div>
-        ))}
+        {obstacles.map((ob) => {
+          const obstacleSrc =
+            ob.kind === "barricade" ? "/assets/barricade.png" : "/assets/rubberCone.png";
+          const obstacleAlt =
+            ob.kind === "barricade" ? "barricade obstacle" : "rubber cone obstacle";
+          return (
+            <div
+              key={ob.id}
+              className={`map__obstacle ${
+                ob.kind === "barricade"
+                  ? "map__obstacle--barricade"
+                  : "map__obstacle--cone"
+              }`}
+              style={{
+                left: `${ob.x * 100}%`,
+                top: `${ob.y * 100}%`,
+                transform: "translate(-50%, -100%)",
+              }}
+            >
+              <img src={obstacleSrc} alt={obstacleAlt} className="map__obstacle-icon" />
+            </div>
+          );
+        })}
 
         {/* Route change arrows */}
         {routeChanges.length > 0 && (
