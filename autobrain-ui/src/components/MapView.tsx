@@ -4,9 +4,8 @@ import type {
   CameraOnMap,
   CarOnMap,
   CarId,
-  CarStatus,
   ObstacleOnMap,
-  RouteChangeStep,
+  CarRouteChange,
 } from "../types";
 
 import CameraIcon from "../assets/camera-icon.svg";
@@ -20,12 +19,11 @@ const normalizeCarColor = (color: string | undefined) => {
 interface MapViewProps {
   mapImage: string;
   carsOnMap: CarOnMap[];
-  carsStatus: CarStatus[];
   camerasOnMap: CameraOnMap[];
   obstacles: ObstacleOnMap[];
   activeCameraId: CameraId | null;
   activeCarId: CarId | null;
-  activeRouteStep: RouteChangeStep | null;
+  routeChanges: CarRouteChange[];
   onCarClick?: (carId: CarId) => void;
   onCameraClick?: (cameraId: CameraId) => void;
 }
@@ -33,12 +31,11 @@ interface MapViewProps {
 export const MapView = ({
   mapImage,
   carsOnMap,
-  carsStatus,
   camerasOnMap,
   obstacles,
   activeCameraId,
   activeCarId,
-  activeRouteStep,
+  routeChanges,
   onCarClick,
   onCameraClick,
 }: MapViewProps) => {
@@ -63,10 +60,8 @@ export const MapView = ({
     paddingBottom: `calc(${Math.max(0, maxY - 1) * 100}% + ${cameraRadiusPx}px)`,
   };
 
-  const carStatusById = carsStatus.reduce<Record<CarId, CarStatus>>((acc, status) => {
-    acc[status.id] = status;
-    return acc;
-  }, {});
+  const buildRoutePoints = (route: { x: number; y: number }[]) =>
+    route.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
 
   return (
     <div className="map" style={paddingStyle}>
@@ -101,20 +96,9 @@ export const MapView = ({
         {carsOnMap.map((car) => {
           const isSelected = car.carId === activeCarId;
           const isRouteChanged = car.status === "routeChanged";
-          const carStatus = carStatusById[car.carId];
-          const classValue =
-            carStatus?.class ?? (carStatus as { cls?: number | string } | undefined)?.cls;
-          const isCone = Number(classValue) === 1;
           const safeColor = normalizeCarColor(car.color);
-          const carImage = isCone
-            ? "/assets/rubberCone.png"
-            : `/assets/car-${safeColor}.png`;
-          const imageClass = isCone
-            ? "map__car-image map__car-image--cone"
-            : "map__car-image";
-          const transform = isCone
-            ? "translate(-50%, -50%)"
-            : `translate(-50%, -50%) rotate(${car.yaw}deg)`;
+          const carImage = `/assets/car-${safeColor}.png`;
+          const transform = `translate(-50%, -50%) rotate(${car.yaw}deg)`;
           
           return (
             <button
@@ -132,9 +116,8 @@ export const MapView = ({
               <img
                 src={carImage}
                 alt={`${car.carId} icon`}
-                className={imageClass}
+                className="map__car-image"
                 onError={(e) => {
-                  if (isCone) return;
                   if (e.currentTarget.src.endsWith("/assets/car-red.png")) return;
                   e.currentTarget.src = "/assets/car-red.png";
                 }}
@@ -147,7 +130,11 @@ export const MapView = ({
         {obstacles.map((ob) => (
           <div
             key={ob.id}
-            className="map__obstacle map__obstacle--cone"
+            className={`map__obstacle ${
+              ob.kind === "barricade"
+                ? "map__obstacle--barricade"
+                : "map__obstacle--cone"
+            }`}
             style={{
               left: `${ob.x * 100}%`,
               top: `${ob.y * 100}%`,
@@ -158,29 +145,53 @@ export const MapView = ({
           </div>
         ))}
 
-        {/* Route change arrow */}
-        {activeRouteStep && (
-          <svg className="map__route-svg">
+        {/* Route change arrows */}
+        {routeChanges.length > 0 && (
+          <svg className="map__route-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
               <marker
-                id="arrow"
+                id="arrow-old"
                 markerWidth="8"
                 markerHeight="8"
                 refX="5"
                 refY="3"
                 orient="auto"
               >
-                <path d="M0,0 L0,6 L6,3 z" />
+                <path d="M0,0 L0,6 L6,3 z" fill="var(--text-muted)" />
+              </marker>
+              <marker
+                id="arrow-new"
+                markerWidth="8"
+                markerHeight="8"
+                refX="5"
+                refY="3"
+                orient="auto"
+              >
+                <path d="M0,0 L0,6 L6,3 z" fill="var(--danger)" />
               </marker>
             </defs>
-            <line
-              x1={`${activeRouteStep.from.x * 100}%`}
-              y1={`${activeRouteStep.from.y * 100}%`}
-              x2={`${activeRouteStep.to.x * 100}%`}
-              y2={`${activeRouteStep.to.y * 100}%`}
-              className="map__route-line"
-              markerEnd="url(#arrow)"
-            />
+            {routeChanges.map((change, idx) => {
+              const oldPoints = buildRoutePoints(change.oldRoute);
+              const newPoints = buildRoutePoints(change.newRoute);
+              return (
+                <g key={`${change.carId}-${idx}`}>
+                  {change.oldRoute.length > 1 && (
+                    <polyline
+                      points={oldPoints}
+                      className="map__route-line map__route-line--old"
+                      markerEnd="url(#arrow-old)"
+                    />
+                  )}
+                  {change.newRoute.length > 1 && (
+                    <polyline
+                      points={newPoints}
+                      className="map__route-line map__route-line--new"
+                      markerEnd="url(#arrow-new)"
+                    />
+                  )}
+                </g>
+              );
+            })}
           </svg>
         )}
       </div>

@@ -6,7 +6,6 @@ import type {
   CarId,
   CarColor,
   IncidentId,
-  RouteChangeStep,
   ViewMode,
   MonitorState,
   RealtimeMessage,
@@ -23,13 +22,11 @@ import { MapView } from "./components/MapView";
 import { CarStatusPanel } from "./components/CarStatusPanel";
 import { IncidentPanel } from "./components/IncidentPanel";
 import { MonitoringPanel } from "./components/MonitoringPanel";
-import { mockSnapshot } from "./mockData"; // 더미데이터
 
 // 접속한 호스트/포트를 따라가도록 설정
 const WS_HOST = import.meta.env.VITE_WS_HOST || window.location.hostname;
 const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
 const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
-const USE_MOCK = false; // true면 mockSnapshot만 사용
 
 const emptyState: MonitorState = {
   carsOnMap: [],
@@ -116,36 +113,33 @@ const applyObstacleStatus = (
   return next;
 };
 
-const deriveRouteSteps = (
-  changes: CarRouteChange[] | undefined
-): RouteChangeStep[] => {
-  if (!changes || changes.length === 0) {
+const deriveRouteChanges = (
+  steps: RouteChangePacket["steps"]
+): CarRouteChange[] => {
+  if (!steps || steps.length === 0) {
     return [];
   }
-  const steps: RouteChangeStep[] = [];
-  changes.forEach((change) => {
-    const from = change.oldRoute[change.oldRoute.length - 1];
-    const to = change.newRoute[0];
-    if (!from || !to) return;
-    steps.push({ carId: change.carId, from, to });
-  });
-  return steps;
+  return steps.map((step) => ({
+    carId: step.carId,
+    oldRoute: [],
+    newRoute: [step.from, step.to],
+  }));
 };
 
 const applyRouteChange = (
   prev: MonitorState,
   data: RouteChangePacket
 ): MonitorState => {
-  const steps = data.steps ?? deriveRouteSteps(data.changes);
-  return { ...prev, routeChanges: steps };
+  if (data.changes && data.changes.length > 0) {
+    return { ...prev, routeChanges: data.changes };
+  }
+  return { ...prev, routeChanges: deriveRouteChanges(data.steps) };
 };
 
 function App() {
   // 🔹 서버에서 오는 전체 상태
-  const [serverState, setServerState] = useState<MonitorState>(
-    USE_MOCK ? mockSnapshot : emptyState
-  );
-  const [hasCamStatus, setHasCamStatus] = useState<boolean>(USE_MOCK);
+  const [serverState, setServerState] = useState<MonitorState>(emptyState);
+  const [hasCamStatus, setHasCamStatus] = useState<boolean>(false);
 
   // 🔹 뷰 모드 관련 상태 (사용자 인터랙션용)
   const [viewMode, setViewMode] = useState<ViewMode>("default");
@@ -157,16 +151,10 @@ function App() {
     null
   );
 
-  // 🔹 경로 변경 애니메이션용
-  const [activeRouteIdx, setActiveRouteIdx] = useState<number | null>(null);
-
   // ===========================
   //  1) WebSocket 연결 목업쓸떈 제외
   // ===========================
   useEffect(() => {
-    if (USE_MOCK) { //더미 모드에서는 WebSocket 연결 안 함
-    return;
-  }
     let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
 
@@ -237,7 +225,7 @@ function App() {
   const camerasStatus = serverState.camerasStatus;
   const obstaclesOnMap = serverState.obstaclesOnMap;
   const incident = serverState.incident;
-  const routeSequence: RouteChangeStep[] = serverState.routeChanges;
+  const routeChanges = serverState.routeChanges;
 
   const carColorById = useMemo(() => {
     const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple"];
@@ -280,32 +268,7 @@ function App() {
   }, [isIncidentActive, selectedCarId, selectedCameraId]);
 
   // ===========================
-  //  3) 경로 변경 애니메이션
-  // ===========================
-  useEffect(() => {
-    if (!isIncidentActive || routeSequence.length === 0) {
-      setActiveRouteIdx(null);
-      return;
-    }
-
-    let idx = 0;
-    setActiveRouteIdx(idx);
-
-    const interval = window.setInterval(() => {
-      idx = (idx + 1) % routeSequence.length;
-      setActiveRouteIdx(idx);
-    }, 1000);
-
-    return () => window.clearInterval(interval);
-  }, [isIncidentActive, routeSequence]);
-
-  const activeRouteStep: RouteChangeStep | null = useMemo(() => {
-    if (activeRouteIdx == null) return null;
-    return routeSequence[activeRouteIdx];
-  }, [activeRouteIdx, routeSequence]);
-
-  // ===========================
-  //  4) 클릭 핸들러들
+  //  3) 클릭 핸들러들
   // ===========================
   const handleCarClick = (carId: CarId) => {
     setSelectedCarId(carId);
@@ -338,14 +301,7 @@ function App() {
   };
 
   // Incident가 비추는 영역에 있는 차량들
-  const carsStatusForPanel = useMemo(
-    () =>
-      carsStatus.filter((car) => {
-        const cls = car.class ?? (car as { cls?: number | string } | undefined)?.cls;
-        return Number(cls) !== 1;
-      }),
-    [carsStatus]
-  );
+  const carsStatusForPanel = useMemo(() => carsStatus, [carsStatus]);
 
   const vehiclesInIncidentView = useMemo(() => {
     if (!incident?.relatedCarIds) return [];
@@ -398,12 +354,11 @@ function App() {
           <MapView
             mapImage="/assets/map-track.png"
             carsOnMap={carsOnMap}
-            carsStatus={carsStatus}
             camerasOnMap={camerasOnMap}
-            obstacles={isIncidentActive ? obstaclesOnMap : []}
+            obstacles={obstaclesOnMap}
             activeCameraId={monitoringCameraId}
             activeCarId={selectedCarId}
-            activeRouteStep={activeRouteStep}
+            routeChanges={routeChanges}
             onCarClick={handleCarClick}
             onCameraClick={handleCameraClick}
           />

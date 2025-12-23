@@ -83,11 +83,8 @@ export interface RouteChangeStep {
 
 export interface CarRouteChange {
   carId: CarId;
-  incidentId?: IncidentId;
   oldRoute: RoutePoint[];
   newRoute: RoutePoint[];
-  reasonObstacleId?: string;
-  validFromTs?: number;
 }
 
 export interface CamStatusPacket {
@@ -131,6 +128,7 @@ export type ObstacleStatusPacket = ObstacleStatusSnapshot | ObstacleStatusDelta;
 
 export interface RouteChangePacket {
   incidentId?: IncidentId;
+  obstacleId?: string;
   changes?: CarRouteChange[];
   steps?: RouteChangeStep[];
 }
@@ -143,7 +141,7 @@ export interface MonitorState {
   obstaclesOnMap: ObstacleOnMap[];
   obstaclesStatus: ObstacleStatus[];
   incident: Incident | null;
-  routeChanges: RouteChangeStep[];
+  routeChanges: CarRouteChange[];
 }
 
 // 서버에서 보내주는 메시지 타입

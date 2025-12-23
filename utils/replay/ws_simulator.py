@@ -14,8 +14,8 @@ CAMERAS_ON_MAP = [
 ]
 
 CAMERAS_STATUS = [
-    {"id": "cam-1", "name": "Camera 1", "streamUrl": "/assets/camera1.png"},
-    {"id": "cam-2", "name": "Camera 2", "streamUrl": "/assets/camera2.png"},
+    {"id": "cam-1", "name": "Camera 1", "streamUrl": "/assets/map-track.png"},
+    {"id": "cam-2", "name": "Camera 2", "streamUrl": "/assets/map-track.png"},
 ]
 
 CAR_DEFS = [
@@ -71,16 +71,18 @@ def build_car_message(ts: float) -> dict:
 
 
 def build_obstacle_upsert(ts: float) -> dict:
+    kind = "rubberCone" if int(ts) % 2 == 0 else "barricade"
+    cls = 1 if kind == "rubberCone" else 2
     obstacle = {
         "id": OBSTACLE_ID,
         "obstacleId": OBSTACLE_ID,
         "x": 0.62,
         "y": 0.25,
-        "kind": "rubberCone",
+        "kind": kind,
     }
     status = {
         "id": OBSTACLE_ID,
-        "class": 1,
+        "class": cls,
         "cameraId": "cam-2",
     }
     incident = {
@@ -122,16 +124,33 @@ def build_route_change(ts: float) -> dict:
         "ts": ts,
         "data": {
             "incidentId": "inc-1",
-            "steps": [
+            "obstacleId": OBSTACLE_ID,
+            "changes": [
                 {
                     "carId": "car-1",
-                    "from": {"x": 0.48, "y": 0.35},
-                    "to": {"x": 0.38, "y": 0.35},
+                    "oldRoute": [
+                        {"x": 0.58, "y": 0.62},
+                        {"x": 0.52, "y": 0.52},
+                        {"x": 0.46, "y": 0.42},
+                    ],
+                    "newRoute": [
+                        {"x": 0.58, "y": 0.62},
+                        {"x": 0.62, "y": 0.5},
+                        {"x": 0.68, "y": 0.38},
+                    ],
                 },
                 {
                     "carId": "car-2",
-                    "from": {"x": 0.52, "y": 0.4},
-                    "to": {"x": 0.62, "y": 0.4},
+                    "oldRoute": [
+                        {"x": 0.35, "y": 0.52},
+                        {"x": 0.44, "y": 0.52},
+                        {"x": 0.52, "y": 0.52},
+                    ],
+                    "newRoute": [
+                        {"x": 0.35, "y": 0.52},
+                        {"x": 0.3, "y": 0.44},
+                        {"x": 0.26, "y": 0.38},
+                    ],
                 },
             ],
         },
