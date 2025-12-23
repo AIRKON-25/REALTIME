@@ -3,11 +3,12 @@ import re
 from typing import Optional, Tuple
 
 # ----- 색상 관련 유틸 -----
-COLOR_LABELS = ("red", "green", "white", "yellow", "purple")
+COLOR_LABELS = ("red", "green", "blue", "yellow", "purple", "white")
 VALID_COLORS = {label: label for label in COLOR_LABELS}
 COLOR_HEX_MAP = {
     "red": "#f52629",
     "green": "#48ad0d",
+    "blue": "#1f6dff",
     "white": "#ffffff",
     "yellow": "#ffdd00",
     "purple": "#781de7",
