@@ -128,11 +128,6 @@ def build_route_change(ts: float) -> dict:
             "changes": [
                 {
                     "carId": "car-1",
-                    "oldRoute": [
-                        {"x": 0.58, "y": 0.62},
-                        {"x": 0.52, "y": 0.52},
-                        {"x": 0.46, "y": 0.42},
-                    ],
                     "newRoute": [
                         {"x": 0.58, "y": 0.62},
                         {"x": 0.62, "y": 0.5},
@@ -141,11 +136,6 @@ def build_route_change(ts: float) -> dict:
                 },
                 {
                     "carId": "car-2",
-                    "oldRoute": [
-                        {"x": 0.35, "y": 0.52},
-                        {"x": 0.44, "y": 0.52},
-                        {"x": 0.52, "y": 0.52},
-                    ],
                     "newRoute": [
                         {"x": 0.35, "y": 0.52},
                         {"x": 0.3, "y": 0.44},

@@ -28,7 +28,6 @@ const WS_HOST = import.meta.env.VITE_WS_HOST || window.location.hostname;
 const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
 const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
 const ROUTE_FLASH_MS = 600;
-const ROUTE_FLASH_GAP_MS = 250;
 
 const emptyState: MonitorState = {
   carsOnMap: [],
@@ -123,7 +122,6 @@ const deriveRouteChanges = (
   }
   return steps.map((step) => ({
     carId: step.carId,
-    oldRoute: [],
     newRoute: [step.from, step.to],
   }));
 };
@@ -150,9 +148,7 @@ function App() {
   const [activeIncidentId, setActiveIncidentId] = useState<IncidentId | null>(
     null
   );
-  const [routeFlashPhase, setRouteFlashPhase] = useState<
-    "none" | "old" | "new"
-  >("none");
+  const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
   const routeFlashTimersRef = useRef<number[]>([]);
 
   // ===========================
@@ -261,20 +257,12 @@ function App() {
       setRouteFlashPhase("none");
       return;
     }
-    setRouteFlashPhase("old");
-    const hideOld = window.setTimeout(
+    setRouteFlashPhase("new");
+    const hideNew = window.setTimeout(
       () => setRouteFlashPhase("none"),
       ROUTE_FLASH_MS
     );
-    const showNew = window.setTimeout(
-      () => setRouteFlashPhase("new"),
-      ROUTE_FLASH_MS + ROUTE_FLASH_GAP_MS
-    );
-    const hideNew = window.setTimeout(
-      () => setRouteFlashPhase("none"),
-      ROUTE_FLASH_MS + ROUTE_FLASH_GAP_MS + ROUTE_FLASH_MS
-    );
-    routeFlashTimersRef.current = [hideOld, showNew, hideNew];
+    routeFlashTimersRef.current = [hideNew];
     return () => {
       routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
       routeFlashTimersRef.current = [];
@@ -341,11 +329,8 @@ function App() {
   }, [incident, carsStatusForPanel]);
 
   const visibleRouteChanges = useMemo(() => {
-    if (routeFlashPhase === "old") {
-      return routeChanges.map((change) => ({ ...change, newRoute: [] }));
-    }
     if (routeFlashPhase === "new") {
-      return routeChanges.map((change) => ({ ...change, oldRoute: [] }));
+      return routeChanges;
     }
     return [];
   }, [routeChanges, routeFlashPhase]);

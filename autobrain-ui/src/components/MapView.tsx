@@ -208,16 +208,6 @@ export const MapView = ({
           <svg className="map__route-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
             <defs>
               <marker
-                id="arrow-old"
-                markerWidth="8"
-                markerHeight="8"
-                refX="5"
-                refY="3"
-                orient="auto"
-              >
-                <path d="M0,0 L0,6 L6,3 z" fill="var(--text-muted)" />
-              </marker>
-              <marker
                 id="arrow-new"
                 markerWidth="8"
                 markerHeight="8"
@@ -229,17 +219,9 @@ export const MapView = ({
               </marker>
             </defs>
             {routeChanges.map((change, idx) => {
-              const oldPoints = buildRoutePoints(change.oldRoute);
               const newPoints = buildRoutePoints(change.newRoute);
               return (
                 <g key={`${change.carId}-${idx}`}>
-                  {change.oldRoute.length > 1 && (
-                    <polyline
-                      points={oldPoints}
-                      className="map__route-line map__route-line--old"
-                      markerEnd="url(#arrow-old)"
-                    />
-                  )}
                   {change.newRoute.length > 1 && (
                     <polyline
                       points={newPoints}

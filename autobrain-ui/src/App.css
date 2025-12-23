@@ -423,11 +423,6 @@ body {
   vector-effect: non-scaling-stroke;
 }
 
-.map__route-line--old {
-  stroke: var(--text-muted);
-  stroke-dasharray: 8 6;
-}
-
 .map__route-line--new {
   stroke: var(--danger);
 }
@@ -543,6 +538,16 @@ body {
   height: 32px;
   border-radius: 999px;
   background: var(--danger);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.incident__icon-image {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
 }
 
 .incident__title {
@@ -570,12 +575,13 @@ body {
 }
 
 .monitoring__grid {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 
 .monitoring__grid--dual {
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  flex-direction: column;
 }
 
 .monitoring__camera {

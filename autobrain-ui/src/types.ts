@@ -83,7 +83,6 @@ export interface RouteChangeStep {
 
 export interface CarRouteChange {
   carId: CarId;
-  oldRoute: RoutePoint[];
   newRoute: RoutePoint[];
 }
 
