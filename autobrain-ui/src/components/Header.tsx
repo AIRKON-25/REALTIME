@@ -1,7 +1,14 @@
 // components/Header.tsx
 import { useEffect, useMemo, useState } from "react";
 
-export const Header = () => {
+type AppMode = "monitor" | "admin";
+
+interface HeaderProps {
+  mode: AppMode;
+  onModeChange: (mode: AppMode) => void;
+}
+
+export const Header = ({ mode, onModeChange }: HeaderProps) => {
   const [now, setNow] = useState(() => new Date());
   const formatter = useMemo(
     () =>
@@ -40,6 +47,22 @@ export const Header = () => {
         <span className="header__status-label">NETWORK</span>
       </div>
       <div className="header__right">
+        <div className="header__mode">
+          <button
+            type="button"
+            className={`header__mode-button${mode === "monitor" ? " header__mode-button--active" : ""}`}
+            onClick={() => onModeChange("monitor")}
+          >
+            Monitor
+          </button>
+          <button
+            type="button"
+            className={`header__mode-button${mode === "admin" ? " header__mode-button--active" : ""}`}
+            onClick={() => onModeChange("admin")}
+          >
+            Admin
+          </button>
+        </div>
         <span>{formattedTime}</span>
       </div>
     </header>

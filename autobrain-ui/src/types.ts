@@ -143,9 +143,20 @@ export interface MonitorState {
   routeChanges: CarRouteChange[];
 }
 
+export interface AdminResponseMessage {
+  type: "adminResponse";
+  requestId?: number | string;
+  cmd?: string;
+  response?: Record<string, unknown>;
+  status?: "ok" | "error";
+  message?: string;
+  ts?: number;
+}
+
 // 서버에서 보내주는 메시지 타입
 export type RealtimeMessage =
   | { type: "camStatus"; ts: number; data: CamStatusPacket }
   | { type: "carStatus"; ts: number; data: CarStatusPacket }
   | { type: "obstacleStatus"; ts: number; data: ObstacleStatusPacket }
-  | { type: "carRouteChange"; ts: number; data: RouteChangePacket };
+  | { type: "carRouteChange"; ts: number; data: RouteChangePacket }
+  | AdminResponseMessage;

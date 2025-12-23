@@ -1,7 +1,7 @@
 import asyncio
 import json
 import threading
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import websockets  # pip install websockets
 
@@ -12,10 +12,19 @@ class WebSocketHub:
     ws://<host>:<port>/monitor 로 접속하면 된다.
     """
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 9001, path: str = "/monitor"):
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 9001,
+        path: str = "/monitor",
+        on_message: Optional[
+            Callable[[str, "websockets.WebSocketServerProtocol"], Awaitable[Optional[dict]]]
+        ] = None,
+    ):
         self.host = host
         self.port = int(port)
         self.path = path
+        self._on_message = on_message
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._clients: "set[websockets.WebSocketServerProtocol]" = set()
         self._thread: Optional[threading.Thread] = None
@@ -38,8 +47,21 @@ class WebSocketHub:
                     break
 
         try:
-            async for _ in websocket:
-                pass
+            async for raw in websocket:
+                if not self._on_message:
+                    continue
+                try:
+                    response = await self._on_message(raw, websocket)
+                except Exception as exc:
+                    print(f"[WebSocketHub] on_message error: {exc}")
+                    continue
+                if response is None:
+                    continue
+                try:
+                    await websocket.send(json.dumps(response, ensure_ascii=False))
+                except Exception as exc:
+                    print(f"[WebSocketHub] response send failed: {exc}")
+                    break
         except Exception as exc:
             print(f"[WebSocketHub] client error: {exc}")
         finally:

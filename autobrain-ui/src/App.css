@@ -78,10 +78,15 @@ body {
   overflow: hidden;
 }
 
+#root,
 .app-root,
 html,
 body {
   height: 100%;
+}
+
+#root {
+  min-height: 0;
 }
 
 .app-root {
@@ -150,6 +155,34 @@ body {
 
 .header__right {
   font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.header__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: #e5e7eb;
+  border-radius: 999px;
+}
+
+.header__mode-button {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.header__mode-button--active {
+  background: var(--accent);
+  color: #ffffff;
 }
 
 /* Layout */
@@ -600,4 +633,220 @@ body {
   display: block;
   width: 100%;
   height: auto;
+}
+
+/* Admin page */
+
+.admin-page {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 24px;
+  padding: 0 40px 32px;
+  overflow: hidden;
+}
+
+.admin-page__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.admin-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.admin-panel__hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.admin-status {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #e5e7eb;
+  color: var(--text-main);
+}
+
+.admin-status--on {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.admin-status--off {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.admin-error {
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.admin-form {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.admin-input,
+.admin-select {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  font-size: 14px;
+  background: #ffffff;
+  color: var(--text-main);
+}
+
+.admin-input:focus,
+.admin-select:focus {
+  outline: 2px solid rgba(37, 99, 235, 0.2);
+  border-color: var(--accent);
+}
+
+.admin-button {
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--accent);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.admin-button:disabled {
+  background: #cbd5f5;
+  color: #eef2ff;
+  cursor: not-allowed;
+}
+
+.admin-log {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.admin-log__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-log__count {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.admin-log__entry {
+  padding: 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-soft);
+  background: #f9fafb;
+}
+
+.admin-log__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.admin-log__status {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.admin-log__status--ok {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.admin-log__status--error {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.admin-log__cmd {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.admin-log__id,
+.admin-log__time {
+  color: var(--text-muted);
+}
+
+.admin-log__summary {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.admin-log__payload {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-md);
+  background: #111827;
+  color: #e5e7eb;
+  font-size: 12px;
+  overflow-x: auto;
+}
+
+@media (max-width: 1280px) {
+  .admin-page {
+    padding: 0 24px 28px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .admin-page {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 0 16px 24px;
+  }
+}
+
+@media (max-width: 768px) {
+  .admin-page {
+    padding: 0 12px 20px;
+  }
+  .header__mode {
+    width: 100%;
+    justify-content: center;
+  }
+  .header__right {
+    width: 100%;
+    justify-content: space-between;
+  }
 }

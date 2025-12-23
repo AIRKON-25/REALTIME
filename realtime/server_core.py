@@ -1,3 +1,4 @@
+import asyncio
 import heapq
 import json
 import queue
@@ -111,7 +112,12 @@ class RealtimeServer:
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
             try:
-                self.ws_hub = WebSocketHub(ws_host, ws_port, path="/monitor")
+                self.ws_hub = WebSocketHub(
+                    ws_host,
+                    ws_port,
+                    path="/monitor",
+                    on_message=self._handle_ws_message,
+                )
                 self.ws_hub.start()
             except Exception as exc:
                 print(f"[WebSocketHub] init failed: {exc}")
@@ -613,7 +619,7 @@ class RealtimeServer:
 
     @staticmethod
     def _normalize_car_color(label: Optional[str]) -> str:
-        allowed = {"red", "green", "blue", "yellow", "purple"}
+        allowed = {"red", "green", "white", "yellow", "purple"}
         if label in allowed:
             return label
         return "red"
@@ -855,6 +861,70 @@ class RealtimeServer:
                     resp_q.put_nowait(response)
                 except queue.Full:
                     pass
+
+    async def _handle_ws_message(self, raw_message: str, _websocket) -> Optional[dict]:
+        try:
+            payload = json.loads(raw_message)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != "adminCommand":
+            return None
+
+        request_id = payload.get("requestId")
+        cmd = payload.get("cmd")
+        if not cmd:
+            return {
+                "type": "adminResponse",
+                "requestId": request_id,
+                "status": "error",
+                "message": "cmd required",
+            }
+        if not self.command_queue:
+            return {
+                "type": "adminResponse",
+                "requestId": request_id,
+                "cmd": cmd,
+                "status": "error",
+                "message": "command server disabled",
+            }
+
+        response_q: queue.Queue = queue.Queue(maxsize=1)
+        trimmed_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"type", "requestId"}
+        }
+        item = {"cmd": cmd, "payload": trimmed_payload, "response": response_q}
+        try:
+            self.command_queue.put_nowait(item)
+        except queue.Full:
+            return {
+                "type": "adminResponse",
+                "requestId": request_id,
+                "cmd": cmd,
+                "status": "error",
+                "message": "server busy",
+            }
+
+        timeout = payload.get("timeout", 2.0)
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 2.0
+
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(None, response_q.get, True, timeout)
+        except queue.Empty:
+            response = {"status": "error", "message": "command timeout"}
+        return {
+            "type": "adminResponse",
+            "requestId": request_id,
+            "cmd": cmd,
+            "response": response,
+        }
 
     def _resolve_external_track_id(self, external_id: int) -> Optional[int]:
         internal_id = self._external_to_internal.get(external_id)
