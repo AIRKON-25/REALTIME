@@ -1,4 +1,6 @@
 // components/MapView.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type {
   CameraId,
   CameraOnMap,
@@ -37,7 +39,7 @@ interface MapViewProps {
   carsOnMap: CarOnMap[];
   camerasOnMap: CameraOnMap[];
   obstacles: ObstacleOnMap[];
-  activeCameraId: CameraId | null;
+  activeCameraIds: CameraId[];
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
   onCarClick?: (carId: CarId) => void;
@@ -49,12 +51,37 @@ export const MapView = ({
   carsOnMap,
   camerasOnMap,
   obstacles,
-  activeCameraId,
+  activeCameraIds,
   activeCarId,
   routeChanges,
   onCarClick,
   onCameraClick,
 }: MapViewProps) => {
+  const mapContentRef = useRef<HTMLDivElement | null>(null);
+  const [mapWidth, setMapWidth] = useState(0);
+
+  useEffect(() => {
+    const target = mapContentRef.current;
+    if (!target) return;
+    const updateSize = () => {
+      const rect = target.getBoundingClientRect();
+      setMapWidth(rect.width);
+    };
+    updateSize();
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setMapWidth(entry.contentRect.width);
+    });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, []);
+
+  const mapScale = useMemo(() => {
+    if (!mapWidth) return 1;
+    const scale = mapWidth / 1000;
+    return Math.min(1.4, Math.max(0.6, scale));
+  }, [mapWidth]);
+
   const points = [
     { x: 0, y: 0 },
     { x: 1, y: 1 },
@@ -67,7 +94,8 @@ export const MapView = ({
   const maxY = Math.max(...points.map((p) => p.y));
 
   // Camera icon size (px) to ensure padding accounts for its radius.
-  const cameraRadiusPx = 30;
+  const cameraSizePx = 60 * mapScale;
+  const cameraRadiusPx = cameraSizePx / 2;
 
   const paddingStyle = {
     paddingLeft: `calc(${Math.max(0, -minX) * 100}% + ${cameraRadiusPx}px)`,
@@ -76,19 +104,24 @@ export const MapView = ({
     paddingBottom: `calc(${Math.max(0, maxY - 1) * 100}% + ${cameraRadiusPx}px)`,
   };
 
+  const mapStyle = {
+    ...paddingStyle,
+    ["--map-scale" as string]: mapScale,
+  } as CSSProperties;
+
   const buildRoutePoints = (route: { x: number; y: number }[]) =>
     route.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
 
   return (
-    <div className="map" style={paddingStyle}>
-      <div className="map__content">
+    <div className="map" style={mapStyle}>
+      <div className="map__content" ref={mapContentRef}>
         <div className="map__image-wrapper">
           <img src={mapImage} alt="track map" className="map__image" />
         </div>
 
         {/* Cameras */}
         {camerasOnMap.map((cam) => {
-          const isActive = cam.cameraId === activeCameraId;
+          const isActive = activeCameraIds.includes(cam.cameraId);
           const iconSrc = getCameraIconSrc(cam, isActive);
           return (
             <img
@@ -104,8 +137,6 @@ export const MapView = ({
                 position: "absolute",
                 left: `${cam.x * 100}%`,
                 top: `${cam.y * 100}%`,
-                width: 60,
-                height: 60,
                 transform: "translate(-50%, -50%)",
               }}
               onClick={() => onCameraClick?.(cam.cameraId)}

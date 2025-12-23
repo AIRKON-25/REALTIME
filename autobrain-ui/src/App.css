@@ -182,9 +182,6 @@ body {
   min-height: 0;
 }
 
-.layout__map-inner--has-back {
-  height: calc(100% - var(--map-bottom-space));
-}
 
 .layout__side {
   display: flex;
@@ -204,18 +201,6 @@ body {
   overflow: auto;
 }
 
-.layout__back-button {
-  position: absolute;
-  left: 50%;
-  bottom: 12px;
-  transform: translateX(-50%);
-  padding: 8px 14px;
-  font-size: 12px;
-  border-radius: 999px;
-  border: none;
-  cursor: pointer;
-  background: #e5e7eb;
-}
 
 .layout--cameraFocused .layout__map,
 .layout--carFocused .layout__map,
@@ -279,6 +264,14 @@ body {
 
 .map {
   position: relative;
+  --map-scale: 1;
+  --map-camera-size: calc(60px * var(--map-scale));
+  --map-car-width: calc(46px * var(--map-scale));
+  --map-car-height: calc(26px * var(--map-scale));
+  --map-obstacle-cone: calc(20px * var(--map-scale));
+  --map-obstacle-barricade-width: calc(32px * var(--map-scale));
+  --map-obstacle-barricade-height: calc(18px * var(--map-scale));
+  --map-route-width: calc(4px * var(--map-scale));
   background: var(--map-bg);
   border-radius: var(--radius-lg);
   overflow: visible;
@@ -342,6 +335,8 @@ body {
   border-radius: 4px;
 } */
 .map__camera-icon {
+  width: var(--map-camera-size);
+  height: var(--map-camera-size);
   transition: 0.2s ease;
   cursor: pointer;
   opacity: 0.8;
@@ -360,8 +355,8 @@ body {
 
 .map__car {
   position: absolute;
-  width: 46px;
-  height: 26px;
+  width: var(--map-car-width);
+  height: var(--map-car-height);
   border: none;
   background: transparent;
   padding: 0;
@@ -382,8 +377,10 @@ body {
 }
 
 .map__car-image {
-  width: 46px;
-  height: auto;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
   pointer-events: none;
 }
 
@@ -401,13 +398,13 @@ body {
 }
 
 .map__obstacle--cone .map__obstacle-icon {
-  width: 20px;
-  height: 20px;
+  width: var(--map-obstacle-cone);
+  height: var(--map-obstacle-cone);
 }
 
 .map__obstacle--barricade .map__obstacle-icon {
-  width: 32px;
-  height: 18px;
+  width: var(--map-obstacle-barricade-width);
+  height: var(--map-obstacle-barricade-height);
 }
 
 /* 경로 변경 */
@@ -420,7 +417,7 @@ body {
 
 .map__route-line {
   fill: none;
-  stroke-width: 4;
+  stroke-width: var(--map-route-width);
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
@@ -570,7 +567,21 @@ body {
   border-radius: 999px;
   background: #e5e7eb;
   font-size: 12px;
-  margin-bottom: 8px;
+}
+
+.monitoring__grid {
+  display: grid;
+  gap: 12px;
+}
+
+.monitoring__grid--dual {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.monitoring__camera {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .monitoring__frame {

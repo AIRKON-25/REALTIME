@@ -146,9 +146,7 @@ function App() {
   // 🔹 뷰 모드 관련 상태 (사용자 인터랙션용)
   const [viewMode, setViewMode] = useState<ViewMode>("default");
   const [selectedCarId, setSelectedCarId] = useState<CarId | null>(null);
-  const [selectedCameraId, setSelectedCameraId] = useState<CameraId | null>(
-    null
-  );
+  const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
   const [activeIncidentId, setActiveIncidentId] = useState<IncidentId | null>(
     null
   );
@@ -287,33 +285,40 @@ function App() {
   //  2) 뷰 모드 계산
   // ===========================
   useEffect(() => {
-    if (isIncidentActive && selectedCarId) {
-      setViewMode("incidentFocused");
-    } else if (isIncidentActive) {
+    if (isIncidentActive) {
       setViewMode("incidentFocused");
     } else if (selectedCarId) {
       setViewMode("carFocused");
-    } else if (selectedCameraId) {
+    } else if (selectedCameraIds.length > 0) {
       setViewMode("cameraFocused");
     } else {
       setViewMode("default");
     }
-  }, [isIncidentActive, selectedCarId, selectedCameraId]);
+  }, [isIncidentActive, selectedCarId, selectedCameraIds]);
 
   // ===========================
   //  3) 클릭 핸들러들
   // ===========================
   const handleCarClick = (carId: CarId) => {
-    setSelectedCarId(carId);
-    const carStatus = carsStatus.find((c) => c.id === carId);
-    if (carStatus?.cameraId) {
-      setSelectedCameraId(carStatus.cameraId);
+    if (selectedCarId === carId) {
+      setSelectedCarId(null);
+      return;
     }
+    setSelectedCarId(carId);
+    setSelectedCameraIds([]);
   };
 
   const handleCameraClick = (cameraId: CameraId) => {
-    setSelectedCameraId(cameraId);
     setSelectedCarId(null);
+    setSelectedCameraIds((prev) => {
+      if (prev.includes(cameraId)) {
+        return prev.filter((id) => id !== cameraId);
+      }
+      if (prev.length < 2) {
+        return [...prev, cameraId];
+      }
+      return [prev[1], cameraId];
+    });
   };
 
   const handleIncidentClick = () => {
@@ -322,15 +327,7 @@ function App() {
       setActiveIncidentId(null);
     } else {
       setActiveIncidentId(incident.id);
-      if (incident.cameraId) setSelectedCameraId(incident.cameraId);
     }
-  };
-
-  const handleBackToDefault = () => {
-    setSelectedCarId(null);
-    setSelectedCameraId(null);
-    setActiveIncidentId(null);
-    setViewMode("default");
   };
 
   // Incident가 비추는 영역에 있는 차량들
@@ -354,26 +351,25 @@ function App() {
   }, [routeChanges, routeFlashPhase]);
 
 // Monitoring에 실제로 띄울 카메라 선택 로직
-  const monitoringCameraId: CameraId | null = useMemo(() => {
-    if (selectedCameraId) return selectedCameraId;
-    if (incident?.cameraId && isIncidentActive) return incident.cameraId;
+  const monitoringCameraIds: CameraId[] = useMemo(() => {
+    if (selectedCameraIds.length > 0) {
+      return Array.from(new Set(selectedCameraIds)).slice(0, 2);
+    }
+    if (incident?.cameraId && isIncidentActive) return [incident.cameraId];
     const car = carsStatus.find((c) => c.id === selectedCarId);
-    return car?.cameraId ?? null;
-  }, [selectedCameraId, incident, isIncidentActive, selectedCarId, carsStatus]);
+    return car?.cameraId ? [car.cameraId] : [];
+  }, [selectedCameraIds, incident, isIncidentActive, selectedCarId, carsStatus]);
 
-  // const monitoringCamera =
-  //   monitoringCameraId &&
-  //   camerasStatus.find((cam) => cam.id === monitoringCameraId);
-  const monitoringCamera: CameraStatus | null = useMemo(() => {
-    if (!monitoringCameraId) return null;
-    const found = camerasStatus.find((cam) => cam.id === monitoringCameraId);
-    return found ?? null;
-  }, [monitoringCameraId, camerasStatus]);
+  const monitoringCameras: CameraStatus[] = useMemo(() => {
+    if (monitoringCameraIds.length === 0) return [];
+    const byId = new Map(camerasStatus.map((cam) => [cam.id, cam]));
+    return monitoringCameraIds
+      .map((id) => byId.get(id))
+      .filter((cam): cam is CameraStatus => !!cam);
+  }, [monitoringCameraIds, camerasStatus]);
 
 
   const isLoading = !hasCamStatus;
-  const showBackButton =
-    viewMode !== "default" || !!selectedCarId || !!selectedCameraId || !!incident;
 
   return (
     <div className="app-root">
@@ -381,15 +377,9 @@ function App() {
       <Layout
         viewMode={viewMode}
         hasIncident={!!incident}
-        showBackButton={showBackButton}
-        onBackClick={handleBackToDefault}
       >
         {/* LEFT: MAP */}
-        <div
-          className={`layout__map-inner ${
-            showBackButton ? "layout__map-inner--has-back" : ""
-          }`}
-        >
+        <div className="layout__map-inner">
           {isLoading && (
             <div className="map__loading">Waiting for server data...</div>
           )}
@@ -399,7 +389,7 @@ function App() {
             carsOnMap={carsOnMap}
             camerasOnMap={camerasOnMap}
             obstacles={obstaclesOnMap}
-            activeCameraId={monitoringCameraId}
+            activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
             onCarClick={handleCarClick}
@@ -464,7 +454,7 @@ function App() {
           {(viewMode === "cameraFocused" ||
             viewMode === "carFocused" ||
             viewMode === "incidentFocused") && (
-            <MonitoringPanel camera={monitoringCamera ?? null} />
+            <MonitoringPanel cameras={monitoringCameras} />
           )}
         </div>
       </Layout>

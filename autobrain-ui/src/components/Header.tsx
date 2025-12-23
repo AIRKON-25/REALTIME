@@ -1,9 +1,30 @@
 // components/Header.tsx
+import { useEffect, useMemo, useState } from "react";
+
 export const Header = () => {
+  const [now, setNow] = useState(() => new Date());
+  const formatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "numeric",
+        minute: "2-digit",
+      }),
+    []
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const formattedTime = formatter.format(now);
+
   return (
     <header className="header">
       <div className="header__left">
-        {/* 로고는 나중에 SVG로 교체 */}
         <div className="header__logo-mark" />
         <div className="header__logo-text">
           <span className="header__logo-title">AutoBrain</span>
@@ -19,8 +40,7 @@ export const Header = () => {
         <span className="header__status-label">NETWORK</span>
       </div>
       <div className="header__right">
-        {/* 실제 시간은 나중에 Date로 바꾸면 됨 */}
-        <span>Nov 17, 2025&nbsp;&nbsp;10:12 AM</span>
+        <span>{formattedTime}</span>
       </div>
     </header>
   );
