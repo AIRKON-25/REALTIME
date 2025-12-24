@@ -872,9 +872,9 @@ def parse_args():
                         help="Destination IP or comma-separated IPs for UDP payloads")
     parser.add_argument("--udp-port", type=int, default=50050)
     parser.add_argument("--udp-format", choices=["json", "text"], default="json")
-    parser.add_argument("--udp-fixed-length", type=float, default=None,
+    parser.add_argument("--udp-fixed-length", type=float, default=2.5,
                         help="Override vehicle length in UDP payloads (meters)")
-    parser.add_argument("--udp-fixed-width", type=float, default=None,
+    parser.add_argument("--udp-fixed-width", type=float, default=1.4,
                         help="Override vehicle width in UDP payloads (meters)")
     parser.add_argument("--roi-path", type=str, default=None,
                         help="Optional ROI npz (mask) path; only detections inside ROI (P0) are kept")
