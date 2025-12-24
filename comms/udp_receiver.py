@@ -86,8 +86,13 @@ class UDPReceiverSingle:
                 items = msg.get("items", [])
                 for it in items:
                     cx, cy = it["center"]
+                    cls_val = it.get("class_id", it.get("class", it.get("cls", 0)))
+                    try:
+                        cls_int = int(cls_val)
+                    except (TypeError, ValueError):
+                        cls_int = 0
                     dets.append({
-                        "cls": int(it.get("class_id", 0)),
+                        "cls": cls_int,
                         "cx": float(cx),
                         "cy": float(cy),
                         "length": float(it.get("length", 0.0)),
