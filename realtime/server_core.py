@@ -127,16 +127,20 @@ class RealtimeServer:
                 self.ws_hub = None
 
         self._ui_cameras_on_map = [
-            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.5},
-            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.5, "y": -0.01},
-            {"id": "camMarker-3", "cameraId": "cam-3", "x": 1.01, "y": 0.5},
-            {"id": "camMarker-4", "cameraId": "cam-4", "x": 0.5, "y": 1.01},
+            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.50},
+            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.01},
+            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.01},
+            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.01, "y": 0.50},
+            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.01},
+            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.01},
         ]
         self._ui_cameras_status = [
             {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
             {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.103:8080/stream"},
-            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.106:8080/stream"},
-            {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.105:8080/stream"},
+            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.104:8080/stream"},
+            {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream"},
+            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.106:8080/stream"},
         ]
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
