@@ -308,9 +308,9 @@ body {
   --map-camera-size: calc(16px * var(--map-scale));
   --map-car-width: calc(14px * var(--map-scale));
   --map-car-height: calc(25px * var(--map-scale));
-  --map-obstacle-cone: calc(16px * var(--map-scale));
-  --map-obstacle-barricade-width: calc(10px * var(--map-scale));
-  --map-obstacle-barricade-height: calc(5px * var(--map-scale));
+  --map-obstacle-cone: calc(12px * var(--map-scale));
+  --map-obstacle-barricade-width: calc(14px * var(--map-scale));
+  --map-obstacle-barricade-height: calc(10px * var(--map-scale));
   --map-route-width: calc(4px * var(--map-scale));
   /* background: var(--map-bg); */
   border-radius: var(--radius-lg);

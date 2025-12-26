@@ -248,7 +248,7 @@ export const MapView = ({
           {/* Obstacles */}
           {obstacles.map((ob) => {
             const obstacleSrc =
-              ob.kind === "barricade" ? "/assets/barricade.png" : "/assets/rubberCone.png";
+              ob.kind === "barricade" ? "/assets/barricade.svg" : "/assets/rubberCone.svg";
             const obstacleAlt =
               ob.kind === "barricade" ? "barricade obstacle" : "rubber cone obstacle";
             return (
