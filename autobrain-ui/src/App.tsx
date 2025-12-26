@@ -140,23 +140,16 @@ const applyRouteChange = (
 
 function App() {
   // 🔹 서버에서 오는 전체 상태
+  const isAdminPage = window.location.pathname === "/admin";
   const [serverState, setServerState] = useState<MonitorState>(emptyState);
   const [hasCamStatus, setHasCamStatus] = useState<boolean>(false);
   const [appMode, setAppMode] = useState<AppMode>(() =>
-    window.location.hash === "#admin" ? "admin" : "monitor"
+    isAdminPage ? "admin" : "monitor"
   );
 
-  useEffect(() => {
-    const syncMode = () => {
-      setAppMode(window.location.hash === "#admin" ? "admin" : "monitor");
-    };
-    window.addEventListener("hashchange", syncMode);
-    return () => window.removeEventListener("hashchange", syncMode);
-  }, []);
-
   const handleModeChange = (mode: AppMode) => {
+    if (!isAdminPage) return;
     setAppMode(mode);
-    window.location.hash = mode === "admin" ? "#admin" : "";
   };
 
   // 🔹 뷰 모드 관련 상태 (사용자 인터랙션용)
@@ -376,7 +369,7 @@ function App() {
 
   return (
     <div className="app-root">
-      <Header mode={appMode} onModeChange={handleModeChange} />
+      <Header mode={appMode} onModeChange={handleModeChange} adminEnabled={isAdminPage} />
       <Layout
         viewMode={viewMode}
         hasIncident={!!incident}
