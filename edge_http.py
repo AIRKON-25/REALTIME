@@ -906,10 +906,11 @@ def run_live_inference_http(args) -> None:
 
                         live.update(Panel(Group(summary_table, detail_table)))
                     else:
-                        print(
-                            f"[Timing] cam {cam_latency_ms:.1f} ms | infer {infer_ms:.1f} ms | "
-                            f"post {post_ms:.1f} ms | vis {vis_ms:.1f} ms | total {total_ms:.1f} ms | fps {fps:.1f}"
-                        )
+                        # print(
+                        #     f"[Timing] cam {cam_latency_ms:.1f} ms | infer {infer_ms:.1f} ms | "
+                        #     f"post {post_ms:.1f} ms | vis {vis_ms:.1f} ms | total {total_ms:.1f} ms | fps {fps:.1f}"
+                        # )
+                        pass
 
                     key = vis_worker.get_key() if args.show_vis else -1
                     if key == ord("q"):

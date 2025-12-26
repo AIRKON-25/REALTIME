@@ -464,9 +464,11 @@ class UDPSender:
         if self.fmt == "json":
             payload = self._pack_json(cam_id, ts, bev_list, capture_ts)
             try:
-                print(f"[UDP] {payload.decode('utf-8')}")
+                pass
+                #print(f"[UDP] {payload.decode('utf-8')}")
             except Exception:
-                print(f"[UDP] bytes={payload[:200]}{'...' if len(payload) > 200 else ''}")
+                pass
+                #print(f"[UDP] bytes={payload[:200]}{'...' if len(payload) > 200 else ''}")
         else:
             raise ValueError(f"Unsupported UDP payload fmt: {self.fmt}")
         if self.on_send is not None:
