@@ -1,5 +1,7 @@
+import asyncio
 import heapq
 import json
+import os
 import queue
 import random
 import threading
@@ -21,6 +23,7 @@ from utils.colors import (
 from utils.tracking.cluster import ClassMergePolicy, ClusterConfig, cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.geometry import aabb_iou_axis_aligned
+from utils.tracking.lane_matcher import LaneMatcher
 from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
 from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
 from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
@@ -55,6 +58,7 @@ class RealtimeServer:
         debug_assoc_logging: bool = False,
         log_pipeline: bool = True,
         log_udp_packets: bool = False,
+        lane_map_path: Optional[str] = "utils/make_H/lanes.json",
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -111,11 +115,36 @@ class RealtimeServer:
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
             try:
-                self.ws_hub = WebSocketHub(ws_host, ws_port, path="/monitor")
+                self.ws_hub = WebSocketHub(
+                    ws_host,
+                    ws_port,
+                    path="/monitor",
+                    on_message=self._handle_ws_message,
+                )
                 self.ws_hub.start()
             except Exception as exc:
                 print(f"[WebSocketHub] init failed: {exc}")
                 self.ws_hub = None
+
+        self._ui_cameras_on_map = [
+            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.50},
+            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.01},
+            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.01},
+            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.01, "y": 0.50},
+            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.01},
+            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.01},
+        ]
+        self._ui_cameras_status = [
+            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
+            {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.103:8080/stream"},
+            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.104:8080/stream"},
+            {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream"},
+            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.106:8080/stream"},
+        ]
+        self._ui_cam_status: Optional[dict] = None
+        self._ui_obstacle_map: Dict[str, dict] = {}
+        self._ui_obstacle_status_map: Dict[str, dict] = {}
 
         self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
@@ -128,6 +157,16 @@ class RealtimeServer:
             "cam2": deque(maxlen=1) 즉, 카메라별로 가장 최신 데이터 1개만 유지하는 버퍼
         }
         """
+        self.lane_matcher: Optional[LaneMatcher] = None
+        self.lane_map_path = lane_map_path
+        if lane_map_path and os.path.exists(lane_map_path):
+            try:
+                self.lane_matcher = LaneMatcher.from_json(lane_map_path)
+                print(f"[LaneMatcher] loaded {lane_map_path}")
+            except Exception as exc:
+                print(f"[LaneMatcher] load failed: {exc}")
+        elif lane_map_path:
+            print(f"[LaneMatcher] path not found: {lane_map_path}")
 
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
@@ -589,73 +628,175 @@ class RealtimeServer:
         }
         return mapped, mapped_meta
 
-    def _build_ui_snapshot(self, tracks: np.ndarray, track_meta: Dict[int, dict], ts: float) -> Optional[dict]:
-        if tracks is None or len(tracks) == 0:
-            cars_on_map = []
-            cars_status = []
-        else:
-            cars_on_map = []
-            cars_status = []
+    def _build_cam_status_message(self, ts: float) -> dict:
+        return {
+            "type": "camStatus",
+            "ts": ts,
+            "data": {
+                "camerasOnMap": list(self._ui_cameras_on_map),
+                "camerasStatus": list(self._ui_cameras_status),
+            },
+        }
+
+    @staticmethod
+    def _normalize_car_color(label: Optional[str]) -> str:
+        allowed = {"red", "green", "blue", "yellow", "purple", "white"}
+        if label in allowed:
+            return label
+        return "red"
+
+    @staticmethod
+    def _obstacle_kind(cls: int) -> str:
+        if cls == 2:
+            return "barricade"
+        return "rubberCone"
+
+    def _build_obstacle_delta_message(
+        self,
+        obstacles_on_map: List[dict],
+        obstacles_status: List[dict],
+        ts: float,
+        incident: Optional[dict],
+    ) -> Optional[dict]:
+        current_map = {item["obstacleId"]: item for item in obstacles_on_map}
+        current_status = {item["id"]: item for item in obstacles_status}
+
+        upserts = [
+            item
+            for oid, item in current_map.items()
+            if self._ui_obstacle_map.get(oid) != item
+        ]
+        deletes = [oid for oid in self._ui_obstacle_map.keys() if oid not in current_map]
+        status_upserts = [
+            item
+            for oid, item in current_status.items()
+            if self._ui_obstacle_status_map.get(oid) != item
+        ]
+        status_deletes = [
+            oid for oid in self._ui_obstacle_status_map.keys() if oid not in current_status
+        ]
+
+        if not (upserts or deletes or status_upserts or status_deletes):
+            return None
+
+        self._ui_obstacle_map = current_map
+        self._ui_obstacle_status_map = current_status
+
+        data: Dict[str, object] = {"mode": "delta", "incident": incident}
+        if upserts:
+            data["upserts"] = upserts
+        if deletes:
+            data["deletes"] = deletes
+        if status_upserts:
+            data["statusUpserts"] = status_upserts
+        if status_deletes:
+            data["statusDeletes"] = status_deletes
+
+        return {"type": "obstacleStatus", "ts": ts, "data": data}
+
+    def _build_ui_messages(
+        self,
+        tracks: np.ndarray,
+        track_meta: Dict[int, dict],
+        ts: float,
+    ) -> List[dict]:
+        messages: List[dict] = []
+
+        if self._ui_cam_status is None:
+            cam_msg = self._build_cam_status_message(ts)
+            self._ui_cam_status = cam_msg
+            if self.ws_hub:
+                self.ws_hub.set_initial_messages([cam_msg])
+            messages.append(cam_msg)
+
+        cars_on_map: List[dict] = []
+        cars_status: List[dict] = []
+        obstacles_on_map: List[dict] = []
+        obstacles_status: List[dict] = []
+
+        if tracks is not None and len(tracks):
             for row in tracks:
                 tid = int(row[0])
                 cls = int(row[1])
                 cx = float(row[2])
                 cy = float(-row[3])
-                length = float(row[4])
-                width = float(row[5])
                 yaw = float(row[6])
 
                 meta = track_meta.get(tid, {})
-                color_hex = meta.get("color_hex")
-                color_label = hex_to_color_label(color_hex)
-                ui_color = color_hex or color_label_to_hex(color_label) or "#22c55e"
+                color_label = meta.get("color") or hex_to_color_label(meta.get("color_hex"))
+                car_color = self._normalize_car_color(color_label)
 
-                car_id = f"car-{tid}"
-                map_id = f"mcar-{tid}"
                 x_norm, y_norm = self._world_to_map_xy(cx, cy)
 
-                cars_on_map.append({
-                    "id": map_id,
-                    "carId": car_id,
-                    "x": x_norm,
-                    "y": y_norm,
-                    "yaw": yaw,
-                    "color": color_label,
-                    "status": "normal",
-                })
+                if cls == 0:
+                    car_id = f"car-{tid}"
+                    map_id = f"mcar-{tid}"
+                    cars_on_map.append({
+                        "id": map_id,
+                        "carId": car_id,
+                        "x": x_norm,
+                        "y": y_norm,
+                        "yaw": yaw,
+                        "color": car_color,
+                        "status": "normal",
+                    })
+                    cars_status.append({
+                        "class": cls,
+                        "id": car_id,
+                        "color": car_color,
+                        "speed": meta.get("speed", 0.0),
+                        "battery": 100,
+                        "fromLabel": "-",
+                        "toLabel": "-",
+                        "cameraId": None,
+                        "routeChanged": False,
+                    })
+                else:
+                    obstacle_id = f"ob-{tid}"
+                    obstacles_on_map.append({
+                        "id": obstacle_id,
+                        "obstacleId": obstacle_id,
+                        "x": x_norm,
+                        "y": y_norm,
+                        "kind": self._obstacle_kind(cls),
+                    })
+                    obstacles_status.append({
+                        "id": obstacle_id,
+                        "class": cls,
+                        "cameraId": None,
+                    })
 
-                cars_status.append({
-                    "class": cls,
-                    "id": car_id,
-                    "color": ui_color,
-                    "speed": meta.get("speed", 0.0),
-                    "battery": 100,
-                    "fromLabel": "-",
-                    "toLabel": "-",
-                    "cameraId": None,
-                    "routeChanged": False,
-                })
-
-        snapshot = {
-            "type": "snapshot",
-            "payload": {
+        messages.append({
+            "type": "carStatus",
+            "ts": ts,
+            "data": {
+                "mode": "snapshot",
                 "carsOnMap": cars_on_map,
                 "carsStatus": cars_status,
-                "camerasOnMap": [{ "id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.5},
-                                 { "id": "camMarker-3", "cameraId": "cam-2", "x": 1.01, "y": 0.5}],
-                "camerasStatus": [
-                    {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
-                    {"id": "cam-2", "name": "Camera 3", "streamUrl": "http://192.168.0.106:8080/stream"},
-                ],
-                # "camerasBevStatus": [
-                #     {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8081/stream"},
-                #     {"id": "cam-2", "name": "Camera 3", "streamUrl": "http://192.168.0.106:8081/stream"},
-                # ],
-                "incident": None,
-                "routeChanges": [],
             },
-        }
-        return snapshot
+        })
+
+        incident_payload = None
+        if obstacles_on_map:
+            primary = obstacles_on_map[0]
+            incident_payload = {
+                "id": f"inc-{primary['obstacleId']}",
+                "title": "[Obstacle]",
+                "description": "Obstacle detected",
+                "obstacle": primary,
+                "cameraId": None,
+            }
+
+        obstacle_msg = self._build_obstacle_delta_message(
+            obstacles_on_map,
+            obstacles_status,
+            ts,
+            incident_payload,
+        )
+        if obstacle_msg:
+            messages.append(obstacle_msg)
+
+        return messages
 
     def _register_cam_if_needed(self, cam_name: str):
         if cam_name not in self.buffer:
@@ -741,6 +882,70 @@ class RealtimeServer:
                     resp_q.put_nowait(response)
                 except queue.Full:
                     pass
+
+    async def _handle_ws_message(self, raw_message: str, _websocket) -> Optional[dict]:
+        try:
+            payload = json.loads(raw_message)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("type") != "adminCommand":
+            return None
+
+        request_id = payload.get("requestId")
+        cmd = payload.get("cmd")
+        if not cmd:
+            return {
+                "type": "adminResponse",
+                "requestId": request_id,
+                "status": "error",
+                "message": "cmd required",
+            }
+        if not self.command_queue:
+            return {
+                "type": "adminResponse",
+                "requestId": request_id,
+                "cmd": cmd,
+                "status": "error",
+                "message": "command server disabled",
+            }
+
+        response_q: queue.Queue = queue.Queue(maxsize=1)
+        trimmed_payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in {"type", "requestId"}
+        }
+        item = {"cmd": cmd, "payload": trimmed_payload, "response": response_q}
+        try:
+            self.command_queue.put_nowait(item)
+        except queue.Full:
+            return {
+                "type": "adminResponse",
+                "requestId": request_id,
+                "cmd": cmd,
+                "status": "error",
+                "message": "server busy",
+            }
+
+        timeout = payload.get("timeout", 2.0)
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 2.0
+
+        loop = asyncio.get_running_loop()
+        try:
+            response = await loop.run_in_executor(None, response_q.get, True, timeout)
+        except queue.Empty:
+            response = {"status": "error", "message": "command timeout"}
+        return {
+            "type": "adminResponse",
+            "requestId": request_id,
+            "cmd": cmd,
+            "response": response,
+        }
 
     def _resolve_external_track_id(self, external_id: int) -> Optional[int]:
         internal_id = self._external_to_internal.get(external_id)
@@ -1097,9 +1302,9 @@ class RealtimeServer:
         if self.carla_tx:
             self.carla_tx.send(mapped_tracks, mapped_meta, ts)
         if self.ws_hub:
-            snapshot = self._build_ui_snapshot(mapped_tracks, mapped_meta, ts)
-            if snapshot is not None:
-                self.ws_hub.broadcast(snapshot)
+            messages = self._build_ui_messages(mapped_tracks, mapped_meta, ts)
+            for message in messages:
+                self.ws_hub.broadcast(message)
 
     def _run_tracker_step(self, fused: List[dict]) -> np.ndarray:
         """
@@ -1107,6 +1312,7 @@ class RealtimeServer:
         """
         det_rows = []
         det_colors: List[Optional[str]] = []
+        gt_yaws: List[Optional[float]] = []
         for det in fused:
             det_rows.append([
                 det["cls"],
@@ -1117,10 +1323,19 @@ class RealtimeServer:
                 det["yaw"],
             ])
             det_colors.append(det.get("color"))
+            gt_val = None
+            if self.lane_matcher is not None:
+                lane_id, yaw, dist = self.lane_matcher.match(det["cx"], det["cy"])
+                if lane_id is not None and yaw is not None:
+                    det["gt_lane_id"] = lane_id
+                    det["gt_lane_dist"] = float(dist)
+                    det["gt_yaw"] = float(yaw)
+                    gt_val = float(yaw)
+            gt_yaws.append(gt_val)
 
         dets_for_tracker = np.array(det_rows, dtype=float) if det_rows else np.zeros((0, 6), dtype=float)
         
-        tracks = self.tracker.update(dets_for_tracker, det_colors)
+        tracks = self.tracker.update(dets_for_tracker, det_colors, gt_yaws=gt_yaws if det_rows else None)
         
 
         track_attrs = self.tracker.get_track_attributes()

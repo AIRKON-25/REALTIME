@@ -18,7 +18,13 @@ export const IncidentPanel = ({ incident, isActive, onClick }: IncidentPanelProp
       <h2 className="panel__title">Incident Alert</h2>
       {incident ? (
         <div className="incident__content">
-          <div className="incident__icon" />
+          <div className="incident__icon">
+            <img
+              src="/assets/warning-signs.png"
+              alt="Incident warning"
+              className="incident__icon-image"
+            />
+          </div>
           <div>
             <div className="incident__title">{incident.title}</div>
             <div className="incident__description">{incident.description}</div>

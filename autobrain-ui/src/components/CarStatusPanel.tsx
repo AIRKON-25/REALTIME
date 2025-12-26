@@ -1,4 +1,5 @@
 // components/CarStatusPanel.tsx
+import { useEffect, useRef, useState } from "react";
 import type { CarColor, CarId, CarStatus } from "../types";
 
 const normalizeCarColor = (
@@ -6,7 +7,7 @@ const normalizeCarColor = (
   fallback?: CarColor
 ): CarColor | undefined => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
-  const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple"];
+  const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
   if (allowed.includes(normalized as CarColor)) return normalized as CarColor;
   return fallback;
 };
@@ -28,6 +29,26 @@ export const CarStatusPanel = ({
   scrollable,
   detailOnly,
 }: CarStatusPanelProps) => {
+  const latestCarsRef = useRef<CarStatus[]>(cars);
+  const [speedById, setSpeedById] = useState<Record<CarId, number>>({});
+
+  useEffect(() => {
+    latestCarsRef.current = cars;
+  }, [cars]);
+
+  useEffect(() => {
+    const updateSpeeds = () => {
+      const next: Record<CarId, number> = {};
+      latestCarsRef.current.forEach((car) => {
+        next[car.id] = car.speed;
+      });
+      setSpeedById(next);
+    };
+    updateSpeeds();
+    const timer = window.setInterval(updateSpeeds, 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   if (detailOnly) {
     const car = cars.find((c) => c.id === selectedCarId) ?? cars[0];
     if (!car) return null;
@@ -37,6 +58,7 @@ export const CarStatusPanel = ({
         <CarStatusCard
           car={car}
           carColorById={carColorById}
+          speedById={speedById}
           selected
           detailed
           onClick={onCarClick}
@@ -56,6 +78,7 @@ export const CarStatusPanel = ({
             key={car.id}
             car={car}
             carColorById={carColorById}
+            speedById={speedById}
             selected={car.id === selectedCarId}
             onClick={onCarClick}
           />
@@ -71,6 +94,7 @@ export const CarStatusPanel = ({
 interface CarStatusCardProps {
   car: CarStatus;
   carColorById?: Record<CarId, CarColor>;
+  speedById?: Record<CarId, number>;
   selected?: boolean;
   detailed?: boolean;
   onClick?: (id: CarId) => void;
@@ -79,6 +103,7 @@ interface CarStatusCardProps {
 const CarStatusCard = ({
   car,
   carColorById,
+  speedById,
   selected,
   detailed,
   onClick,
@@ -86,6 +111,8 @@ const CarStatusCard = ({
   const statusColor = normalizeCarColor(car.color);
   const mappedColor = carColorById?.[car.id];
   const safeColor = normalizeCarColor(statusColor ?? mappedColor, "red")!;
+  const speedValue = speedById?.[car.id] ?? car.speed;
+  const speedText = speedValue.toFixed(2);
 
   return (
     <button
@@ -106,7 +133,7 @@ const CarStatusCard = ({
       <div className="car-card__body">
         <div className="car-card__row">
           <span className="car-card__id">ID : {car.id.replace("car-", "")}</span>
-          <span className="car-card__speed">{car.speed} m/s</span>
+          <span className="car-card__speed">{speedText} m/s</span>
           <span className="car-card__battery">{car.battery}%</span>
         </div>
         <div className="car-card__row car-card__row--labels">

@@ -241,6 +241,7 @@ class Track:
         size_process_noise_scale: float = SIZE_PROCESS_NOISE_SCALE,
         size_meas_noise_scale: float = SIZE_MEAS_NOISE_SCALE,
         class_config: Optional[TrackerConfigBase] = None,
+        hard_lock_yaw: Optional[float] = None,
     ):
         # bbox_init: [class, x_c, y_c, l, w, yaw_deg]
         self.id = Track.track_id_counter
@@ -316,6 +317,15 @@ class Track:
         self.heading_locked: bool = False
         self.heading_lock_score: int = 0
         self.locked_heading: Optional[float] = None
+        self.yaw_hard_lock: bool = False
+        if hard_lock_yaw is not None and math.isfinite(hard_lock_yaw):
+            locked = wrap_deg(float(hard_lock_yaw))
+            self.car_yaw = locked
+            self.kf_yaw.x[0, 0] = locked
+            self.heading_locked = True
+            self.heading_lock_score = HEADING_LOCK_FRAMES
+            self.locked_heading = locked
+            self.yaw_hard_lock = True
         self.reactivation_guard_frames: int = 0
         self.reactivation_size_ref: Optional[Tuple[float, float]] = None
         self.split_guard_frames: int = 0
@@ -483,6 +493,9 @@ class Track:
         검출 yaw는 앞/뒤가 뒤바뀌기 쉬우므로 180° 주기로만 신뢰하고,
         이동 방향(heading)과 가장 가까운 부호로 고정한다.
         """
+        if self.yaw_hard_lock and self.locked_heading is not None:
+            return nearest_equivalent_deg(wrap_deg(yaw_det), self.locked_heading, period=YAW_PERIOD_DEG)
+
         yaw_det = wrap_deg(yaw_det)
         # 1) 기존 상태와 180° 주기 기준으로 가깝게 정규화(앞/뒤 동일하게 취급)
         yaw_det = nearest_equivalent_deg(yaw_det, self.car_yaw, period=YAW_PERIOD_DEG)
@@ -648,9 +661,10 @@ class Track:
         """
         self.car_yaw = wrap_deg(self.car_yaw + offset_deg)
         self.kf_yaw.x[0, 0] = self.car_yaw
-        self.heading_locked = False
-        self.heading_lock_score = 0
-        self.locked_heading = None
+        self.heading_locked = True
+        self.heading_lock_score = HEADING_LOCK_FRAMES
+        self.locked_heading = self.car_yaw
+        self.yaw_hard_lock = True
 
     def force_set_yaw(self, yaw_deg: float) -> None:
         """
@@ -658,9 +672,10 @@ class Track:
         """
         self.car_yaw = wrap_deg(float(yaw_deg))
         self.kf_yaw.x[0, 0] = self.car_yaw
-        self.heading_locked = False
-        self.heading_lock_score = 0
-        self.locked_heading = None
+        self.heading_locked = True
+        self.heading_lock_score = HEADING_LOCK_FRAMES
+        self.locked_heading = self.car_yaw
+        self.yaw_hard_lock = True
 
 
 class SortTracker:
@@ -763,6 +778,7 @@ class SortTracker:
         self,
         detections_carla: np.ndarray,
         detection_colors: Optional[List[Optional[str]]] = None,
+        gt_yaws: Optional[List[Optional[float]]] = None,
     ) -> np.ndarray:
         """Update tracks with current detections and return active results."""
         if detections_carla is None:
@@ -1034,10 +1050,19 @@ class SortTracker:
         for det_idx in list(unmatched_detections):
             color = det_colors[det_idx] if det_colors else None
             cfg = self._config_for(detections_carla[det_idx][0] if len(detections_carla[det_idx]) > 0 else None)
+            gt_yaw = None
+            if gt_yaws is not None and det_idx < len(gt_yaws):
+                val = gt_yaws[det_idx]
+                if val is not None and math.isfinite(val):
+                    gt_yaw = float(val)
+            det_init = detections_carla[det_idx].copy()
+            if gt_yaw is not None and len(det_init) >= 6:
+                det_init[5] = gt_yaw
             new_track = Track(
-                bbox_init=detections_carla[det_idx],
+                bbox_init=det_init,
                 color=color,
                 class_config=cfg,
+                hard_lock_yaw=gt_yaw,
             )
             new_track.last_cls_change_frame = int(self.frame_idx)
             self.tracks.append(new_track)
