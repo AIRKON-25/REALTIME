@@ -5,7 +5,6 @@ import type {
   CameraId,
   CarId,
   CarColor,
-  IncidentId,
   ViewMode,
   MonitorState,
   RealtimeMessage,
@@ -13,7 +12,6 @@ import type {
   CarStatusPacket,
   ObstacleStatusPacket,
   RouteChangePacket,
-  CarRouteChange,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -38,7 +36,7 @@ const emptyState: MonitorState = {
   camerasStatus: [],
   obstaclesOnMap: [],
   obstaclesStatus: [],
-  incident: null,
+  obstacleAlert: null,
   routeChanges: [],
 };
 
@@ -87,7 +85,9 @@ const applyObstacleStatus = (
   prev: MonitorState,
   data: ObstacleStatusPacket
 ): MonitorState => {
-  let next = prev;
+  const pickAlert = (list: MonitorState["obstaclesStatus"]) =>
+    list.find((status) => status.class === 1 || status.class === 2) ?? null;
+
   if (data.mode === "delta") {
     const obstaclesOnMap = mergeByKey(
       prev.obstaclesOnMap,
@@ -101,41 +101,21 @@ const applyObstacleStatus = (
       data.statusDeletes,
       (item) => item.id
     );
-    next = { ...prev, obstaclesOnMap, obstaclesStatus };
-  } else {
-    next = {
-      ...prev,
-      obstaclesOnMap: data.obstaclesOnMap,
-      obstaclesStatus: data.obstaclesStatus ?? prev.obstaclesStatus,
-    };
+    const obstacleAlert = pickAlert(obstaclesStatus);
+    return { ...prev, obstaclesOnMap, obstaclesStatus, obstacleAlert };
   }
-  if (Object.prototype.hasOwnProperty.call(data, "incident")) {
-    const incident = data.incident ?? null;
-    return { ...next, incident };
-  }
-  return next;
-};
-
-const deriveRouteChanges = (
-  steps: RouteChangePacket["steps"]
-): CarRouteChange[] => {
-  if (!steps || steps.length === 0) {
-    return [];
-  }
-  return steps.map((step) => ({
-    carId: step.carId,
-    newRoute: [step.from, step.to],
-  }));
+  const obstaclesOnMap = data.obstaclesOnMap;
+  const obstaclesStatus = data.obstaclesStatus ?? prev.obstaclesStatus;
+  const obstacleAlert = pickAlert(obstaclesStatus);
+  return { ...prev, obstaclesOnMap, obstaclesStatus, obstacleAlert };
 };
 
 const applyRouteChange = (
   prev: MonitorState,
   data: RouteChangePacket
 ): MonitorState => {
-  if (data.changes && data.changes.length > 0) {
-    return { ...prev, routeChanges: data.changes };
-  }
-  return { ...prev, routeChanges: deriveRouteChanges(data.steps) };
+  const changes = data.changes ?? [];
+  return { ...prev, routeChanges: changes };
 };
 
 function App() {
@@ -156,9 +136,6 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("default");
   const [selectedCarId, setSelectedCarId] = useState<CarId | null>(null);
   const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
-  const [activeIncidentId, setActiveIncidentId] = useState<IncidentId | null>(
-    null
-  );
   const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
   const routeFlashTimersRef = useRef<number[]>([]);
 
@@ -235,7 +212,7 @@ function App() {
   const camerasOnMap = serverState.camerasOnMap;
   const camerasStatus = serverState.camerasStatus;
   const obstaclesOnMap = serverState.obstaclesOnMap;
-  const incident = serverState.incident;
+  const obstacleAlert = serverState.obstacleAlert;
   const routeChanges = serverState.routeChanges;
 
   const carColorById = useMemo(() => {
@@ -258,8 +235,10 @@ function App() {
     return map;
   }, [carsOnMap, carsStatus]);
 
-  const isIncidentActive =
-    !!incident && activeIncidentId === incident.id;
+  const alertCamera = useMemo(() => {
+    if (!obstacleAlert?.cameraId) return null;
+    return camerasStatus.find((cam) => cam.id === obstacleAlert.cameraId) ?? null;
+  }, [obstacleAlert, camerasStatus]);
 
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -284,7 +263,7 @@ function App() {
   //  2) 뷰 모드 계산
   // ===========================
   useEffect(() => {
-    if (isIncidentActive) {
+    if (obstacleAlert) {
       setViewMode("incidentFocused");
     } else if (selectedCarId) {
       setViewMode("carFocused");
@@ -293,7 +272,7 @@ function App() {
     } else {
       setViewMode("default");
     }
-  }, [isIncidentActive, selectedCarId, selectedCameraIds]);
+  }, [obstacleAlert, selectedCarId, selectedCameraIds]);
 
   // ===========================
   //  3) 클릭 핸들러들
@@ -320,24 +299,10 @@ function App() {
     });
   };
 
-  const handleIncidentClick = () => {
-    if (!incident) return;
-    if (isIncidentActive) {
-      setActiveIncidentId(null);
-    } else {
-      setActiveIncidentId(incident.id);
-    }
-  };
-
-  // Incident가 비추는 영역에 있는 차량들
+  // 장애물 알림 시 보여줄 차량 목록 (현재는 전체 차량)
   const carsStatusForPanel = useMemo(() => carsStatus, [carsStatus]);
 
-  const vehiclesInIncidentView = useMemo(() => {
-    if (!incident?.relatedCarIds) return [];
-    return carsStatusForPanel.filter((car) =>
-      incident.relatedCarIds!.includes(car.id)
-    );
-  }, [incident, carsStatusForPanel]);
+  const vehiclesInAlertView = useMemo(() => carsStatusForPanel, [carsStatusForPanel]);
 
   const visibleRouteChanges = useMemo(() => {
     if (routeFlashPhase === "new") {
@@ -351,10 +316,10 @@ function App() {
     if (selectedCameraIds.length > 0) {
       return Array.from(new Set(selectedCameraIds)).slice(0, 2);
     }
-    if (incident?.cameraId && isIncidentActive) return [incident.cameraId];
+    if (obstacleAlert?.cameraId) return [obstacleAlert.cameraId];
     const car = carsStatus.find((c) => c.id === selectedCarId);
     return car?.cameraId ? [car.cameraId] : [];
-  }, [selectedCameraIds, incident, isIncidentActive, selectedCarId, carsStatus]);
+  }, [selectedCameraIds, obstacleAlert, selectedCarId, carsStatus]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
@@ -372,7 +337,6 @@ function App() {
       <Header mode={appMode} onModeChange={handleModeChange} adminEnabled={isAdminPage} />
       <Layout
         viewMode={viewMode}
-        hasIncident={!!incident}
       >
         {/* LEFT: MAP */}
         <div className="layout__map-inner">
@@ -434,7 +398,8 @@ function App() {
 
               {viewMode === "incidentFocused" && selectedCarId && (
                 <CarStatusPanel
-                  cars={vehiclesInIncidentView}
+                  cars={vehiclesInAlertView}
+                  carColorById={carColorById}
                   selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}
                   detailOnly
@@ -442,10 +407,9 @@ function App() {
               )}
 
               {viewMode === "incidentFocused" &&
-                !selectedCarId &&
-                vehiclesInIncidentView.length > 0 && (
+                !selectedCarId && (
                   <CarStatusPanel
-                    cars={vehiclesInIncidentView}
+                    cars={vehiclesInAlertView}
                     carColorById={carColorById}
                     selectedCarId={null}
                     onCarClick={handleCarClick}
@@ -456,9 +420,9 @@ function App() {
               {/* Incident */}
               {(viewMode === "default" || viewMode === "incidentFocused") && (
                 <IncidentPanel
-                  incident={incident}
-                  isActive={isIncidentActive}
-                  onClick={handleIncidentClick}
+                  alert={obstacleAlert}
+                  cameraLabel={alertCamera?.name || obstacleAlert?.cameraId}
+                  isActive={!!obstacleAlert}
                 />
               )}
 

@@ -85,14 +85,6 @@ def build_obstacle_upsert(ts: float) -> dict:
         "class": cls,
         "cameraId": "cam-2",
     }
-    incident = {
-        "id": "inc-1",
-        "title": "[Obstacle]",
-        "description": "Simulated obstacle event for UI check",
-        "obstacle": obstacle,
-        "cameraId": "cam-2",
-        "relatedCarIds": ["car-1", "car-2"],
-    }
     return {
         "type": "obstacleStatus",
         "ts": ts,
@@ -100,7 +92,6 @@ def build_obstacle_upsert(ts: float) -> dict:
             "mode": "delta",
             "upserts": [obstacle],
             "statusUpserts": [status],
-            "incident": incident,
         },
     }
 
@@ -113,7 +104,6 @@ def build_obstacle_clear(ts: float) -> dict:
             "mode": "delta",
             "deletes": [OBSTACLE_ID],
             "statusDeletes": [OBSTACLE_ID],
-            "incident": None,
         },
     }
 
@@ -123,8 +113,6 @@ def build_route_change(ts: float) -> dict:
         "type": "carRouteChange",
         "ts": ts,
         "data": {
-            "incidentId": "inc-1",
-            "obstacleId": OBSTACLE_ID,
             "changes": [
                 {
                     "carId": "car-1",

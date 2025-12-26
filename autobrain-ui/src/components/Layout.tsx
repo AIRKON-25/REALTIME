@@ -4,13 +4,11 @@ import type { ViewMode } from "../types";
 
 interface LayoutProps {
   viewMode: ViewMode;
-  hasIncident: boolean;
   children: ReactNode;
 }
 
 export const Layout = ({
   viewMode,
-  hasIncident,
   children,
 }: LayoutProps) => {
   const [mapArea, rightPanels] = Array.isArray(children) ? children : [children];

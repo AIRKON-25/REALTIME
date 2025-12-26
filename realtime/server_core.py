@@ -656,7 +656,6 @@ class RealtimeServer:
         obstacles_on_map: List[dict],
         obstacles_status: List[dict],
         ts: float,
-        incident: Optional[dict],
     ) -> Optional[dict]:
         current_map = {item["obstacleId"]: item for item in obstacles_on_map}
         current_status = {item["id"]: item for item in obstacles_status}
@@ -682,7 +681,7 @@ class RealtimeServer:
         self._ui_obstacle_map = current_map
         self._ui_obstacle_status_map = current_status
 
-        data: Dict[str, object] = {"mode": "delta", "incident": incident}
+        data: Dict[str, object] = {"mode": "delta"}
         if upserts:
             data["upserts"] = upserts
         if deletes:
@@ -753,6 +752,17 @@ class RealtimeServer:
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
+                    source_cams = meta.get("source_cams") or []
+                    cam_val = source_cams[0] if source_cams else None
+                    camera_id = None
+                    if cam_val is not None:
+                        cam_str = str(cam_val)
+                        if cam_str.startswith("cam-"):
+                            camera_id = cam_str
+                        elif cam_str.startswith("cam") and len(cam_str) > 3:
+                            camera_id = f"cam-{cam_str[3:]}"
+                        else:
+                            camera_id = cam_str
                     obstacles_on_map.append({
                         "id": obstacle_id,
                         "obstacleId": obstacle_id,
@@ -763,7 +773,7 @@ class RealtimeServer:
                     obstacles_status.append({
                         "id": obstacle_id,
                         "class": cls,
-                        "cameraId": None,
+                        "cameraId": camera_id,
                     })
 
         messages.append({
@@ -776,22 +786,10 @@ class RealtimeServer:
             },
         })
 
-        incident_payload = None
-        if obstacles_on_map:
-            primary = obstacles_on_map[0]
-            incident_payload = {
-                "id": f"inc-{primary['obstacleId']}",
-                "title": "[Obstacle]",
-                "description": "Obstacle detected",
-                "obstacle": primary,
-                "cameraId": None,
-            }
-
         obstacle_msg = self._build_obstacle_delta_message(
             obstacles_on_map,
             obstacles_status,
             ts,
-            incident_payload,
         )
         if obstacle_msg:
             messages.append(obstacle_msg)
