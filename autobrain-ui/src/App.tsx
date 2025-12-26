@@ -273,16 +273,14 @@ function App() {
   useEffect(() => {
     if (selectedCarId) {
       setViewMode("carFocused");
-    } else if (selectedIncidentId) {
-      setViewMode("incidentFocused");
     } else if (selectedCameraIds.length > 0) {
       setViewMode("cameraFocused");
-    } else if (obstaclesStatus.length > 0) {
+    } else if (selectedIncidentId) {
       setViewMode("incidentFocused");
     } else {
       setViewMode("default");
     }
-  }, [selectedCarId, selectedIncidentId, selectedCameraIds, obstaclesStatus.length]);
+  }, [selectedCarId, selectedIncidentId, selectedCameraIds]);
 
   // ===========================
   //  3) 클릭 핸들러들
@@ -467,18 +465,8 @@ function App() {
                 />
               )}
 
-              {viewMode === "incidentFocused" && !selectedCarId && (
-                <CarStatusPanel
-                  cars={vehiclesInAlertView}
-                  carColorById={carColorById}
-                  selectedCarId={null}
-                  onCarClick={handleCarClick}
-                  scrollable
-                />
-              )}
-
               {/* Incident */}
-              {(viewMode === "default" || viewMode === "incidentFocused") && (
+              {obstaclesStatus.length > 0 && (
                 <IncidentPanel
                   alerts={
                     viewMode === "incidentFocused" && selectedIncidentId
