@@ -46,6 +46,7 @@ def main():
     ap.add_argument("--no-log-pipeline", dest="log_pipeline", action="store_false", help="퓨전/트래킹 로그 비활성화")
     ap.add_argument("--log-udp-packets", dest="log_udp_packets", action="store_true", help="UDP 수신 패킷 로그 출력")
     ap.add_argument("--no-log-udp-packets", dest="log_udp_packets", action="store_false", help="UDP 수신 패킷 로그 비활성화")
+    ap.add_argument("--lane-map-path", default="lanes.json", help="GT yaw lane map json path (lanes.json)")
     ap.set_defaults(log_pipeline=True, log_udp_packets=False)
     args = ap.parse_args()
     if args.car_count < 1 or args.car_count > 5:
@@ -86,6 +87,7 @@ def main():
         debug_assoc_logging=args.debug_assoc,
         log_pipeline=args.log_pipeline,
         log_udp_packets=args.log_udp_packets,
+        lane_map_path=args.lane_map_path,
     )
     server.start()
     try:

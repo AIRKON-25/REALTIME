@@ -1,6 +1,7 @@
 import asyncio
 import heapq
 import json
+import os
 import queue
 import random
 import threading
@@ -22,6 +23,7 @@ from utils.colors import (
 from utils.tracking.cluster import ClassMergePolicy, ClusterConfig, cluster_by_aabb_iou
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.geometry import aabb_iou_axis_aligned
+from utils.tracking.lane_matcher import LaneMatcher
 from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
 from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
 from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
@@ -56,6 +58,7 @@ class RealtimeServer:
         debug_assoc_logging: bool = False,
         log_pipeline: bool = True,
         log_udp_packets: bool = False,
+        lane_map_path: Optional[str] = "utils/make_H/lanes.json",
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -124,6 +127,7 @@ class RealtimeServer:
                 self.ws_hub = None
 
         self._ui_cameras_on_map = [
+<<<<<<< HEAD
             {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.5},
             {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.5, "y": -0.01},
             {"id": "camMarker-3", "cameraId": "cam-3", "x": 1.01, "y": 0.5},
@@ -132,6 +136,22 @@ class RealtimeServer:
             {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
             {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.102:8080/stream"},
             {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.106:8080/stream"},
+=======
+            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.50},
+            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.01},
+            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.01},
+            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.01, "y": 0.50},
+            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.01},
+            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.01},
+        ]
+        self._ui_cameras_status = [
+            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
+            {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.103:8080/stream"},
+            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.104:8080/stream"},
+            {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream"},
+            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.106:8080/stream"},
+>>>>>>> origin/modifyFront_1224
         ]
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
@@ -148,6 +168,16 @@ class RealtimeServer:
             "cam2": deque(maxlen=1) 즉, 카메라별로 가장 최신 데이터 1개만 유지하는 버퍼
         }
         """
+        self.lane_matcher: Optional[LaneMatcher] = None
+        self.lane_map_path = lane_map_path
+        if lane_map_path and os.path.exists(lane_map_path):
+            try:
+                self.lane_matcher = LaneMatcher.from_json(lane_map_path)
+                print(f"[LaneMatcher] loaded {lane_map_path}")
+            except Exception as exc:
+                print(f"[LaneMatcher] load failed: {exc}")
+        elif lane_map_path:
+            print(f"[LaneMatcher] path not found: {lane_map_path}")
 
         self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
         self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
@@ -1293,6 +1323,7 @@ class RealtimeServer:
         """
         det_rows = []
         det_colors: List[Optional[str]] = []
+        gt_yaws: List[Optional[float]] = []
         for det in fused:
             det_rows.append([
                 det["cls"],
@@ -1303,10 +1334,19 @@ class RealtimeServer:
                 det["yaw"],
             ])
             det_colors.append(det.get("color"))
+            gt_val = None
+            if self.lane_matcher is not None:
+                lane_id, yaw, dist = self.lane_matcher.match(det["cx"], det["cy"])
+                if lane_id is not None and yaw is not None:
+                    det["gt_lane_id"] = lane_id
+                    det["gt_lane_dist"] = float(dist)
+                    det["gt_yaw"] = float(yaw)
+                    gt_val = float(yaw)
+            gt_yaws.append(gt_val)
 
         dets_for_tracker = np.array(det_rows, dtype=float) if det_rows else np.zeros((0, 6), dtype=float)
         
-        tracks = self.tracker.update(dets_for_tracker, det_colors)
+        tracks = self.tracker.update(dets_for_tracker, det_colors, gt_yaws=gt_yaws if det_rows else None)
         
 
         track_attrs = self.tracker.get_track_attributes()
