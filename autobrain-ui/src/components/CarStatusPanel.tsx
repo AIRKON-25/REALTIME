@@ -132,6 +132,13 @@ const CarStatusCard = ({
   const safeColor = normalizeCarColor(statusColor ?? mappedColor, "red")!;
   const speedValue = speedById?.[car.id] ?? car.speed;
   const speedText = speedValue.toFixed(2);
+  const isRouteChanged = !!car.routeChanged;
+  const primarySrc = isRouteChanged
+    ? `/assets/carS-${safeColor}-warning.svg`
+    : `/assets/carS-${safeColor}.svg`;
+  const fallbackSrc = isRouteChanged
+    ? `/assets/carS-${safeColor}.svg`
+    : "/assets/carS-red.svg";
 
   return (
     <button
@@ -141,12 +148,12 @@ const CarStatusCard = ({
       onClick={() => onClick?.(car.id)}
     >
       <img
-        src={`/assets/carS-${safeColor}.svg`}
+        src={primarySrc}
         alt={`${car.id} icon`}
         className="car-card__icon"
         onError={(e) => {
-          if (e.currentTarget.src.endsWith("/assets/carS-red.png")) return;
-          e.currentTarget.src = "/assets/carS-red.png";
+          if (e.currentTarget.src === fallbackSrc) return;
+          e.currentTarget.src = fallbackSrc;
         }}
       />
       <div className="car-card__body">
