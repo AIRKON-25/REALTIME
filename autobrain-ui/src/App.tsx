@@ -209,6 +209,16 @@ function App() {
   const obstaclesOnMap = serverState.obstaclesOnMap;
   const obstaclesStatus = serverState.obstaclesStatus;
   const routeChanges = serverState.routeChanges;
+  const selectedIncident = useMemo(
+    () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
+    [obstaclesStatus, selectedIncidentId]
+  );
+
+  useEffect(() => {
+    if (selectedIncidentId && !selectedIncident) {
+      setSelectedIncidentId(null);
+    }
+  }, [selectedIncidentId, selectedIncident]);
 
   const carColorById = useMemo(() => {
     const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
@@ -302,11 +312,11 @@ function App() {
   };
 
   const handleIncidentClick = (incidentId: string | null) => {
-    if (!incidentId) {
+    if (!incidentId || selectedIncidentId === incidentId) {
       setSelectedIncidentId(null);
-      return;
+    } else {
+      setSelectedIncidentId(incidentId);
     }
-    setSelectedIncidentId(incidentId);
     setSelectedCarId(null);
     setSelectedCameraIds([]);
   };
@@ -325,14 +335,30 @@ function App() {
 
 // Monitoring에 실제로 띄울 카메라 선택 로직
   const monitoringCameraIds: CameraId[] = useMemo(() => {
-    if (selectedCameraIds.length > 0) {
+    if (viewMode === "cameraFocused" && selectedCameraIds.length > 0) {
       return Array.from(new Set(selectedCameraIds)).slice(0, 2);
     }
-    const alertCam = obstaclesStatus.find((ob) => ob.cameraId)?.cameraId;
-    if (alertCam) return [alertCam];
-    const car = carsStatus.find((c) => c.id === selectedCarId);
-    return car?.cameraId ? [car.cameraId] : [];
-  }, [selectedCameraIds, obstaclesStatus, selectedCarId, carsStatus]);
+    if (viewMode === "carFocused" && selectedCarId) {
+      const car = carsStatus.find((c) => c.id === selectedCarId);
+      if (car?.cameraId) return [car.cameraId];
+      return camerasStatus[0] ? [camerasStatus[0].id] : [];
+    }
+    if (viewMode === "incidentFocused") {
+      const camId =
+        selectedIncident?.cameraId ||
+        obstaclesStatus.find((ob) => ob.cameraId)?.cameraId;
+      return camId ? [camId] : [];
+    }
+    return [];
+  }, [
+    viewMode,
+    selectedCameraIds,
+    selectedCarId,
+    selectedIncident,
+    obstaclesStatus,
+    carsStatus,
+    camerasStatus,
+  ]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
