@@ -122,7 +122,7 @@ const CarStatusCard = ({
       onClick={() => onClick?.(car.id)}
     >
       <img
-        src={`/assets/carS-${safeColor}.png`}
+        src={`/assets/carS-${safeColor}.svg`}
         alt={`${car.id} icon`}
         className="car-card__icon"
         onError={(e) => {

@@ -159,7 +159,6 @@ export const MapView = ({
 
   const mapStyle = {
     ...paddingStyle,
-    ["--map-scale" as string]: mapScale,
   } as CSSProperties;
 
   const overlayStyle: CSSProperties = {
@@ -217,7 +216,7 @@ export const MapView = ({
             const isSelected = car.carId === activeCarId;
             const isRouteChanged = car.status === "routeChanged";
             const safeColor = normalizeCarColor(car.color);
-            const carImage = `/assets/car-${safeColor}.png`;
+            const carImage = `/assets/car-${safeColor}.svg`;
             const transform = `translate(-50%, -50%) rotate(${car.yaw}deg)`;
             
             return (
