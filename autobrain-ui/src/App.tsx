@@ -489,8 +489,7 @@ function App() {
                 <MonitoringPanel frames={monitoringFrames} />
               )}
               {viewMode === "incidentFocused" &&
-                monitoringFrames.length > 0 &&
-                selectedIncidentId && (
+                monitoringFrames.length > 0 && (
                   <MonitoringPanel frames={monitoringFrames} />
                 )}
             </>
