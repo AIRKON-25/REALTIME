@@ -130,6 +130,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("default");
   const [selectedCarId, setSelectedCarId] = useState<CarId | null>(null);
   const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
   const routeFlashTimersRef = useRef<number[]>([]);
 
@@ -262,14 +263,16 @@ function App() {
   useEffect(() => {
     if (selectedCarId) {
       setViewMode("carFocused");
-    } else if (obstaclesStatus.length > 0) {
+    } else if (selectedIncidentId) {
       setViewMode("incidentFocused");
     } else if (selectedCameraIds.length > 0) {
       setViewMode("cameraFocused");
+    } else if (obstaclesStatus.length > 0) {
+      setViewMode("incidentFocused");
     } else {
       setViewMode("default");
     }
-  }, [selectedCarId, obstaclesStatus, selectedCameraIds]);
+  }, [selectedCarId, selectedIncidentId, selectedCameraIds, obstaclesStatus.length]);
 
   // ===========================
   //  3) 클릭 핸들러들
@@ -280,11 +283,13 @@ function App() {
       return;
     }
     setSelectedCarId(carId);
+    setSelectedIncidentId(null);
     setSelectedCameraIds([]);
   };
 
   const handleCameraClick = (cameraId: CameraId) => {
     setSelectedCarId(null);
+    setSelectedIncidentId(null);
     setSelectedCameraIds((prev) => {
       if (prev.includes(cameraId)) {
         return prev.filter((id) => id !== cameraId);
@@ -294,6 +299,16 @@ function App() {
       }
       return [prev[1], cameraId];
     });
+  };
+
+  const handleIncidentClick = (incidentId: string | null) => {
+    if (!incidentId) {
+      setSelectedIncidentId(null);
+      return;
+    }
+    setSelectedIncidentId(incidentId);
+    setSelectedCarId(null);
+    setSelectedCameraIds([]);
   };
 
   // 장애물 알림 시 보여줄 차량 목록 (현재는 전체 차량)
@@ -326,6 +341,38 @@ function App() {
       .map((id) => byId.get(id))
       .filter((cam): cam is CameraStatus => !!cam);
   }, [monitoringCameraIds, camerasStatus]);
+
+  const monitoringFrames = useMemo(() => {
+    if (monitoringCameraIds.length === 0) return [];
+
+    if (viewMode === "incidentFocused") {
+      const cam = monitoringCameras[0];
+      if (cam) {
+        return [{ label: cam.name || cam.id, url: cam.streamUrl }];
+      }
+      return [];
+    }
+
+    if (viewMode === "cameraFocused") {
+      if (monitoringCameras.length === 1) {
+        const cam = monitoringCameras[0];
+        const labelBase = cam.name || cam.id;
+        return [
+          { label: `${labelBase} (Main)`, url: cam.streamUrl },
+          { label: `${labelBase} (BEV)`, url: cam.streamBEVUrl || cam.streamUrl },
+        ];
+      }
+      return monitoringCameras.slice(0, 2).map((cam, idx) => ({
+        label: `${cam.name || cam.id} (Cam ${idx})`,
+        url: cam.streamUrl,
+      }));
+    }
+
+    return monitoringCameras.slice(0, 2).map((cam) => ({
+      label: cam.name || cam.id,
+      url: cam.streamUrl,
+    }));
+  }, [monitoringCameraIds, monitoringCameras, viewMode]);
 
 
   const isLoading = !hasCamStatus;
@@ -386,7 +433,7 @@ function App() {
 
               {viewMode === "carFocused" && selectedCarId && (
                 <CarStatusPanel
-                  cars={carsStatusForPanel}
+                  cars={carsStatusForPanel.filter((c) => c.id === selectedCarId)}
                   carColorById={carColorById}
                   selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}
@@ -394,41 +441,41 @@ function App() {
                 />
               )}
 
-              {viewMode === "incidentFocused" && selectedCarId && (
+              {viewMode === "incidentFocused" && !selectedCarId && (
                 <CarStatusPanel
                   cars={vehiclesInAlertView}
                   carColorById={carColorById}
-                  selectedCarId={selectedCarId}
+                  selectedCarId={null}
                   onCarClick={handleCarClick}
-                  detailOnly
+                  scrollable
                 />
-              )}
-
-              {viewMode === "incidentFocused" &&
-                !selectedCarId && (
-                  <CarStatusPanel
-                    cars={vehiclesInAlertView}
-                    carColorById={carColorById}
-                    selectedCarId={null}
-                    onCarClick={handleCarClick}
-                    scrollable
-                  />
               )}
 
               {/* Incident */}
               {(viewMode === "default" || viewMode === "incidentFocused") && (
                 <IncidentPanel
-                  alerts={obstaclesStatus}
+                  alerts={
+                    viewMode === "incidentFocused" && selectedIncidentId
+                      ? obstaclesStatus.filter((ob) => ob.id === selectedIncidentId)
+                      : obstaclesStatus
+                  }
                   cameraNames={cameraNameById}
                   isActive={obstaclesStatus.length > 0}
+                  onSelect={handleIncidentClick}
                 />
               )}
 
               {/* Monitoring View */}
-              {(viewMode === "cameraFocused" ||
-                viewMode === "carFocused" ||
-                viewMode === "incidentFocused") && (
-                  <MonitoringPanel cameras={monitoringCameras} />
+              {viewMode === "cameraFocused" && monitoringFrames.length > 0 && (
+                <MonitoringPanel frames={monitoringFrames} />
+              )}
+              {viewMode === "carFocused" && monitoringFrames.length > 0 && (
+                <MonitoringPanel frames={monitoringFrames} />
+              )}
+              {viewMode === "incidentFocused" &&
+                monitoringFrames.length > 0 &&
+                selectedIncidentId && (
+                  <MonitoringPanel frames={monitoringFrames} />
                 )}
             </>
           )}

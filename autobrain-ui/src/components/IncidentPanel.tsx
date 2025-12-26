@@ -5,9 +5,10 @@ interface IncidentPanelProps {
   alerts: ObstacleStatus[];
   cameraNames?: Record<CameraId, string>;
   isActive: boolean;
+  onSelect?: (id: string) => void;
 }
 
-export const IncidentPanel = ({ alerts, cameraNames, isActive }: IncidentPanelProps) => {
+export const IncidentPanel = ({ alerts, cameraNames, isActive, onSelect }: IncidentPanelProps) => {
   return (
     <section
       className={`panel panel--card incident ${
@@ -21,7 +22,12 @@ export const IncidentPanel = ({ alerts, cameraNames, isActive }: IncidentPanelPr
             const cameraText =
               (alert.cameraId && cameraNames?.[alert.cameraId]) || alert.cameraId || "";
             return (
-              <div key={alert.id} className="incident__content">
+              <button
+                type="button"
+                key={alert.id}
+                className="incident__content"
+                onClick={() => onSelect?.(alert.id)}
+              >
                 <div className="incident__icon">
                   <img
                     src="/assets/warning-signs.png"
@@ -36,7 +42,7 @@ export const IncidentPanel = ({ alerts, cameraNames, isActive }: IncidentPanelPr
                     {cameraText ? ` · Camera: ${cameraText}` : ""}
                   </div>
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
