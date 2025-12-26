@@ -33,9 +33,8 @@ export const Header = ({ mode, onModeChange, adminEnabled = false }: HeaderProps
   return (
     <header className="header">
       <div className="header__left">
-        <div className="header__logo-mark" />
+        <img src="/assets/autobrain-logo.svg" alt="AutoBrain logo" className="header__logo-img" />
         <div className="header__logo-text">
-          <span className="header__logo-title">AutoBrain</span>
           <span className="header__logo-subtitle">Vehicle Monitoring System</span>
         </div>
       </div>

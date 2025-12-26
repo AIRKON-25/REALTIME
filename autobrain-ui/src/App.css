@@ -107,15 +107,22 @@ body {
 
 .header__left {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 12px;
 }
 
-.header__logo-mark {
-  width: 40px;
-  height: 40px;
-  border-radius: 999px;
-  background: #1d4ed8;
+.header__logo-img {
+  height: 32px;
+  width: auto;
+  display: block;
+  align-self: flex-end;
+}
+
+.header__logo-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  line-height: 1.1;
 }
 
 .header__logo-title {
