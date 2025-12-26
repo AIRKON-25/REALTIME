@@ -43,7 +43,9 @@ def preprocess_frame(frame_bgr: np.ndarray, target_hw: Tuple[int, int]) -> dict:
 def overlay_detections(frame_bgr: np.ndarray,
                        dets,
                        scale_to_orig_x: float,
-                       scale_to_orig_y: float) -> np.ndarray:
+                       scale_to_orig_y: float,
+                       *,
+                       show_text: bool = True) -> np.ndarray:
     vis = frame_bgr.copy()
     for det in dets:
         tri = np.asarray(det["tri"], dtype=np.float32).copy()
@@ -53,12 +55,13 @@ def overlay_detections(frame_bgr: np.ndarray,
         class_id = det.get("class_id", det.get("cls"))
         color = _class_color(class_id)
         cv2.polylines(vis, [poly], isClosed=True, color=color, thickness=2)
-        cx, cy = int(tri[0][0]), int(tri[0][1])
-        score = float(det.get("score", 0.0))
-        cls_text = f"C{int(class_id)}" if class_id is not None else "C?"
-        text = f"{cls_text} {score:.2f}"
-        cv2.putText(vis, text, (cx, max(0, cy - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        if show_text:
+            cx, cy = int(tri[0][0]), int(tri[0][1])
+            score = float(det.get("score", 0.0))
+            cls_text = f"C{int(class_id)}" if class_id is not None else "C?"
+            text = f"{cls_text} {score:.2f}"
+            cv2.putText(vis, text, (cx, max(0, cy - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     return vis
 
 
@@ -70,6 +73,7 @@ def draw_pred_pseudo3d(
     height_scale: float = 0.5,
     min_dy: int = 8,
     max_dy: int = 80,
+    show_labels: bool = True,
 ) -> Optional[np.ndarray]:
     """
     tri_records: [{\"tri\": (3,2) np.ndarray, \"color_info\": dict|None, \"class_id\": int|None, \"score\": float}, ...]
@@ -137,20 +141,22 @@ def draw_pred_pseudo3d(
             y2 = min(H - 1, y1 + patch_h)
             cv2.rectangle(img, (x1, y1), (x2, y2), (b, g, r), thickness=-1)
             cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 0), thickness=1)
-            text_lines = []
-            if color_hex:
-                text_lines.append(color_hex.upper())
-            text_lines.append(f"{cls_text} {score_text}")
-            for i, line in enumerate(text_lines):
-                text_org = (x1, max(0, y1 - 6 - i * 12))
-                cv2.putText(img, line, text_org, cv2.FONT_HERSHEY_SIMPLEX,
-                            0.45, (255, 255, 255), 1, cv2.LINE_AA)
+            if show_labels:
+                text_lines = []
+                if color_hex:
+                    text_lines.append(color_hex.upper())
+                text_lines.append(f"{cls_text} {score_text}")
+                for i, line in enumerate(text_lines):
+                    text_org = (x1, max(0, y1 - 6 - i * 12))
+                    cv2.putText(img, line, text_org, cv2.FONT_HERSHEY_SIMPLEX,
+                                0.45, (255, 255, 255), 1, cv2.LINE_AA)
         else:
-            x_center = int(base[:, 0].mean())
-            y_top_min = int(top[:, 1].min())
-            text_org = (x_center, max(0, y_top_min - 6))
-            cv2.putText(img, f"{cls_text} {score_text}", text_org,
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+            if show_labels:
+                x_center = int(base[:, 0].mean())
+                y_top_min = int(top[:, 1].min())
+                text_org = (x_center, max(0, y_top_min - 6))
+                cv2.putText(img, f"{cls_text} {score_text}", text_org,
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
 
     return img
 

@@ -13,6 +13,15 @@ from typing import List, Optional, Set, Tuple
 import cv2
 import depthai as dai
 import numpy as np
+try:
+    from rich.console import Console, Group
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+
+    _RICH_AVAILABLE = True
+except ImportError:
+    _RICH_AVAILABLE = False
 
 from edge import (
     UDPSender,
@@ -124,6 +133,7 @@ class HttpVisualizationWorker(threading.Thread):
                  front_highlight: bool,
                  vehicle_cls_set: Optional[Set[int]],
                  front_color: Tuple[int, int, int],
+                 show_annotations: bool,
                  warp_cfg: Optional[dict] = None,
                  warp_broadcaster: Optional[FrameBroadcaster] = None):
         super().__init__(daemon=True)
@@ -134,6 +144,7 @@ class HttpVisualizationWorker(threading.Thread):
         self.front_highlight = front_highlight
         self.vehicle_cls_set = vehicle_cls_set
         self.front_color = front_color
+        self.show_annotations = show_annotations
         self.warp_cfg = warp_cfg
         self.warp_broadcaster = warp_broadcaster
         self.stop_evt = threading.Event()
@@ -180,13 +191,15 @@ class HttpVisualizationWorker(threading.Thread):
                 infer_ms,
                 self.front_highlight,
                 self.vehicle_cls_set,
-                self.front_color
+                self.front_color,
+                self.show_annotations
             )
 
             if self.warp_cfg is not None and self.warp_broadcaster is not None:
                 try:
+                    src_for_warp = vis_frame if vis_frame is not None else frame_bgr
                     warped = cv2.warpPerspective(
-                        frame_bgr,
+                        src_for_warp,
                         self.warp_cfg["H"],
                         self.warp_cfg["dsize"],
                         flags=cv2.INTER_LINEAR
@@ -336,22 +349,34 @@ def render_vis_frame(frame_bgr: np.ndarray,
                      infer_ms: float,
                      front_highlight: bool,
                      vehicle_cls_set: Optional[Set[int]],
-                     front_color: Tuple[int, int, int]) -> np.ndarray:
+                     front_color: Tuple[int, int, int],
+                     show_annotations: bool = True) -> np.ndarray:
     vis_frame = None
     if tri_records:
-        vis_frame = draw_pred_pseudo3d(frame_bgr, tri_records)
+        vis_frame = draw_pred_pseudo3d(
+            frame_bgr,
+            tri_records,
+            show_labels=show_annotations
+        )
     if vis_frame is None:
-        vis_frame = overlay_detections(frame_bgr, dets, scale_to_orig_x, scale_to_orig_y)
-    cv2.putText(
-        vis_frame,
-        f"Infer {infer_ms:.1f} ms | dets {len(dets)}",
-        (10, 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        (0, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
+        vis_frame = overlay_detections(
+            frame_bgr,
+            dets,
+            scale_to_orig_x,
+            scale_to_orig_y,
+            show_text=show_annotations
+        )
+    if show_annotations:
+        cv2.putText(
+            vis_frame,
+            f"Infer {infer_ms:.1f} ms | dets {len(dets)}",
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
     if front_highlight:
         highlight_vehicle_front_faces(
             vis_frame,
@@ -676,6 +701,19 @@ def run_live_inference_http(args) -> None:
     print(f"[HTTP] Streaming MJPEG at http://{bound_ip}:{args.http_port}/ (Ctrl+C to stop)")
 
     vis_worker: Optional[HttpVisualizationWorker] = None
+    use_status_panel = bool(getattr(args, "status_panel", False))
+    live: Optional[Live] = None
+    if use_status_panel and not _RICH_AVAILABLE:
+        print("[Status] WARN: rich not installed; disabling status panel.")
+        use_status_panel = False
+    if use_status_panel:
+        console = Console()
+        live = Live(
+            console=console,
+            refresh_per_second=10
+        )
+        live.start()
+
     try:
         vis_worker = HttpVisualizationWorker(
             broadcaster,
@@ -684,6 +722,7 @@ def run_live_inference_http(args) -> None:
             args.front_highlight,
             vehicle_cls_set,
             front_color,
+            show_annotations=args.show_annotations,
             warp_cfg=warp_cfg,
             warp_broadcaster=warp_broadcaster
         )
@@ -724,7 +763,7 @@ def run_live_inference_http(args) -> None:
                     infer_ms = (time.time() - t0) * 1000.0
 
                     t_post0 = time.time()
-                    dets = decode_predictions(
+                    dets_all = decode_predictions(
                         outputs,
                         strides,
                         clip_cells=args.clip_cells,
@@ -740,14 +779,16 @@ def run_live_inference_http(args) -> None:
                             cid = int(d.get("class_id", d.get("cls", 0)))
                             thr = class_conf_map.get(cid, args.conf)
                             return float(d.get("score", 0.0)) >= thr
-                        dets = [d for d in dets if _keep(d)]
-                    dets = tiny_filter_on_dets(dets, min_area=20.0, min_edge=3.0)
+                        dets_all = [d for d in dets_all if _keep(d)]
+                    dets_all = tiny_filter_on_dets(dets_all, min_area=20.0, min_edge=3.0)
+                    pre_roi_count = len(dets_all)
                     dets = filter_dets_by_roi(
-                        dets,
+                        dets_all,
                         roi_mask,
                         prep["scale_to_orig_x"],
                         prep["scale_to_orig_y"]
                     )
+                    post_roi_count = len(dets)
 
                     tri_records, det_color_infos = [], []
                     if dets:
@@ -787,9 +828,9 @@ def run_live_inference_http(args) -> None:
                             udp_sender.send(
                                 cam_id=args.camera_id,
                                 ts=time.time(),
-                                bev_dets=bev_entries,
-                                capture_ts=capture_ts
-                            )
+                            bev_dets=bev_entries,
+                            capture_ts=capture_ts
+                        )
                         except Exception as exc:
                             print(f"[UDP] send error: {exc}")
 
@@ -799,10 +840,76 @@ def run_live_inference_http(args) -> None:
                     if dt > 0:
                         fps = 1.0 / dt
                     last_fps_ts = now
-                    print(
-                        f"[Timing] cam {cam_latency_ms:.1f} ms | infer {infer_ms:.1f} ms | "
-                        f"post {post_ms:.1f} ms | vis {vis_ms:.1f} ms | total {total_ms:.1f} ms | fps {fps:.1f}"
-                    )
+                    if use_status_panel and live is not None:
+                        class_counts = {0: 0, 1: 0, 2: 0}
+                        for det in dets:
+                            cid = int(det.get("class_id", det.get("cls", -1)))
+                            if cid in class_counts:
+                                class_counts[cid] += 1
+
+                        summary_table = Table.grid(expand=True)
+                        summary_table.add_column(justify="left", ratio=1)
+                        summary_table.add_column(justify="left", ratio=2)
+                        summary_table.add_row(
+                            f"Frame {frame_idx}",
+                            (
+                                f"pre ROI {pre_roi_count} | post ROI {post_roi_count} | "
+                                f"c0 {class_counts[0]} | c1 {class_counts[1]} | c2 {class_counts[2]} | "
+                                f"fps {fps:.1f}"
+                            )
+                        )
+                        summary_table.add_row(
+                            "Latency (ms)",
+                            (
+                                f"cam {cam_latency_ms:.1f} | infer {infer_ms:.1f} | "
+                                f"post {post_ms:.1f} | vis {vis_ms:.1f} | total {total_ms:.1f}"
+                            )
+                        )
+
+                        detail_table = Table(
+                            title="Det detail (post ROI)",
+                            expand=True
+                        )
+                        detail_table.add_column("cls", justify="right")
+                        for col in ["cx", "cy", "yaw", "length", "width"]:
+                            detail_table.add_column(col, justify="right")
+
+                        detail_rows = []
+                        for bev in bev_entries:
+                            cls_id = int(bev.get("class_id", bev.get("cls", -1)))
+                            center = bev.get("center") if bev is not None else None
+                            cx = center[0] if center and len(center) > 0 else None
+                            cy = center[1] if center and len(center) > 1 else None
+                            detail_rows.append({
+                                "cls": cls_id,
+                                "cx": cx,
+                                "cy": cy,
+                                "yaw": bev.get("yaw"),
+                                "length": bev.get("length"),
+                                "width": bev.get("width"),
+                            })
+                        order_map = {0: 0, 1: 1, 2: 2}
+                        detail_rows.sort(key=lambda r: order_map.get(r["cls"], 999))
+
+                        def _fmt(val):
+                            return "-" if val is None else f"{val:.2f}"
+
+                        for row in detail_rows:
+                            detail_table.add_row(
+                                str(row["cls"]),
+                                _fmt(row["cx"]),
+                                _fmt(row["cy"]),
+                                _fmt(row["yaw"]),
+                                _fmt(row["length"]),
+                                _fmt(row["width"])
+                            )
+
+                        live.update(Panel(Group(summary_table, detail_table)))
+                    else:
+                        print(
+                            f"[Timing] cam {cam_latency_ms:.1f} ms | infer {infer_ms:.1f} ms | "
+                            f"post {post_ms:.1f} ms | vis {vis_ms:.1f} ms | total {total_ms:.1f} ms | fps {fps:.1f}"
+                        )
 
                     key = vis_worker.get_key() if args.show_vis else -1
                     if key == ord("q"):
@@ -832,6 +939,8 @@ def run_live_inference_http(args) -> None:
         if udp_recorder is not None:
             udp_recorder.stop()
             udp_recorder.join(timeout=1.0)
+        if live is not None:
+            live.stop()
 
 
 def parse_args():
@@ -840,8 +949,8 @@ def parse_args():
     parser.add_argument("--img-size", type=str, default="864,1536", help="Model input H,W")
     parser.add_argument("--camera-size", type=str, default="1536,864", help="DepthAI output width,height")
     parser.add_argument("--score-mode", type=str, default="obj*cls", choices=["obj", "cls", "obj*cls"])
-    parser.add_argument("--conf", type=float, default=0.30)
-    parser.add_argument("--class-conf", type=str, default=None,
+    parser.add_argument("--conf", type=float, default=0.01)
+    parser.add_argument("--class-conf", type=str, default='0:0.05,1:0.8,2:0.8',
                         help="Optional per-class conf threshold, e.g., '0:0.2,1:0.35,2:0.35'")
     parser.add_argument("--nms-iou", type=float, default=0.2)
     parser.add_argument("--topk", type=int, default=50)
@@ -882,6 +991,10 @@ def parse_args():
                         help="Highlight vehicle front faces in visualization (default: on)")
     parser.add_argument("--no-front-highlight", dest="front_highlight", action="store_false",
                         help="Disable vehicle front-face highlight")
+    parser.add_argument("--show-annotations", dest="show_annotations", action="store_true", default=True,
+                        help="Draw class/score labels and FPS/det text on visualizations")
+    parser.add_argument("--no-show-annotations", dest="show_annotations", action="store_false",
+                        help="Hide class/score labels and FPS/det text")
     parser.add_argument("--http-host", type=str, default="0.0.0.0",
                         help="Interface/IP to bind the MJPEG server to")
     parser.add_argument("--http-port", type=int, default=8080,
@@ -898,6 +1011,10 @@ def parse_args():
                         help="JPEG quality (1-100) used for streaming frames")
     parser.add_argument("--record-udp", type=str, default=None,
                         help="If set, write each UDP payload to this NDJSON file for offline replay")
+    parser.add_argument("--status-panel", dest="status_panel", action="store_true", default=True,
+                        help="Show live terminal status panel (requires rich)")
+    parser.add_argument("--no-status-panel", dest="status_panel", action="store_false",
+                        help="Disable live status panel; fall back to per-frame prints")
     return parser.parse_args()
 
 
