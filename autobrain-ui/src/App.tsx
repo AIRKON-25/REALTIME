@@ -339,7 +339,7 @@ function App() {
     if (viewMode === "carFocused" && selectedCarId) {
       const car = carsStatus.find((c) => c.id === selectedCarId);
       if (car?.cameraId) return [car.cameraId];
-      return camerasStatus[0] ? [camerasStatus[0].id] : [];
+      return [];
     }
     if (viewMode === "incidentFocused") {
       const camId =
