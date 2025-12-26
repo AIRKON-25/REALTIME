@@ -1,5 +1,5 @@
 // components/CarStatusPanel.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CarColor, CarId, CarStatus } from "../types";
 
 const normalizeCarColor = (
@@ -10,6 +10,15 @@ const normalizeCarColor = (
   const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
   if (allowed.includes(normalized as CarColor)) return normalized as CarColor;
   return fallback;
+};
+
+const getIdOrder = (id: string): number | string => {
+  const match = id.match(/(\d+(?:\.\d+)?)/);
+  if (match) {
+    const num = Number(match[1]);
+    if (Number.isFinite(num)) return num;
+  }
+  return id;
 };
 
 interface CarStatusPanelProps {
@@ -31,10 +40,20 @@ export const CarStatusPanel = ({
 }: CarStatusPanelProps) => {
   const latestCarsRef = useRef<CarStatus[]>(cars);
   const [speedById, setSpeedById] = useState<Record<CarId, number>>({});
+  const sortedCars = useMemo(() => {
+    return [...cars].sort((a, b) => {
+      const aOrder = getIdOrder(a.id);
+      const bOrder = getIdOrder(b.id);
+      if (typeof aOrder === "number" && typeof bOrder === "number") {
+        return aOrder - bOrder;
+      }
+      return aOrder.toString().localeCompare(bOrder.toString());
+    });
+  }, [cars]);
 
   useEffect(() => {
-    latestCarsRef.current = cars;
-  }, [cars]);
+    latestCarsRef.current = sortedCars;
+  }, [sortedCars]);
 
   useEffect(() => {
     const updateSpeeds = () => {
@@ -50,7 +69,7 @@ export const CarStatusPanel = ({
   }, []);
 
   if (detailOnly) {
-    const car = cars.find((c) => c.id === selectedCarId) ?? cars[0];
+    const car = sortedCars.find((c) => c.id === selectedCarId) ?? sortedCars[0];
     if (!car) return null;
     return (
       <section className="panel panel--card">
@@ -73,7 +92,7 @@ export const CarStatusPanel = ({
       <div
         className={`car-list ${scrollable ? "car-list--scrollable" : ""}`}
       >
-        {cars.map((car) => (
+        {sortedCars.map((car) => (
           <CarStatusCard
             key={car.id}
             car={car}
@@ -83,7 +102,7 @@ export const CarStatusPanel = ({
             onClick={onCarClick}
           />
         ))}
-        {cars.length === 0 && (
+        {sortedCars.length === 0 && (
           <div className="panel__empty">No vehicles detected</div>
         )}
       </div>
