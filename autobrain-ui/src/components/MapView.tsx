@@ -42,7 +42,6 @@ interface MapViewProps {
   activeCameraIds: CameraId[];
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
-  onCarClick?: (carId: CarId) => void;
   onCameraClick?: (cameraId: CameraId) => void;
   sizeScale?: number; // optional: tweak overlay element sizing together
 }
@@ -55,7 +54,6 @@ export const MapView = ({
   activeCameraIds,
   activeCarId,
   routeChanges,
-  onCarClick,
   onCameraClick,
   sizeScale = 1,
 }: MapViewProps) => {
@@ -220,7 +218,7 @@ export const MapView = ({
             const transform = `translate(-50%, -50%) rotate(${car.yaw}deg)`;
             
             return (
-              <button
+              <div
                 key={car.id}
                 className={`map__car ${isSelected ? "map__car--active" : ""} ${
                   isRouteChanged ? "map__car--warning" : ""
@@ -230,7 +228,7 @@ export const MapView = ({
                   top: `${car.y * 100}%`,
                   transform,
                 }}
-                onClick={() => onCarClick?.(car.carId)}
+                aria-label={`${car.carId} icon`}
               >
                 <img
                   src={carImage}
@@ -241,7 +239,7 @@ export const MapView = ({
                     e.currentTarget.src = "/assets/car-red.png";
                   }}
                 />
-              </button>
+              </div>
             );
           })}
 

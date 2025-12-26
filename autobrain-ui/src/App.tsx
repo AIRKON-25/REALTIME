@@ -421,7 +421,6 @@ function App() {
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
-            onCarClick={handleCarClick}
             onCameraClick={handleCameraClick}
           />
         </div>
