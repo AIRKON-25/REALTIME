@@ -13,12 +13,13 @@ export const Header = ({ mode, onModeChange, adminEnabled = false }: HeaderProps
   const [now, setNow] = useState(() => new Date());
   const formatter = useMemo(
     () =>
-      new Intl.DateTimeFormat(undefined, {
+      new Intl.DateTimeFormat("en-US", {
         year: "numeric",
         month: "short",
         day: "2-digit",
         hour: "numeric",
         minute: "2-digit",
+        hour12: true,
       }),
     []
   );
