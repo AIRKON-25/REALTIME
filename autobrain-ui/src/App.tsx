@@ -466,7 +466,9 @@ function App() {
               )}
 
               {/* Incident */}
-              {obstaclesStatus.length > 0 && (
+              {obstaclesStatus.length > 0 &&
+                viewMode !== "carFocused" &&
+                viewMode !== "cameraFocused" && (
                 <IncidentPanel
                   alerts={
                     viewMode === "incidentFocused" && selectedIncidentId
