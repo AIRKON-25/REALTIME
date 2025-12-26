@@ -9,7 +9,7 @@ import socket
 import threading
 import time
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Iterable, List, Optional, Tuple, Union
 
 import cv2
 import depthai as dai
@@ -392,7 +392,7 @@ def dets_to_bev_entries(dets,
 class UDPSender:
     def __init__(
         self,
-        host: str,
+        host: Union[str, Iterable[str]],
         port: int,
         fmt: str = "json",
         max_bytes: int = 65000,
@@ -400,13 +400,27 @@ class UDPSender:
         fixed_width: Optional[float] = None,
         on_send: Optional[Callable[[bytes, int, float, Optional[float], List[dict]], None]] = None,
     ):
-        self.addr = (host, int(port))
+        self.addrs = self._normalize_hosts(host, port)
         self.fmt = fmt
         self.max_bytes = max_bytes
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.fixed_length = float(fixed_length) if fixed_length is not None else None
         self.fixed_width = float(fixed_width) if fixed_width is not None else None
         self.on_send = on_send
+
+    @staticmethod
+    def _normalize_hosts(host: Union[str, Iterable[str]], port: int) -> List[Tuple[str, int]]:
+        """Allow comma-separated string or iterable of host strings."""
+        if isinstance(host, str):
+            host_items = [h.strip() for h in host.split(",") if h.strip()]
+        else:
+            host_items = list(host)
+        addrs: List[Tuple[str, int]] = []
+        for h in host_items:
+            addrs.append((str(h), int(port)))
+        if not addrs:
+            raise ValueError("No UDP hosts provided")
+        return addrs
 
     def close(self):
         try:
@@ -455,7 +469,8 @@ class UDPSender:
             except Exception as exc:
                 print(f"[UDP] on_send error: {exc}")
         if len(payload) <= self.max_bytes:
-            self.sock.sendto(payload, self.addr)
+            for addr in self.addrs:
+                self.sock.sendto(payload, addr)
 
 
 def run_live_inference(args) -> None:
@@ -664,7 +679,8 @@ def parse_args():
                         help="Path to 3x3 homography (.npy or JSON with correspondences)")
     parser.add_argument("--udp-enable", action="store_true",
                         help="Enable UDP streaming of BEV detections (same format as main.py)")
-    parser.add_argument("--udp-host", type=str, default="192.168.0.165")
+    parser.add_argument("--udp-host", type=str, default="192.168.0.165",
+                        help="Destination IP or comma-separated IPs for UDP payloads")
     parser.add_argument("--udp-port", type=int, default=50050)
     parser.add_argument("--udp-format", choices=["json", "text"], default="json")
     parser.add_argument("--udp-fixed-length", type=float, default=4.4,

@@ -123,7 +123,9 @@ class HttpVisualizationWorker(threading.Thread):
                  show_window: bool,
                  front_highlight: bool,
                  vehicle_cls_set: Optional[Set[int]],
-                 front_color: Tuple[int, int, int]):
+                 front_color: Tuple[int, int, int],
+                 warp_cfg: Optional[dict] = None,
+                 warp_broadcaster: Optional[FrameBroadcaster] = None):
         super().__init__(daemon=True)
         self.queue: queue.Queue = queue.Queue(maxsize=3)
         self.broadcaster = broadcaster
@@ -132,6 +134,8 @@ class HttpVisualizationWorker(threading.Thread):
         self.front_highlight = front_highlight
         self.vehicle_cls_set = vehicle_cls_set
         self.front_color = front_color
+        self.warp_cfg = warp_cfg
+        self.warp_broadcaster = warp_broadcaster
         self.stop_evt = threading.Event()
         self._last_key = -1
 
@@ -178,6 +182,30 @@ class HttpVisualizationWorker(threading.Thread):
                 self.vehicle_cls_set,
                 self.front_color
             )
+
+            if self.warp_cfg is not None and self.warp_broadcaster is not None:
+                try:
+                    warped = cv2.warpPerspective(
+                        frame_bgr,
+                        self.warp_cfg["H"],
+                        self.warp_cfg["dsize"],
+                        flags=cv2.INTER_LINEAR
+                    )
+                    mask_keep = self.warp_cfg.get("mask_keep")
+                    if mask_keep is not None:
+                        warped[~mask_keep] = 0
+                    rotate_code = self.warp_cfg.get("rotate_code")
+                    if rotate_code is not None:
+                        warped = cv2.rotate(warped, rotate_code)
+                    success_warp, encoded_warp = cv2.imencode(
+                        ".jpg",
+                        warped,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+                    )
+                    if success_warp:
+                        self.warp_broadcaster.update(encoded_warp.tobytes())
+                except Exception as exc:
+                    print(f"[Warp] WARN: warp render failed: {exc}")
 
             if save_path:
                 try:
@@ -428,6 +456,116 @@ def filter_dets_by_roi(dets,
     return kept
 
 
+def load_world_points_from_json(json_path: str) -> Optional[np.ndarray]:
+    """
+    Load world_xy points from a homography JSON file.
+    Expected schema:
+    {
+      "points": [
+        {"world_xy": {"x": .., "y": ..}, ...},
+        ...
+      ]
+    }
+    """
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        print(f"[Warp] WARN: failed to read world points from {json_path}: {exc}")
+        return None
+
+    pts = []
+    for item in data.get("points", []):
+        world = item.get("world_xy")
+        if not world:
+            continue
+        if not {"x", "y"} <= world.keys():
+            continue
+        try:
+            pts.append([float(world["x"]), float(world["y"])])
+        except Exception:
+            continue
+    if len(pts) < 3:
+        print(f"[Warp] WARN: not enough world points in {json_path}")
+        return None
+    return np.asarray(pts, dtype=np.float64)
+
+
+def build_warp_config(h_img2world: np.ndarray,
+                      world_pts: np.ndarray,
+                      target_w: Optional[int],
+                      target_h: Optional[int],
+                      rotate_deg: int):
+    """
+    Create warp homography (image->pixel topdown), mask, and rotation.
+    Aspect ratio is preserved using world span; height/width are auto-adjusted if needed.
+    """
+    min_x = float(np.min(world_pts[:, 0]))
+    max_x = float(np.max(world_pts[:, 0]))
+    min_y = float(np.min(world_pts[:, 1]))
+    max_y = float(np.max(world_pts[:, 1]))
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    if span_x <= 0.0 or span_y <= 0.0:
+        raise ValueError("[Warp] Invalid world span (zero or negative)")
+
+    world_ratio = span_x / span_y
+    if target_w is None and target_h is None:
+        # Default to a TV-like aspect using world ratio and ~37.6 px/m (matches 1889x1397 for CES points)
+        default_scale = 37.6
+        target_w = int(round(span_x * default_scale))
+        target_h = int(round(span_y * default_scale))
+    elif target_w is None:
+        target_w = int(round(float(target_h) * world_ratio))
+    elif target_h is None:
+        target_h = int(round(float(target_w) / world_ratio))
+
+    # Enforce aspect ratio; adjust height to match width-driven ratio if needed
+    desired_ratio = target_w / float(target_h)
+    if abs(desired_ratio - world_ratio) > 1e-3:
+        adjusted_h = int(round(float(target_w) / world_ratio))
+        print(
+            f"[Warp] Adjusting height {target_h} -> {adjusted_h} to preserve aspect ratio "
+            f"(world_ratio={world_ratio:.4f}, requested_ratio={desired_ratio:.4f})"
+        )
+        target_h = adjusted_h
+
+    scale = target_w / span_x
+    # World y is mapped so that larger y goes downward in the image (top-left origin)
+    S_world2px = np.array([
+        [scale, 0.0, -min_x * scale],
+        [0.0, -scale, max_y * scale],
+        [0.0, 0.0, 1.0]
+    ], dtype=np.float64)
+    H_out = S_world2px @ h_img2world
+
+    # Build polygon mask in output pixel space
+    poly_world = world_pts.reshape(-1, 1, 2).astype(np.float64)
+    poly_px = cv2.perspectiveTransform(poly_world, S_world2px.astype(np.float64))
+    poly_px = np.round(poly_px.reshape(-1, 2)).astype(np.int32)
+    mask = np.zeros((int(target_h), int(target_w)), dtype=np.uint8)
+    cv2.fillPoly(mask, [poly_px], 255)
+    mask_keep = mask > 0
+
+    rotate_code = None
+    if rotate_deg in (90, -270):
+        rotate_code = cv2.ROTATE_90_CLOCKWISE
+    elif rotate_deg in (-90, 270):
+        rotate_code = cv2.ROTATE_90_COUNTERCLOCKWISE
+    elif rotate_deg in (180, -180):
+        rotate_code = cv2.ROTATE_180
+    elif rotate_deg not in (0,):
+        raise ValueError(f"[Warp] Unsupported rotate_deg {rotate_deg}; use 0/90/-90/180")
+
+    print(f"[Warp] Output size {target_w}x{target_h}, rotate={rotate_deg} deg")
+    return {
+        "H": H_out,
+        "dsize": (int(target_w), int(target_h)),
+        "mask_keep": mask_keep,
+        "rotate_code": rotate_code,
+    }
+
+
 def run_live_inference_http(args) -> None:
     target_h, target_w = map(int, args.img_size.split(","))
     target_hw = (target_h, target_w)
@@ -473,6 +611,34 @@ def run_live_inference_http(args) -> None:
     homography = load_homography_matrix(args.homography) if args.homography else None
     if args.udp_enable and homography is None:
         raise ValueError("UDP output requested but no homography (--homography) provided.")
+
+    warp_cfg = None
+    warp_broadcaster: Optional[FrameBroadcaster] = None
+    warp_server: Optional[ThreadingHTTPServer] = None
+    warp_server_thread: Optional[threading.Thread] = None
+    if homography is None:
+        raise ValueError("Warp stream requires homography (--homography).")
+    world_json_path = args.warp_world_json or args.homography
+    world_pts = None
+    if world_json_path and str(world_json_path).lower().endswith(".json"):
+        world_pts = load_world_points_from_json(world_json_path)
+    if world_pts is None:
+        raise ValueError("Warp stream requires world_xy points; provide --warp-world-json with that data.")
+    warp_cfg = build_warp_config(
+        homography,
+        world_pts,
+        None,
+        None,
+        args.warp_rotate
+    )
+    warp_broadcaster = FrameBroadcaster()
+    warp_handler_cls = build_handler(warp_broadcaster, "Warp Stream")
+    warp_server = ThreadingHTTPServer((args.http_host, args.warp_port), warp_handler_cls)
+    warp_server_thread = threading.Thread(target=warp_server.serve_forever, daemon=True)
+    warp_server_thread.start()
+    bound_warp_ip = args.http_host if args.http_host != "0.0.0.0" else guess_local_ip()
+    print(f"[Warp] Streaming warped MJPEG at http://{bound_warp_ip}:{args.warp_port}/ (Ctrl+C to stop)")
+
     udp_recorder: Optional[UDPRecorder] = None
     if args.record_udp:
         udp_recorder = UDPRecorder(args.record_udp)
@@ -517,7 +683,9 @@ def run_live_inference_http(args) -> None:
             args.show_vis,
             args.front_highlight,
             vehicle_cls_set,
-            front_color
+            front_color,
+            warp_cfg=warp_cfg,
+            warp_broadcaster=warp_broadcaster
         )
         vis_worker.start()
 
@@ -649,6 +817,13 @@ def run_live_inference_http(args) -> None:
         if vis_worker is not None:
             vis_worker.stop()
             vis_worker.join(timeout=1.0)
+        if warp_server is not None:
+            warp_server.shutdown()
+            warp_server.server_close()
+        if warp_server_thread is not None:
+            warp_server_thread.join(timeout=1.0)
+        if warp_broadcaster is not None:
+            warp_broadcaster.stop()
         broadcaster.stop()
         server.shutdown()
         server.server_close()
@@ -693,12 +868,13 @@ def parse_args():
                         help="Path to 3x3 homography (.npy or JSON with correspondences)")
     parser.add_argument("--udp-enable", action="store_true",
                         help="Enable UDP streaming of BEV detections (same format as main.py)")
-    parser.add_argument("--udp-host", type=str, default="192.168.0.165")
+    parser.add_argument("--udp-host", type=str, default="192.168.0.165",
+                        help="Destination IP or comma-separated IPs for UDP payloads")
     parser.add_argument("--udp-port", type=int, default=50050)
     parser.add_argument("--udp-format", choices=["json", "text"], default="json")
-    parser.add_argument("--udp-fixed-length", type=float, default=None,
+    parser.add_argument("--udp-fixed-length", type=float, default=2.5,
                         help="Override vehicle length in UDP payloads (meters)")
-    parser.add_argument("--udp-fixed-width", type=float, default=None,
+    parser.add_argument("--udp-fixed-width", type=float, default=1.4,
                         help="Override vehicle width in UDP payloads (meters)")
     parser.add_argument("--roi-path", type=str, default=None,
                         help="Optional ROI npz (mask) path; only detections inside ROI (P0) are kept")
@@ -712,6 +888,12 @@ def parse_args():
                         help="Port to serve the MJPEG stream on")
     parser.add_argument("--page-title", type=str, default="DepthAI TensorRT Stream",
                         help="Title shown on the HTTP landing page")
+    parser.add_argument("--warp-port", type=int, default=8081,
+                        help="Port to serve the warped MJPEG stream on")
+    parser.add_argument("--warp-rotate", type=int, default=0,
+                        help="Rotate warped output by degrees (0, 90, -90, or 180)")
+    parser.add_argument("--warp-world-json", type=str, default="utils/make_H/ces_real_img2world.json",
+                        help="JSON with world_xy points; defaults to utils/make_H/ces_real_img2world.json (or --homography if that is a JSON file)")
     parser.add_argument("--jpeg-quality", type=int, default=85,
                         help="JPEG quality (1-100) used for streaming frames")
     parser.add_argument("--record-udp", type=str, default=None,
