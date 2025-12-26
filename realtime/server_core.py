@@ -140,7 +140,7 @@ class RealtimeServer:
             {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.104:8080/stream"},
             {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream"},
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
-            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.106:8080/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
         ]
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
@@ -793,8 +793,36 @@ class RealtimeServer:
             ts,
             incident_payload,
         )
+        obstacle_snapshot = {
+            "type": "obstacleStatus",
+            "ts": ts,
+            "data": {
+                "mode": "snapshot",
+                "obstaclesOnMap": obstacles_on_map,
+                "obstaclesStatus": obstacles_status,
+                "incident": incident_payload,
+            },
+        }
         if obstacle_msg:
             messages.append(obstacle_msg)
+
+        if self.ws_hub:
+            initial_msgs: List[dict] = []
+            if self._ui_cam_status:
+                initial_msgs.append(self._ui_cam_status)
+            initial_msgs.append({
+                "type": "carStatus",
+                "ts": ts,
+                "data": {
+                    "mode": "snapshot",
+                    "carsOnMap": cars_on_map,
+                    "carsStatus": cars_status,
+                },
+            })
+            initial_msgs.append(obstacle_snapshot)
+            self.ws_hub.set_initial_messages(initial_msgs)
+
+        messages.append(obstacle_snapshot)
 
         return messages
 
