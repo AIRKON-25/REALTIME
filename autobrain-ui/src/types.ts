@@ -116,7 +116,6 @@ export interface MonitorState {
   camerasStatus: CameraStatus[];
   obstaclesOnMap: ObstacleOnMap[];
   obstaclesStatus: ObstacleStatus[];
-  obstacleAlert: ObstacleStatus | null;
   routeChanges: CarRouteChange[];
 }
 

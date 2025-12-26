@@ -36,7 +36,6 @@ const emptyState: MonitorState = {
   camerasStatus: [],
   obstaclesOnMap: [],
   obstaclesStatus: [],
-  obstacleAlert: null,
   routeChanges: [],
 };
 
@@ -85,9 +84,6 @@ const applyObstacleStatus = (
   prev: MonitorState,
   data: ObstacleStatusPacket
 ): MonitorState => {
-  const pickAlert = (list: MonitorState["obstaclesStatus"]) =>
-    list.find((status) => status.class === 1 || status.class === 2) ?? null;
-
   if (data.mode === "delta") {
     const obstaclesOnMap = mergeByKey(
       prev.obstaclesOnMap,
@@ -101,13 +97,11 @@ const applyObstacleStatus = (
       data.statusDeletes,
       (item) => item.id
     );
-    const obstacleAlert = pickAlert(obstaclesStatus);
-    return { ...prev, obstaclesOnMap, obstaclesStatus, obstacleAlert };
+    return { ...prev, obstaclesOnMap, obstaclesStatus };
   }
   const obstaclesOnMap = data.obstaclesOnMap;
   const obstaclesStatus = data.obstaclesStatus ?? prev.obstaclesStatus;
-  const obstacleAlert = pickAlert(obstaclesStatus);
-  return { ...prev, obstaclesOnMap, obstaclesStatus, obstacleAlert };
+  return { ...prev, obstaclesOnMap, obstaclesStatus };
 };
 
 const applyRouteChange = (
@@ -212,7 +206,7 @@ function App() {
   const camerasOnMap = serverState.camerasOnMap;
   const camerasStatus = serverState.camerasStatus;
   const obstaclesOnMap = serverState.obstaclesOnMap;
-  const obstacleAlert = serverState.obstacleAlert;
+  const obstaclesStatus = serverState.obstaclesStatus;
   const routeChanges = serverState.routeChanges;
 
   const carColorById = useMemo(() => {
@@ -235,10 +229,13 @@ function App() {
     return map;
   }, [carsOnMap, carsStatus]);
 
-  const alertCamera = useMemo(() => {
-    if (!obstacleAlert?.cameraId) return null;
-    return camerasStatus.find((cam) => cam.id === obstacleAlert.cameraId) ?? null;
-  }, [obstacleAlert, camerasStatus]);
+  const cameraNameById = useMemo(() => {
+    const map: Record<CameraId, string> = {};
+    camerasStatus.forEach((cam) => {
+      map[cam.id] = cam.name;
+    });
+    return map;
+  }, [camerasStatus]);
 
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -263,16 +260,16 @@ function App() {
   //  2) 뷰 모드 계산
   // ===========================
   useEffect(() => {
-    if (obstacleAlert) {
-      setViewMode("incidentFocused");
-    } else if (selectedCarId) {
+    if (selectedCarId) {
       setViewMode("carFocused");
+    } else if (obstaclesStatus.length > 0) {
+      setViewMode("incidentFocused");
     } else if (selectedCameraIds.length > 0) {
       setViewMode("cameraFocused");
     } else {
       setViewMode("default");
     }
-  }, [obstacleAlert, selectedCarId, selectedCameraIds]);
+  }, [selectedCarId, obstaclesStatus, selectedCameraIds]);
 
   // ===========================
   //  3) 클릭 핸들러들
@@ -316,10 +313,11 @@ function App() {
     if (selectedCameraIds.length > 0) {
       return Array.from(new Set(selectedCameraIds)).slice(0, 2);
     }
-    if (obstacleAlert?.cameraId) return [obstacleAlert.cameraId];
+    const alertCam = obstaclesStatus.find((ob) => ob.cameraId)?.cameraId;
+    if (alertCam) return [alertCam];
     const car = carsStatus.find((c) => c.id === selectedCarId);
     return car?.cameraId ? [car.cameraId] : [];
-  }, [selectedCameraIds, obstacleAlert, selectedCarId, carsStatus]);
+  }, [selectedCameraIds, obstaclesStatus, selectedCarId, carsStatus]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
@@ -415,14 +413,14 @@ function App() {
                     onCarClick={handleCarClick}
                     scrollable
                   />
-                )}
+              )}
 
               {/* Incident */}
               {(viewMode === "default" || viewMode === "incidentFocused") && (
                 <IncidentPanel
-                  alert={obstacleAlert}
-                  cameraLabel={alertCamera?.name || obstacleAlert?.cameraId}
-                  isActive={!!obstacleAlert}
+                  alerts={obstaclesStatus}
+                  cameraNames={cameraNameById}
+                  isActive={obstaclesStatus.length > 0}
                 />
               )}
 
