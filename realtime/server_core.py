@@ -142,6 +142,16 @@ class RealtimeServer:
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.106:8080/stream"},
         ]
+        self._ui_traffic_lights_on_map = [
+            {"id": "tl-1", "trafficLightId": 1, "x": 0.50, "y": -0.02, "yaw": 0.0},
+            {"id": "tl-2", "trafficLightId": 2, "x": 0.50, "y": 1.02, "yaw": 180.0},
+        ]
+        self._ui_traffic_light_status = {
+            int(item["trafficLightId"]): {"trafficLightId": int(item["trafficLightId"]), "light": "red"}
+            for item in self._ui_traffic_lights_on_map
+        }
+        self._ui_traffic_light_map: Dict[str, dict] = {}
+        self._ui_traffic_light_status_cache: Dict[int, dict] = {}
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
         self._ui_obstacle_status_map: Dict[str, dict] = {}
@@ -638,6 +648,57 @@ class RealtimeServer:
             },
         }
 
+    def _build_traffic_light_status_message(self, ts: float) -> Optional[dict]:
+        current_map = {str(item["trafficLightId"]): item for item in self._ui_traffic_lights_on_map}
+        current_status = {int(tid): status for tid, status in self._ui_traffic_light_status.items()}
+
+        if not self._ui_traffic_light_map and not self._ui_traffic_light_status_cache:
+            self._ui_traffic_light_map = current_map
+            self._ui_traffic_light_status_cache = current_status
+            return {
+                "type": "trafficLightStatus",
+                "ts": ts,
+                "data": {
+                    "mode": "snapshot",
+                    "trafficLightsOnMap": list(current_map.values()),
+                    "trafficLightsStatus": list(current_status.values()),
+                },
+            }
+
+        upserts = [
+            item
+            for tid, item in current_map.items()
+            if self._ui_traffic_light_map.get(tid) != item
+        ]
+        deletes = [tid for tid in self._ui_traffic_light_map.keys() if tid not in current_map]
+        status_upserts = [
+            item
+            for tid, item in current_status.items()
+            if self._ui_traffic_light_status_cache.get(tid) != item
+        ]
+        status_deletes = [
+            tid for tid in self._ui_traffic_light_status_cache.keys()
+            if tid not in current_status
+        ]
+
+        if not (upserts or deletes or status_upserts or status_deletes):
+            return None
+
+        self._ui_traffic_light_map = current_map
+        self._ui_traffic_light_status_cache = current_status
+
+        data: Dict[str, object] = {"mode": "delta"}
+        if upserts:
+            data["trafficLightsOnMapUpserts"] = upserts
+        if deletes:
+            data["trafficLightsOnMapDeletes"] = [int(tid) for tid in deletes]
+        if status_upserts:
+            data["trafficLightsStatusUpserts"] = status_upserts
+        if status_deletes:
+            data["trafficLightsStatusDeletes"] = [int(tid) for tid in status_deletes]
+
+        return {"type": "trafficLightStatus", "ts": ts, "data": data}
+
     @staticmethod
     def _normalize_car_color(label: Optional[str]) -> str:
         allowed = {"red", "green", "blue", "yellow", "purple", "white"}
@@ -701,12 +762,19 @@ class RealtimeServer:
     ) -> List[dict]:
         messages: List[dict] = []
 
+        traffic_light_msg = self._build_traffic_light_status_message(ts)
+
         if self._ui_cam_status is None:
             cam_msg = self._build_cam_status_message(ts)
             self._ui_cam_status = cam_msg
+            initial_messages = [cam_msg]
+            if traffic_light_msg:
+                initial_messages.append(traffic_light_msg)
             if self.ws_hub:
-                self.ws_hub.set_initial_messages([cam_msg])
-            messages.append(cam_msg)
+                self.ws_hub.set_initial_messages(initial_messages)
+            messages.extend(initial_messages)
+        elif traffic_light_msg:
+            messages.append(traffic_light_msg)
 
         cars_on_map: List[dict] = []
         cars_status: List[dict] = []

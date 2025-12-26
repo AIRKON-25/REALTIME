@@ -1,8 +1,10 @@
 // types.ts
 export type CameraId = string;
 export type CarId = string;
+export type TrafficLightId = number;
 
 export type CarColor = "red" | "green" | "blue" | "yellow" | "purple" | "white";
+export type TrafficLightSignal = "red" | "yellow" | "green" | "left";
 
 export type ViewMode =
   | "default"          // 기본: 맵 + CarStatus
@@ -28,6 +30,11 @@ export interface CameraOnMap extends MapObjectBase {
   cameraId: CameraId;
 }
 
+export interface TrafficLightOnMap extends MapObjectBase {
+  trafficLightId: TrafficLightId;
+  yaw: number; // degree
+}
+
 export type ObstacleClass = "rubberCone" | "barricade";
 
 export interface ObstacleOnMap extends MapObjectBase {
@@ -39,6 +46,11 @@ export interface ObstacleStatus {
   id: string;
   class: number;
   cameraId?: CameraId;
+}
+
+export interface TrafficLightStatus {
+  trafficLightId: TrafficLightId;
+  light: TrafficLightSignal;
 }
 
 export interface CarStatus {
@@ -89,6 +101,22 @@ export interface CarStatusDelta {
 
 export type CarStatusPacket = CarStatusSnapshot | CarStatusDelta;
 
+export interface TrafficLightStatusSnapshot {
+  mode?: "snapshot";
+  trafficLightsOnMap: TrafficLightOnMap[];
+  trafficLightsStatus: TrafficLightStatus[];
+}
+
+export interface TrafficLightStatusDelta {
+  mode: "delta";
+  trafficLightsOnMapUpserts?: TrafficLightOnMap[];
+  trafficLightsOnMapDeletes?: TrafficLightId[];
+  trafficLightsStatusUpserts?: TrafficLightStatus[];
+  trafficLightsStatusDeletes?: TrafficLightId[];
+}
+
+export type TrafficLightStatusPacket = TrafficLightStatusSnapshot | TrafficLightStatusDelta;
+
 export interface ObstacleStatusSnapshot {
   mode?: "snapshot";
   obstaclesOnMap: ObstacleOnMap[];
@@ -117,6 +145,8 @@ export interface MonitorState {
   obstaclesOnMap: ObstacleOnMap[];
   obstaclesStatus: ObstacleStatus[];
   routeChanges: CarRouteChange[];
+  trafficLightsOnMap: TrafficLightOnMap[];
+  trafficLightsStatus: TrafficLightStatus[];
 }
 
 export interface AdminResponseMessage {
@@ -133,6 +163,7 @@ export interface AdminResponseMessage {
 export type RealtimeMessage =
   | { type: "camStatus"; ts: number; data: CamStatusPacket }
   | { type: "carStatus"; ts: number; data: CarStatusPacket }
+  | { type: "trafficLightStatus"; ts: number; data: TrafficLightStatusPacket }
   | { type: "obstacleStatus"; ts: number; data: ObstacleStatusPacket }
   | { type: "carRouteChange"; ts: number; data: RouteChangePacket }
   | AdminResponseMessage;

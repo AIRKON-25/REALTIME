@@ -12,6 +12,7 @@ import type {
   CarStatusPacket,
   ObstacleStatusPacket,
   RouteChangePacket,
+  TrafficLightStatusPacket,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -37,12 +38,14 @@ const emptyState: MonitorState = {
   obstaclesOnMap: [],
   obstaclesStatus: [],
   routeChanges: [],
+  trafficLightsOnMap: [],
+  trafficLightsStatus: [],
 };
 
 const mergeByKey = <T,>(
   prev: T[],
   upserts: T[] | undefined,
-  deletes: string[] | undefined,
+  deletes: (string | number)[] | undefined,
   keyFn: (item: T) => string
 ): T[] => {
   if ((!upserts || upserts.length === 0) && (!deletes || deletes.length === 0)) {
@@ -50,7 +53,7 @@ const mergeByKey = <T,>(
   }
   const byKey = new Map(prev.map((item) => [keyFn(item), item]));
   if (deletes) {
-    deletes.forEach((id) => byKey.delete(id));
+    deletes.forEach((id) => byKey.delete(id.toString()));
   }
   if (upserts) {
     upserts.forEach((item) => byKey.set(keyFn(item), item));
@@ -112,6 +115,32 @@ const applyRouteChange = (
   return { ...prev, routeChanges: changes };
 };
 
+const applyTrafficLightStatus = (
+  prev: MonitorState,
+  data: TrafficLightStatusPacket
+): MonitorState => {
+  if (data.mode === "delta") {
+    const trafficLightsOnMap = mergeByKey(
+      prev.trafficLightsOnMap,
+      data.trafficLightsOnMapUpserts,
+      data.trafficLightsOnMapDeletes,
+      (item) => item.trafficLightId.toString()
+    );
+    const trafficLightsStatus = mergeByKey(
+      prev.trafficLightsStatus,
+      data.trafficLightsStatusUpserts,
+      data.trafficLightsStatusDeletes,
+      (item) => item.trafficLightId.toString()
+    );
+    return { ...prev, trafficLightsOnMap, trafficLightsStatus };
+  }
+  return {
+    ...prev,
+    trafficLightsOnMap: data.trafficLightsOnMap,
+    trafficLightsStatus: data.trafficLightsStatus,
+  };
+};
+
 function App() {
   // 🔹 서버에서 오는 전체 상태
   const isAdminPage = window.location.pathname === "/admin";
@@ -164,6 +193,8 @@ function App() {
                 };
               case "carStatus":
                 return applyCarStatus(prev, msg.data);
+              case "trafficLightStatus":
+                return applyTrafficLightStatus(prev, msg.data);
               case "obstacleStatus":
                 return applyObstacleStatus(prev, msg.data);
               case "carRouteChange":
