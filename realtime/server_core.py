@@ -707,6 +707,17 @@ class RealtimeServer:
         return "red"
 
     @staticmethod
+    def _normalize_camera_id(cam_val: Optional[object]) -> Optional[str]:
+        if cam_val is None:
+            return None
+        cam_str = str(cam_val)
+        if cam_str.startswith("cam-"):
+            return cam_str
+        if cam_str.startswith("cam") and len(cam_str) > 3:
+            return f"cam-{cam_str[3:]}"
+        return cam_str
+
+    @staticmethod
     def _obstacle_kind(cls: int) -> str:
         if cls == 2:
             return "barricade"
@@ -796,6 +807,9 @@ class RealtimeServer:
                 x_norm, y_norm = self._world_to_map_xy(cx, cy)
 
                 if cls == 0:
+                    source_cams = meta.get("source_cams") or []
+                    cam_val = source_cams[0] if source_cams else None
+                    camera_id = self._normalize_camera_id(cam_val)
                     car_id = f"car-{tid}"
                     map_id = f"mcar-{tid}"
                     cars_on_map.append({
@@ -815,22 +829,14 @@ class RealtimeServer:
                         "battery": 100,
                         "fromLabel": "-",
                         "toLabel": "-",
-                        "cameraId": None,
+                        "cameraId": camera_id,
                         "routeChanged": False,
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
                     source_cams = meta.get("source_cams") or []
                     cam_val = source_cams[0] if source_cams else None
-                    camera_id = None
-                    if cam_val is not None:
-                        cam_str = str(cam_val)
-                        if cam_str.startswith("cam-"):
-                            camera_id = cam_str
-                        elif cam_str.startswith("cam") and len(cam_str) > 3:
-                            camera_id = f"cam-{cam_str[3:]}"
-                        else:
-                            camera_id = cam_str
+                    camera_id = self._normalize_camera_id(cam_val)
                     obstacles_on_map.append({
                         "id": obstacle_id,
                         "obstacleId": obstacle_id,
