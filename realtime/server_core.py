@@ -1,5 +1,6 @@
 import asyncio
 import heapq
+import math
 import json
 import os
 import queue
@@ -26,7 +27,15 @@ from utils.tracking.geometry import aabb_iou_axis_aligned
 from utils.tracking.lane_matcher import LaneMatcher
 from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
 from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
-from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
+from realtime.runtime_constants import (
+    COLOR_BIAS_STRENGTH,
+    COLOR_BIAS_MIN_VOTES,
+    PATH_REID_DIST_M,
+    PATH_REID_YAW_DEG,
+    vehicle_fixed_length,
+    vehicle_fixed_width,
+)
+from realtime.status_core import StatusState
 
 class RealtimeServer:
     def __init__(
@@ -59,6 +68,7 @@ class RealtimeServer:
         log_pipeline: bool = True,
         log_udp_packets: bool = False,
         lane_map_path: Optional[str] = "utils/make_H/lanes.json",
+        status_state: Optional[StatusState] = None,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -111,6 +121,7 @@ class RealtimeServer:
         self.last_cluster_debug: Dict[str, int] = {}
         self.debug_assoc_logging = debug_assoc_logging
         self.log_pipeline = log_pipeline
+        self.status_state = status_state
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -261,6 +272,71 @@ class RealtimeServer:
             else:
                 cost += self._reid_color_penalty
         return cost, dist
+
+    @staticmethod
+    def _deg_diff(a: float, b: float) -> float:
+        """Return absolute minimal difference of two angles in degrees."""
+        try:
+            diff = float(a) - float(b)
+        except Exception:
+            return 180.0
+        return abs((diff + 180.0) % 360.0 - 180.0)
+
+    def _path_reid_cost(self, ext_id: int, track_info: dict) -> Optional[float]:
+        """
+        경로 정보를 이용한 재-ID 비용 계산.
+        반환값: 매칭 가능 시 비용(낮을수록 좋음), 불가 시 None.
+        """
+        if not self.status_state:
+            return None
+        route = self.status_state.get_route(ext_id)
+        if not route:
+            return None
+        path_future = route.get("path_future") or []
+        path_full = route.get("path") or []
+        path = path_future if path_future else path_full
+        if not path:
+            return None
+        try:
+            px = float(track_info.get("cx"))
+            py = float(track_info.get("cy"))
+        except Exception:
+            return None
+
+        best_idx = None
+        best_dist = float("inf")
+        for idx, pt in enumerate(path):
+            try:
+                dx = px - float(pt[0])
+                dy = py - float(pt[1])
+            except Exception:
+                continue
+            dist = math.hypot(dx, dy)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx is None or best_dist > PATH_REID_DIST_M:
+            return None
+
+        expected_yaw = None
+        if len(path) >= 2:
+            i0 = max(0, min(best_idx, len(path) - 2))
+            try:
+                dx = float(path[i0 + 1][0]) - float(path[i0][0])
+                dy = float(path[i0 + 1][1]) - float(path[i0][1])
+                expected_yaw = math.degrees(math.atan2(dy, dx))
+            except Exception:
+                expected_yaw = None
+
+        track_yaw = track_info.get("yaw")
+        if track_yaw is not None and expected_yaw is not None:
+            yaw_diff = self._deg_diff(track_yaw, expected_yaw)
+            if yaw_diff > PATH_REID_YAW_DEG:
+                return None
+            cost = best_dist + yaw_diff / max(PATH_REID_YAW_DEG, 1e-3)
+        else:
+            cost = best_dist
+        return float(cost)
 
     def _select_car_id(
         self,
@@ -530,6 +606,7 @@ class RealtimeServer:
             except (TypeError, ValueError):
                 speed = None
             yaw = float(row[6]) if len(row) > 6 else None
+            ext_id_existing = self._track_id_map.get(internal_id)
             info = {
                 "internal_id": internal_id,
                 "ts": now,
@@ -543,6 +620,14 @@ class RealtimeServer:
                 "yaw": yaw,
             }
             track_info_by_id[internal_id] = info
+            if self.status_state and ext_id_existing is not None and cls == 0:
+                try:
+                    self.status_state.advance_path_progress(
+                        ext_id_existing,
+                        (info["cx"], info["cy"]),
+                    )
+                except Exception:
+                    pass
             if internal_id in self._track_id_map:
                 continue
             new_track_rows.append(info)
@@ -555,6 +640,10 @@ class RealtimeServer:
                     continue
                 for ext_id, released_info in self._released_external.items():
                     if released_info.get("cls") != 0:
+                        continue
+                    path_cost = self._path_reid_cost(ext_id, track_info)
+                    if path_cost is not None:
+                        pairs.append((path_cost, track_info["internal_id"], ext_id))
                         continue
                     cost, dist = self._compute_reid_cost(track_info, released_info, now)
                     if not relax_gate and dist > self._reid_dist_gate_m:

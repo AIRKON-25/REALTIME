@@ -2,6 +2,7 @@ import argparse
 import time
 
 from realtime.server_core import RealtimeServer
+from realtime.status_core import StatusServer
 from utils.tracking.tracker import TrackerConfigCar, TrackerConfigObstacle
 from utils.tracking._constants import (
     ASSOC_CENTER_NORM,
@@ -47,6 +48,11 @@ def main():
     ap.add_argument("--log-udp-packets", dest="log_udp_packets", action="store_true", help="UDP 수신 패킷 로그 출력")
     ap.add_argument("--no-log-udp-packets", dest="log_udp_packets", action="store_false", help="UDP 수신 패킷 로그 비활성화")
     ap.add_argument("--lane-map-path", default="lanes.json", help="GT yaw lane map json path (lanes.json)")
+    ap.add_argument("--status-udp-host", default="0.0.0.0", help="status receiver bind host")
+    ap.add_argument("--status-udp-port", type=int, default=60070, help="status receiver UDP port")
+    ap.add_argument("--status-http-host", default="0.0.0.0", help="status HTTP host (omit to disable HTTP)")
+    ap.add_argument("--status-http-port", type=int, default=18080, help="status HTTP port (omit to disable HTTP)")
+    ap.add_argument("--status-log-udp", action="store_true", help="log status UDP payloads")
     ap.set_defaults(log_pipeline=True, log_udp_packets=False)
     args = ap.parse_args()
     if args.car_count < 1 or args.car_count > 5:
@@ -62,6 +68,13 @@ def main():
     car_cfg = TrackerConfigCar(max_age=args.car_max_age, min_hits=args.car_min_hits)
     obs_cfg = TrackerConfigObstacle(max_age=args.obs_max_age, min_hits=args.obs_min_hits)
 
+    status_server = StatusServer(
+        udp_host=args.status_udp_host,
+        udp_port=args.status_udp_port,
+        log_packets=args.status_log_udp,
+        http_host=args.status_http_host,
+        http_port=args.status_http_port,
+    )
     server = RealtimeServer(
         cam_ports=cam_ports,
         # cam_positions_path=args.cam_positions_json,
@@ -88,7 +101,9 @@ def main():
         log_pipeline=args.log_pipeline,
         log_udp_packets=args.log_udp_packets,
         lane_map_path=args.lane_map_path,
+        status_state=status_server.state,
     )
+    status_server.start()
     server.start()
     try:
         while True:
@@ -96,6 +111,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        status_server.stop()
         server.receiver.stop()
         if server.track_tx:
             server.track_tx.close()
