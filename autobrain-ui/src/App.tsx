@@ -375,8 +375,15 @@ function App() {
     const uniq = (ids?: CameraId[]) =>
       Array.from(new Set((ids ?? []).filter((id): id is CameraId => Boolean(id))));
 
-    const nearestCamera = (candidates: CameraId[] | undefined, target?: { x: number; y: number }) => {
-      const ids = uniq(candidates);
+    const nearestCamera = (
+      candidates: CameraId[] | undefined,
+      target?: { x: number; y: number },
+      allowFallbackToAll = false
+    ) => {
+      let ids = uniq(candidates);
+      if (allowFallbackToAll && ids.length === 0) {
+        ids = uniq(camerasOnMap.map((c) => c.cameraId));
+      }
       if (!ids.length) return undefined;
       if (!target) return ids[0];
       let best: CameraId | undefined;
@@ -402,7 +409,11 @@ function App() {
     if (viewMode === "carFocused" && selectedCarId) {
       const carStatus = carsStatus.find((c) => c.id === selectedCarId);
       const carPos = carsOnMap.find((c) => c.carId === selectedCarId);
-      const cam = nearestCamera(carStatus?.cameraIds, carPos ? { x: carPos.x, y: carPos.y } : undefined);
+      const cam = nearestCamera(
+        carStatus?.cameraIds,
+        carPos ? { x: carPos.x, y: carPos.y } : undefined,
+        true
+      );
       return cam ? [cam] : [];
     }
 
@@ -413,7 +424,8 @@ function App() {
         : undefined;
       const cam = nearestCamera(
         targetIncident?.cameraIds,
-        targetPos ? { x: targetPos.x, y: targetPos.y } : undefined
+        targetPos ? { x: targetPos.x, y: targetPos.y } : undefined,
+        true
       );
       return cam ? [cam] : [];
     }
@@ -430,6 +442,7 @@ function App() {
     carsOnMap,
     obstaclesOnMap,
     cameraPosById,
+    camerasOnMap,
   ]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
