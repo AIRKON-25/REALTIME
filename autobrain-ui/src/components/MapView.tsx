@@ -14,6 +14,8 @@ import CameraIcon from "../assets/camera-icon.svg";
 import CameraIconActive from "../assets/camera-icon-active.svg";
 import CameraIconVertical from "../assets/camera-icon_vertical.svg";
 import CameraIconVerticalActive from "../assets/camera-icon-vertical-active.svg";
+import ArrowRect from "../assets/arrow-rectangle.png";
+import ArrowHead from "../assets/arrow.png";
 
 const normalizeCarColor = (color: string | undefined) => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
@@ -33,6 +35,19 @@ const getCameraIconSrc = (cam: CameraOnMap, isActive: boolean) => {
   }
   return isActive ? CameraIconActive : CameraIcon;
 };
+
+interface RouteSprite {
+  id: string;
+  x: number;
+  y: number;
+  angleDeg: number;
+  kind: "rect" | "arrow";
+  carId: CarId;
+}
+
+const ROUTE_STEP = 0.035; // normalized distance per sprite (~3.5% of map width/height)
+const RECT_BASE_ANGLE = -90; // adjust if your PNG default orientation differs
+const ARROW_BASE_ANGLE = -90;
 
 interface MapViewProps {
   mapImage: string;
@@ -59,6 +74,7 @@ export const MapView = ({
 }: MapViewProps) => {
   const mapContentRef = useRef<HTMLDivElement | null>(null);
   const mapImageRef = useRef<HTMLImageElement | null>(null);
+  const [visibleRouteCounts, setVisibleRouteCounts] = useState<Record<CarId, number>>({});
   const [mapLayout, setMapLayout] = useState({
     contentWidth: 0,
     contentHeight: 0,
@@ -133,6 +149,109 @@ export const MapView = ({
     return Math.min(1.4, Math.max(0.4, scale));
   }, [mapLayout, sizeScale]);
 
+  const routeSprites = useMemo(() => {
+    const sprites: RouteSprite[] = [];
+    routeChanges.forEach((change, changeIdx) => {
+      const points = change.newRoute;
+      if (!points || points.length < 2) return;
+
+      const carPos = carsOnMap.find((c) => c.carId === change.carId);
+      const samples: RouteSprite[] = [];
+
+      for (let i = 0; i < points.length - 1; i++) {
+        const a = points[i];
+        const b = points[i + 1];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist === 0) continue;
+        const steps = Math.max(1, Math.floor(dist / ROUTE_STEP));
+        const stepSize = dist / steps;
+        const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+        for (let s = 0; s < steps; s++) {
+          const t = (s + 0.5) * stepSize / dist;
+          samples.push({
+            id: `${change.carId}-seg-${changeIdx}-${i}-${s}`,
+            x: a.x + dx * t,
+            y: a.y + dy * t,
+            angleDeg: angleDeg + RECT_BASE_ANGLE,
+            kind: "rect",
+            carId: change.carId,
+          });
+        }
+      }
+
+      if (carPos && samples.length > 0) {
+        let nearestIdx = 0;
+        let nearestDist = Number.POSITIVE_INFINITY;
+        samples.forEach((sample, idx) => {
+          const d = Math.hypot(sample.x - carPos.x, sample.y - carPos.y);
+          if (d < nearestDist) {
+            nearestDist = d;
+            nearestIdx = idx;
+          }
+        });
+        samples.splice(0, nearestIdx);
+      }
+
+      if (samples.length) {
+        sprites.push(...samples);
+        const tailPoint = points[points.length - 1];
+        const prevPoint = points[points.length - 2];
+        const dx = tailPoint.x - prevPoint.x;
+        const dy = tailPoint.y - prevPoint.y;
+        const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+        sprites.push({
+          id: `${change.carId}-arrow-${changeIdx}`,
+          x: tailPoint.x,
+          y: tailPoint.y,
+          angleDeg: angleDeg + ARROW_BASE_ANGLE,
+          kind: "arrow",
+          carId: change.carId,
+        });
+      }
+    });
+    return sprites;
+  }, [routeChanges, carsOnMap]);
+
+  useEffect(() => {
+    const timers: number[] = [];
+    const byCar: Record<CarId, RouteSprite[]> = {};
+    routeSprites.forEach((sprite) => {
+      if (!byCar[sprite.carId]) byCar[sprite.carId] = [];
+      byCar[sprite.carId].push(sprite);
+    });
+
+    setVisibleRouteCounts((prev) => {
+      const next = { ...prev };
+      Object.entries(byCar).forEach(([carId, sprites]) => {
+        const total = sprites.length;
+        if (total === 0) return;
+        if (!(carId in next) || next[carId] > total) {
+          next[carId] = 0;
+        }
+      });
+      return next;
+    });
+
+    Object.entries(byCar).forEach(([carId, sprites]) => {
+      const total = sprites.length;
+      if (total === 0) return;
+      const timer = window.setInterval(() => {
+        setVisibleRouteCounts((prev) => {
+          const now = prev[carId] ?? 0;
+          if (now >= total) return prev;
+          return { ...prev, [carId]: now + 1 };
+        });
+      }, 90);
+      timers.push(timer);
+    });
+
+    return () => {
+      timers.forEach((t) => window.clearInterval(t));
+    };
+  }, [routeSprites]);
+
   const points = [
     { x: 0, y: 0 },
     { x: 1, y: 1 },
@@ -166,9 +285,6 @@ export const MapView = ({
     width: mapLayout.mapWidth || "100%",
     height: mapLayout.mapHeight || "100%",
   };
-
-  const buildRoutePoints = (route: { x: number; y: number }[]) =>
-    route.map((point) => `${point.x * 100},${point.y * 100}`).join(" ");
 
   return (
     <div className="map" style={mapStyle}>
@@ -268,41 +384,37 @@ export const MapView = ({
             );
           })}
 
-          {/* Route change arrows */}
-          {routeChanges.length > 0 && (
-            <svg
-              className="map__route-svg"
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              style={{ width: "100%", height: "100%" }}
-            >
-              <defs>
-                <marker
-                  id="arrow-new"
-                  markerWidth="8"
-                  markerHeight="8"
-                  refX="5"
-                  refY="3"
-                  orient="auto"
-                >
-                  <path d="M0,0 L0,6 L6,3 z" fill="var(--danger)" />
-                </marker>
-              </defs>
-              {routeChanges.map((change, idx) => {
-                const newPoints = buildRoutePoints(change.newRoute);
-                return (
-                  <g key={`${change.carId}-${idx}`}>
-                    {change.newRoute.length > 1 && (
-                      <polyline
-                        points={newPoints}
-                        className="map__route-line map__route-line--new"
-                        markerEnd="url(#arrow-new)"
-                      />
-                    )}
-                  </g>
-                );
-              })}
-            </svg>
+          {/* Route change sprites (PNG) */}
+          {routeSprites.length > 0 && (
+            <div className="map__route-layer">
+              {(() => {
+                const progress: Record<CarId, number> = {};
+                return routeSprites.map((sprite) => {
+                  const visibleCount = visibleRouteCounts[sprite.carId] ?? 0;
+                  const shownSoFar = progress[sprite.carId] ?? 0;
+                  if (shownSoFar >= visibleCount) return null;
+                  progress[sprite.carId] = shownSoFar + 1;
+                  const isArrow = sprite.kind === "arrow";
+                  const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                  const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                  return (
+                    <img
+                      key={sprite.id}
+                      src={imgSrc}
+                      alt={isArrow ? "route arrow" : "route segment"}
+                      className={isArrow ? "map__route-arrow" : "map__route-rect"}
+                      style={{
+                        left: `${sprite.x * 100}%`,
+                        top: `${sprite.y * 100}%`,
+                        width: `${size}px`,
+                        height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                        transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
+                      }}
+                    />
+                  );
+                });
+              })()}
+            </div>
           )}
         </div>
       </div>

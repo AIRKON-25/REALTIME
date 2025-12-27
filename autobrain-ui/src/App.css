@@ -466,6 +466,21 @@ body {
 
 .map__route-line--new {
   stroke: var(--danger);
+  stroke-dasharray: 18 12;
+}
+
+.map__route-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.map__route-rect,
+.map__route-arrow {
+  position: absolute;
+  transform-origin: center center;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.2));
 }
 
 /* Panels 공통 */
