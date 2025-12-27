@@ -32,6 +32,12 @@ from realtime.runtime_constants import (
     COLOR_BIAS_MIN_VOTES,
     PATH_REID_DIST_M,
     PATH_REID_YAW_DEG,
+    VELOCITY_DT_MAX,
+    VELOCITY_DT_MIN,
+    VELOCITY_EWMA_ALPHA,
+    VELOCITY_MAX_MPS,
+    VELOCITY_SPEED_WINDOW,
+    VELOCITY_ZERO_THRESH,
     vehicle_fixed_length,
     vehicle_fixed_width,
 )
@@ -122,6 +128,7 @@ class RealtimeServer:
         self.debug_assoc_logging = debug_assoc_logging
         self.log_pipeline = log_pipeline
         self.status_state = status_state
+        self._velocity_state: Dict[int, dict] = {}  # ext_id -> {cx, cy, ts, vx, vy, history}
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -282,6 +289,66 @@ class RealtimeServer:
             else:
                 cost += self._reid_color_penalty
         return cost, dist
+
+    def _update_velocity(self, ext_id: int, cx: float, cy: float, ts: float) -> Optional[Dict[str, float]]:
+        """
+        외부 ID 기준 위치 차분 + EMA로 속도를 계산한다. SORT 내부는 건드리지 않는다.
+        """
+        try:
+            cx = float(cx)
+            cy = float(cy)
+            ts = float(ts)
+        except Exception:
+            return None
+        state = self._velocity_state.get(ext_id)
+        if state is None:
+            self._velocity_state[ext_id] = {
+                "cx": cx,
+                "cy": cy,
+                "ts": ts,
+                "vx": 0.0,
+                "vy": 0.0,
+                "history": deque(maxlen=VELOCITY_SPEED_WINDOW),
+            }
+            return {"vx": 0.0, "vy": 0.0, "speed": 0.0}
+        dt = ts - float(state.get("ts", ts))
+        if dt < VELOCITY_DT_MIN:
+            speed = float(np.hypot(state.get("vx", 0.0), state.get("vy", 0.0)))
+            return {"vx": state.get("vx", 0.0), "vy": state.get("vy", 0.0), "speed": speed}
+        if dt > VELOCITY_DT_MAX:
+            self._velocity_state[ext_id] = {
+                "cx": cx,
+                "cy": cy,
+                "ts": ts,
+                "vx": 0.0,
+                "vy": 0.0,
+                "history": deque(maxlen=VELOCITY_SPEED_WINDOW),
+            }
+            return {"vx": 0.0, "vy": 0.0, "speed": 0.0}
+        raw_vx = (cx - float(state.get("cx", cx))) / max(dt, 1e-6)
+        raw_vy = (cy - float(state.get("cy", cy))) / max(dt, 1e-6)
+        alpha = float(VELOCITY_EWMA_ALPHA)
+        vx = alpha * raw_vx + (1.0 - alpha) * float(state.get("vx", 0.0))
+        vy = alpha * raw_vy + (1.0 - alpha) * float(state.get("vy", 0.0))
+        speed = float(np.hypot(vx, vy))
+        if VELOCITY_ZERO_THRESH > 0 and speed < VELOCITY_ZERO_THRESH:
+            vx = 0.0
+            vy = 0.0
+            speed = 0.0
+            hist = deque([0.0], maxlen=VELOCITY_SPEED_WINDOW)
+            self._velocity_state[ext_id] = {"cx": cx, "cy": cy, "ts": ts, "vx": vx, "vy": vy, "history": hist}
+            return {"vx": vx, "vy": vy, "speed": speed}
+        if VELOCITY_MAX_MPS > 0:
+            speed = float(min(speed, VELOCITY_MAX_MPS))
+        hist: deque = state.get("history")
+        if hist is None:
+            hist = deque(maxlen=VELOCITY_SPEED_WINDOW)
+        hist.append(speed)
+        smooth_speed = float(np.median(hist)) if hist else speed
+        if VELOCITY_ZERO_THRESH > 0 and smooth_speed < VELOCITY_ZERO_THRESH:
+            smooth_speed = 0.0
+        self._velocity_state[ext_id] = {"cx": cx, "cy": cy, "ts": ts, "vx": vx, "vy": vy, "history": hist}
+        return {"vx": vx, "vy": vy, "speed": smooth_speed}
 
     @staticmethod
     def _deg_diff(a: float, b: float) -> float:
@@ -721,10 +788,18 @@ class RealtimeServer:
         for idx, row in enumerate(tracks):
             internal_id = int(row[0])
             mapped[idx, 0] = float(id_map.get(internal_id, row[0]))
-        mapped_meta = {
-            id_map[int(row[0])]: self.track_meta.get(int(row[0]), {})
-            for row in tracks
-        }
+        mapped_meta: Dict[int, dict] = {}
+        for row in tracks:
+            internal_id = int(row[0])
+            ext_id = id_map.get(internal_id)
+            if ext_id is None:
+                continue
+            meta = dict(self.track_meta.get(internal_id, {}))
+            vel = self._update_velocity(ext_id, float(row[2]), float(row[3]), now)
+            if vel:
+                meta["velocity"] = [float(vel["vx"]), float(vel["vy"])]
+                meta["speed"] = float(vel["speed"])
+            mapped_meta[ext_id] = meta
         return mapped, mapped_meta
 
     def _build_cam_status_message(self, ts: float) -> dict:
@@ -974,6 +1049,7 @@ class RealtimeServer:
             obstacles_status,
             ts,
         )
+        incident_payload = None  # 현재는 별도 인시던트 정보 없음
         obstacle_snapshot = {
             "type": "obstacleStatus",
             "ts": ts,
@@ -1577,6 +1653,16 @@ class RealtimeServer:
 
             t0 = time.perf_counter()
             raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam","ts"}, ...]
+            frame_ts = now
+            if raw_dets:
+                ts_vals = []
+                for det in raw_dets:
+                    try:
+                        ts_vals.append(float(det.get("ts", now)))
+                    except Exception:
+                        continue
+                if ts_vals:
+                    frame_ts = float(sum(ts_vals) / len(ts_vals))
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
@@ -1584,7 +1670,7 @@ class RealtimeServer:
             t2 = time.perf_counter()
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
-            self._broadcast_tracks(tracks, now)
+            self._broadcast_tracks(tracks, frame_ts)
             self._prev_tracks_for_cluster = tracks.copy() if tracks is not None and len(tracks) else None
 
             if self.log_pipeline and self._should_log(): # 1초에 한번 로그
@@ -1592,7 +1678,7 @@ class RealtimeServer:
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
-                self._log_pipeline(stats, fused, tracks, now, timings)
+                self._log_pipeline(stats, fused, tracks, frame_ts, timings)
                 if self.last_cluster_debug:
                     print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
                 tracker_metrics = self.tracker.get_last_metrics()

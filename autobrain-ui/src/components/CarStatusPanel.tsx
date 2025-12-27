@@ -38,7 +38,6 @@ export const CarStatusPanel = ({
   scrollable,
   detailOnly,
 }: CarStatusPanelProps) => {
-  const latestCarsRef = useRef<CarStatus[]>(cars);
   const [speedById, setSpeedById] = useState<Record<CarId, number>>({});
   const sortedCars = useMemo(() => {
     return [...cars].sort((a, b) => {
@@ -52,21 +51,12 @@ export const CarStatusPanel = ({
   }, [cars]);
 
   useEffect(() => {
-    latestCarsRef.current = sortedCars;
+    const next: Record<CarId, number> = {};
+    sortedCars.forEach((car) => {
+      next[car.id] = car.speed;
+    });
+    setSpeedById(next);
   }, [sortedCars]);
-
-  useEffect(() => {
-    const updateSpeeds = () => {
-      const next: Record<CarId, number> = {};
-      latestCarsRef.current.forEach((car) => {
-        next[car.id] = car.speed;
-      });
-      setSpeedById(next);
-    };
-    updateSpeeds();
-    const timer = window.setInterval(updateSpeeds, 1000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   if (detailOnly) {
     const car = sortedCars.find((c) => c.id === selectedCarId) ?? sortedCars[0];
