@@ -160,18 +160,19 @@ const CarStatusCard = ({
           />
           <span className="car-card__id">ID : {car.id.replace("car-", "")}</span>
         </div>
-        <div className="car-card__metrics">
-          <div className="car-card__metric">
-            <img src="/assets/speed.png" alt="speed" className="car-card__metric-icon" />
-            <span className="car-card__metric-text">{speedText} m/s</span>
-          </div>
-          <div className="car-card__metric">
-            <img src="/assets/battery.png" alt="battery" className="car-card__metric-icon" />
-            <span className="car-card__metric-text">{car.battery}%</span>
-          </div>
-        </div>
-        {car.routeChanged && (
+        {car.routeChanged ? (
           <div className="car-card__route-changed">Route Changed!</div>
+        ) : (
+          <div className="car-card__metrics">
+            <div className="car-card__metric">
+              <img src="/assets/speed.png" alt="speed" className="car-card__metric-icon" />
+              <span className="car-card__metric-text">{speedText} m/s</span>
+            </div>
+            <div className="car-card__metric">
+              <img src="/assets/battery.png" alt="battery" className="car-card__metric-icon" />
+              <span className="car-card__metric-text">{car.battery}%</span>
+            </div>
+          </div>
         )}
         {detailed && (
           <div className="car-card__detail-extra">
