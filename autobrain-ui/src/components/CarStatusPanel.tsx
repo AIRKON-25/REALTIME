@@ -162,10 +162,6 @@ const CarStatusCard = ({
           <span className="car-card__speed">{speedText} m/s</span>
           <span className="car-card__battery">{car.battery}%</span>
         </div>
-        <div className="car-card__row car-card__row--labels">
-          <span>출발지</span>
-          <span>목적지</span>
-        </div>
         {car.routeChanged && (
           <div className="car-card__route-changed">Route Changed!</div>
         )}
