@@ -196,7 +196,7 @@ body {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.8fr) minmax(320px, 1.1fr);
+  grid-template-columns: minmax(0, 1fr) var(--layout-side-width, 555px);
   gap: 24px;
   padding: 0 40px 32px;
   align-items: stretch;
@@ -229,6 +229,7 @@ body {
   gap: 16px;
   min-width: 0;
   min-height: 0;
+  width: 100%;
 }
 
 .right-panels {
@@ -253,7 +254,6 @@ body {
     padding: 14px 24px;
   }
   .layout {
-    grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
     gap: 18px;
     padding: 0 24px 28px;
   }
