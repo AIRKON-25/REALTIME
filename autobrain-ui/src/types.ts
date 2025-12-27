@@ -7,10 +7,10 @@ export type CarColor = "red" | "green" | "blue" | "yellow" | "purple" | "white";
 export type TrafficLightSignal = "red" | "yellow" | "green" | "left";
 
 export type ViewMode =
-  | "default"          // 기본: 맵 + CarStatus
-  | "carFocused"       // 차량을 선택했을 때
-  | "cameraFocused"    // 카메라를 선택했을 때
-  | "incidentFocused"; // 장애물 알림을 볼 때
+  | "default"          // base: map + car status list
+  | "carFocused"       // a car is selected
+  | "cameraFocused"    // camera is selected
+  | "incidentFocused"; // incident (obstacle) is selected
 
 export interface MapObjectBase {
   id: string;
@@ -22,7 +22,6 @@ export interface CarOnMap extends MapObjectBase {
   carId: CarId;
   yaw: number; // degree
   color: CarColor;
-  // e.g. "default" | "routeChanged" | "alert" 로 확장 여지
   status: "normal" | "routeChanged";
 }
 
@@ -45,7 +44,7 @@ export interface ObstacleOnMap extends MapObjectBase {
 export interface ObstacleStatus {
   id: string;
   class: number;
-  cameraId?: CameraId;
+  cameraIds?: CameraId[];
 }
 
 export interface TrafficLightStatus {
@@ -59,7 +58,7 @@ export interface CarStatus {
   class?: number; // 1 => obstacle (rubber cone)
   speed: number; // m/s
   battery: number; // 0 ~ 100
-  cameraId?: CameraId; // 이 차량을 보고 있는 카메라
+  cameraIds?: CameraId[]; // cameras currently seeing this car
   routeChanged?: boolean;
 }
 
@@ -159,7 +158,6 @@ export interface AdminResponseMessage {
   ts?: number;
 }
 
-// 서버에서 오는 실시간 메시지 형태
 export type RealtimeMessage =
   | { type: "camStatus"; ts: number; data: CamStatusPacket }
   | { type: "carStatus"; ts: number; data: CarStatusPacket }

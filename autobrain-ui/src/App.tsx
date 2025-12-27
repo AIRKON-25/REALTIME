@@ -279,6 +279,14 @@ function App() {
     return map;
   }, [camerasStatus]);
 
+  const cameraPosById = useMemo(() => {
+    const map: Record<CameraId, { x: number; y: number }> = {};
+    camerasOnMap.forEach((cam) => {
+      map[cam.cameraId] = { x: cam.x, y: cam.y };
+    });
+    return map;
+  }, [camerasOnMap]);
+
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     routeFlashTimersRef.current = [];
@@ -364,20 +372,52 @@ function App() {
 
 // Monitoring에 실제로 띄울 카메라 선택 로직
   const monitoringCameraIds: CameraId[] = useMemo(() => {
+    const uniq = (ids?: CameraId[]) =>
+      Array.from(new Set((ids ?? []).filter((id): id is CameraId => Boolean(id))));
+
+    const nearestCamera = (candidates: CameraId[] | undefined, target?: { x: number; y: number }) => {
+      const ids = uniq(candidates);
+      if (!ids.length) return undefined;
+      if (!target) return ids[0];
+      let best: CameraId | undefined;
+      let bestDist = Number.POSITIVE_INFINITY;
+      ids.forEach((id) => {
+        const pos = cameraPosById[id];
+        if (!pos) return;
+        const dx = pos.x - target.x;
+        const dy = pos.y - target.y;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = id;
+        }
+      });
+      return best ?? ids[0];
+    };
+
     if (viewMode === "cameraFocused" && selectedCameraIds.length > 0) {
-      return Array.from(new Set(selectedCameraIds)).slice(0, 2);
+      return uniq(selectedCameraIds).slice(0, 2);
     }
+
     if (viewMode === "carFocused" && selectedCarId) {
-      const car = carsStatus.find((c) => c.id === selectedCarId);
-      if (car?.cameraId) return [car.cameraId];
-      return [];
+      const carStatus = carsStatus.find((c) => c.id === selectedCarId);
+      const carPos = carsOnMap.find((c) => c.carId === selectedCarId);
+      const cam = nearestCamera(carStatus?.cameraIds, carPos ? { x: carPos.x, y: carPos.y } : undefined);
+      return cam ? [cam] : [];
     }
+
     if (viewMode === "incidentFocused") {
-      const camId =
-        selectedIncident?.cameraId ||
-        obstaclesStatus.find((ob) => ob.cameraId)?.cameraId;
-      return camId ? [camId] : [];
+      const targetIncident = selectedIncident ?? obstaclesStatus.find((ob) => ob.cameraIds && ob.cameraIds.length);
+      const targetPos = targetIncident
+        ? obstaclesOnMap.find((ob) => ob.obstacleId === targetIncident.id || ob.id === targetIncident.id)
+        : undefined;
+      const cam = nearestCamera(
+        targetIncident?.cameraIds,
+        targetPos ? { x: targetPos.x, y: targetPos.y } : undefined
+      );
+      return cam ? [cam] : [];
     }
+
     return [];
   }, [
     viewMode,
@@ -387,6 +427,9 @@ function App() {
     obstaclesStatus,
     carsStatus,
     camerasStatus,
+    carsOnMap,
+    obstaclesOnMap,
+    cameraPosById,
   ]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {

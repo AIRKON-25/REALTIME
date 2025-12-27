@@ -718,6 +718,28 @@ class RealtimeServer:
         return cam_str
 
     @staticmethod
+    def _normalize_camera_ids(cam_vals: Optional[object]) -> List[str]:
+        if cam_vals is None:
+            return []
+        if isinstance(cam_vals, (list, tuple, set, deque)):
+            candidates = cam_vals
+        else:
+            candidates = [cam_vals]
+        normalized: List[str] = []
+        for cam_val in candidates:
+            cid = RealtimeServer._normalize_camera_id(cam_val)
+            if cid:
+                normalized.append(cid)
+        seen = set()
+        unique_ids: List[str] = []
+        for cid in normalized:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            unique_ids.append(cid)
+        return unique_ids
+
+    @staticmethod
     def _obstacle_kind(cls: int) -> str:
         if cls == 2:
             return "barricade"
@@ -808,8 +830,7 @@ class RealtimeServer:
 
                 if cls == 0:
                     source_cams = meta.get("source_cams") or []
-                    cam_val = source_cams[0] if source_cams else None
-                    camera_id = self._normalize_camera_id(cam_val)
+                    camera_ids = self._normalize_camera_ids(source_cams)
                     car_id = f"car-{tid}"
                     map_id = f"mcar-{tid}"
                     cars_on_map.append({
@@ -829,14 +850,13 @@ class RealtimeServer:
                         "battery": 100,
                         "fromLabel": "-",
                         "toLabel": "-",
-                        "cameraId": camera_id,
+                        "cameraIds": camera_ids,
                         "routeChanged": False,
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
                     source_cams = meta.get("source_cams") or []
-                    cam_val = source_cams[0] if source_cams else None
-                    camera_id = self._normalize_camera_id(cam_val)
+                    camera_ids = self._normalize_camera_ids(source_cams)
                     obstacles_on_map.append({
                         "id": obstacle_id,
                         "obstacleId": obstacle_id,
@@ -847,7 +867,7 @@ class RealtimeServer:
                     obstacles_status.append({
                         "id": obstacle_id,
                         "class": cls,
-                        "cameraId": camera_id,
+                        "cameraIds": camera_ids,
                     })
 
         messages.append({

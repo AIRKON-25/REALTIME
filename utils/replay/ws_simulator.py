@@ -55,7 +55,7 @@ def build_car_message(ts: float) -> dict:
                 "battery": 95 - idx * 5,
                 "fromLabel": "Origin",
                 "toLabel": "Destination",
-                "cameraId": "cam-1" if idx == 0 else None,
+                "cameraIds": ["cam-1"] if idx == 0 else [],
                 "routeChanged": False,
             }
         )
@@ -83,7 +83,7 @@ def build_obstacle_upsert(ts: float) -> dict:
     status = {
         "id": OBSTACLE_ID,
         "class": cls,
-        "cameraId": "cam-2",
+        "cameraIds": ["cam-2"],
     }
     return {
         "type": "obstacleStatus",
