@@ -4,21 +4,20 @@ import type { ViewMode } from "../types";
 
 interface LayoutProps {
   viewMode: ViewMode;
-  hasIncident: boolean;
   children: ReactNode;
 }
 
 export const Layout = ({
   viewMode,
-  hasIncident,
   children,
 }: LayoutProps) => {
   const [mapArea, rightPanels] = Array.isArray(children) ? children : [children];
 
   const layoutClass = `layout layout--${viewMode}`;
+  const sideWidth = viewMode === "default" ? 277 : 630;
 
   return (
-    <main className={layoutClass}>
+    <main className={layoutClass} style={{ ["--layout-side-width" as const]: `${sideWidth}px` }}>
       <section className="layout__map">
         {mapArea}
       </section>

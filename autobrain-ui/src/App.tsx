@@ -5,7 +5,6 @@ import type {
   CameraId,
   CarId,
   CarColor,
-  IncidentId,
   ViewMode,
   MonitorState,
   RealtimeMessage,
@@ -13,7 +12,7 @@ import type {
   CarStatusPacket,
   ObstacleStatusPacket,
   RouteChangePacket,
-  CarRouteChange,
+  TrafficLightStatusPacket,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -38,14 +37,15 @@ const emptyState: MonitorState = {
   camerasStatus: [],
   obstaclesOnMap: [],
   obstaclesStatus: [],
-  incident: null,
   routeChanges: [],
+  trafficLightsOnMap: [],
+  trafficLightsStatus: [],
 };
 
 const mergeByKey = <T,>(
   prev: T[],
   upserts: T[] | undefined,
-  deletes: string[] | undefined,
+  deletes: (string | number)[] | undefined,
   keyFn: (item: T) => string
 ): T[] => {
   if ((!upserts || upserts.length === 0) && (!deletes || deletes.length === 0)) {
@@ -53,7 +53,7 @@ const mergeByKey = <T,>(
   }
   const byKey = new Map(prev.map((item) => [keyFn(item), item]));
   if (deletes) {
-    deletes.forEach((id) => byKey.delete(id));
+    deletes.forEach((id) => byKey.delete(id.toString()));
   }
   if (upserts) {
     upserts.forEach((item) => byKey.set(keyFn(item), item));
@@ -87,7 +87,6 @@ const applyObstacleStatus = (
   prev: MonitorState,
   data: ObstacleStatusPacket
 ): MonitorState => {
-  let next = prev;
   if (data.mode === "delta") {
     const obstaclesOnMap = mergeByKey(
       prev.obstaclesOnMap,
@@ -101,71 +100,66 @@ const applyObstacleStatus = (
       data.statusDeletes,
       (item) => item.id
     );
-    next = { ...prev, obstaclesOnMap, obstaclesStatus };
-  } else {
-    next = {
-      ...prev,
-      obstaclesOnMap: data.obstaclesOnMap,
-      obstaclesStatus: data.obstaclesStatus ?? prev.obstaclesStatus,
-    };
+    return { ...prev, obstaclesOnMap, obstaclesStatus };
   }
-  if (Object.prototype.hasOwnProperty.call(data, "incident")) {
-    const incident = data.incident ?? null;
-    return { ...next, incident };
-  }
-  return next;
-};
-
-const deriveRouteChanges = (
-  steps: RouteChangePacket["steps"]
-): CarRouteChange[] => {
-  if (!steps || steps.length === 0) {
-    return [];
-  }
-  return steps.map((step) => ({
-    carId: step.carId,
-    newRoute: [step.from, step.to],
-  }));
+  const obstaclesOnMap = data.obstaclesOnMap;
+  const obstaclesStatus = data.obstaclesStatus ?? prev.obstaclesStatus;
+  return { ...prev, obstaclesOnMap, obstaclesStatus };
 };
 
 const applyRouteChange = (
   prev: MonitorState,
   data: RouteChangePacket
 ): MonitorState => {
-  if (data.changes && data.changes.length > 0) {
-    return { ...prev, routeChanges: data.changes };
+  const changes = data.changes ?? [];
+  return { ...prev, routeChanges: changes };
+};
+
+const applyTrafficLightStatus = (
+  prev: MonitorState,
+  data: TrafficLightStatusPacket
+): MonitorState => {
+  if (data.mode === "delta") {
+    const trafficLightsOnMap = mergeByKey(
+      prev.trafficLightsOnMap,
+      data.trafficLightsOnMapUpserts,
+      data.trafficLightsOnMapDeletes,
+      (item) => item.trafficLightId.toString()
+    );
+    const trafficLightsStatus = mergeByKey(
+      prev.trafficLightsStatus,
+      data.trafficLightsStatusUpserts,
+      data.trafficLightsStatusDeletes,
+      (item) => item.trafficLightId.toString()
+    );
+    return { ...prev, trafficLightsOnMap, trafficLightsStatus };
   }
-  return { ...prev, routeChanges: deriveRouteChanges(data.steps) };
+  return {
+    ...prev,
+    trafficLightsOnMap: data.trafficLightsOnMap,
+    trafficLightsStatus: data.trafficLightsStatus,
+  };
 };
 
 function App() {
   // 🔹 서버에서 오는 전체 상태
+  const isAdminPage = window.location.pathname === "/admin";
   const [serverState, setServerState] = useState<MonitorState>(emptyState);
   const [hasCamStatus, setHasCamStatus] = useState<boolean>(false);
   const [appMode, setAppMode] = useState<AppMode>(() =>
-    window.location.hash === "#admin" ? "admin" : "monitor"
+    isAdminPage ? "admin" : "monitor"
   );
 
-  useEffect(() => {
-    const syncMode = () => {
-      setAppMode(window.location.hash === "#admin" ? "admin" : "monitor");
-    };
-    window.addEventListener("hashchange", syncMode);
-    return () => window.removeEventListener("hashchange", syncMode);
-  }, []);
-
   const handleModeChange = (mode: AppMode) => {
+    if (!isAdminPage) return;
     setAppMode(mode);
-    window.location.hash = mode === "admin" ? "#admin" : "";
   };
 
   // 🔹 뷰 모드 관련 상태 (사용자 인터랙션용)
   const [viewMode, setViewMode] = useState<ViewMode>("default");
   const [selectedCarId, setSelectedCarId] = useState<CarId | null>(null);
   const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
-  const [activeIncidentId, setActiveIncidentId] = useState<IncidentId | null>(
-    null
-  );
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
   const routeFlashTimersRef = useRef<number[]>([]);
 
@@ -199,6 +193,8 @@ function App() {
                 };
               case "carStatus":
                 return applyCarStatus(prev, msg.data);
+              case "trafficLightStatus":
+                return applyTrafficLightStatus(prev, msg.data);
               case "obstacleStatus":
                 return applyObstacleStatus(prev, msg.data);
               case "carRouteChange":
@@ -242,8 +238,18 @@ function App() {
   const camerasOnMap = serverState.camerasOnMap;
   const camerasStatus = serverState.camerasStatus;
   const obstaclesOnMap = serverState.obstaclesOnMap;
-  const incident = serverState.incident;
+  const obstaclesStatus = serverState.obstaclesStatus;
   const routeChanges = serverState.routeChanges;
+  const selectedIncident = useMemo(
+    () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
+    [obstaclesStatus, selectedIncidentId]
+  );
+
+  useEffect(() => {
+    if (selectedIncidentId && !selectedIncident) {
+      setSelectedIncidentId(null);
+    }
+  }, [selectedIncidentId, selectedIncident]);
 
   const carColorById = useMemo(() => {
     const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
@@ -265,8 +271,21 @@ function App() {
     return map;
   }, [carsOnMap, carsStatus]);
 
-  const isIncidentActive =
-    !!incident && activeIncidentId === incident.id;
+  const cameraNameById = useMemo(() => {
+    const map: Record<CameraId, string> = {};
+    camerasStatus.forEach((cam) => {
+      map[cam.id] = cam.name;
+    });
+    return map;
+  }, [camerasStatus]);
+
+  const cameraPosById = useMemo(() => {
+    const map: Record<CameraId, { x: number; y: number }> = {};
+    camerasOnMap.forEach((cam) => {
+      map[cam.cameraId] = { x: cam.x, y: cam.y };
+    });
+    return map;
+  }, [camerasOnMap]);
 
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -291,16 +310,16 @@ function App() {
   //  2) 뷰 모드 계산
   // ===========================
   useEffect(() => {
-    if (isIncidentActive) {
-      setViewMode("incidentFocused");
-    } else if (selectedCarId) {
+    if (selectedCarId) {
       setViewMode("carFocused");
     } else if (selectedCameraIds.length > 0) {
       setViewMode("cameraFocused");
+    } else if (selectedIncidentId) {
+      setViewMode("incidentFocused");
     } else {
       setViewMode("default");
     }
-  }, [isIncidentActive, selectedCarId, selectedCameraIds]);
+  }, [selectedCarId, selectedIncidentId, selectedCameraIds]);
 
   // ===========================
   //  3) 클릭 핸들러들
@@ -311,11 +330,13 @@ function App() {
       return;
     }
     setSelectedCarId(carId);
+    setSelectedIncidentId(null);
     setSelectedCameraIds([]);
   };
 
   const handleCameraClick = (cameraId: CameraId) => {
     setSelectedCarId(null);
+    setSelectedIncidentId(null);
     setSelectedCameraIds((prev) => {
       if (prev.includes(cameraId)) {
         return prev.filter((id) => id !== cameraId);
@@ -327,24 +348,20 @@ function App() {
     });
   };
 
-  const handleIncidentClick = () => {
-    if (!incident) return;
-    if (isIncidentActive) {
-      setActiveIncidentId(null);
+  const handleIncidentClick = (incidentId: string | null) => {
+    if (!incidentId || selectedIncidentId === incidentId) {
+      setSelectedIncidentId(null);
     } else {
-      setActiveIncidentId(incident.id);
+      setSelectedIncidentId(incidentId);
     }
+    setSelectedCarId(null);
+    setSelectedCameraIds([]);
   };
 
-  // Incident가 비추는 영역에 있는 차량들
+  // 장애물 알림 시 보여줄 차량 목록 (현재는 전체 차량)
   const carsStatusForPanel = useMemo(() => carsStatus, [carsStatus]);
 
-  const vehiclesInIncidentView = useMemo(() => {
-    if (!incident?.relatedCarIds) return [];
-    return carsStatusForPanel.filter((car) =>
-      incident.relatedCarIds!.includes(car.id)
-    );
-  }, [incident, carsStatusForPanel]);
+  const vehiclesInAlertView = useMemo(() => carsStatusForPanel, [carsStatusForPanel]);
 
   const visibleRouteChanges = useMemo(() => {
     if (routeFlashPhase === "new") {
@@ -355,13 +372,78 @@ function App() {
 
 // Monitoring에 실제로 띄울 카메라 선택 로직
   const monitoringCameraIds: CameraId[] = useMemo(() => {
-    if (selectedCameraIds.length > 0) {
-      return Array.from(new Set(selectedCameraIds)).slice(0, 2);
+    const uniq = (ids?: CameraId[]) =>
+      Array.from(new Set((ids ?? []).filter((id): id is CameraId => Boolean(id))));
+
+    const nearestCamera = (
+      candidates: CameraId[] | undefined,
+      target?: { x: number; y: number },
+      allowFallbackToAll = false
+    ) => {
+      let ids = uniq(candidates);
+      if (allowFallbackToAll && ids.length === 0) {
+        ids = uniq(camerasOnMap.map((c) => c.cameraId));
+      }
+      if (!ids.length) return undefined;
+      if (!target) return ids[0];
+      let best: CameraId | undefined;
+      let bestDist = Number.POSITIVE_INFINITY;
+      ids.forEach((id) => {
+        const pos = cameraPosById[id];
+        if (!pos) return;
+        const dx = pos.x - target.x;
+        const dy = pos.y - target.y;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = id;
+        }
+      });
+      return best ?? ids[0];
+    };
+
+    if (viewMode === "cameraFocused" && selectedCameraIds.length > 0) {
+      return uniq(selectedCameraIds).slice(0, 2);
     }
-    if (incident?.cameraId && isIncidentActive) return [incident.cameraId];
-    const car = carsStatus.find((c) => c.id === selectedCarId);
-    return car?.cameraId ? [car.cameraId] : [];
-  }, [selectedCameraIds, incident, isIncidentActive, selectedCarId, carsStatus]);
+
+    if (viewMode === "carFocused" && selectedCarId) {
+      const carStatus = carsStatus.find((c) => c.id === selectedCarId);
+      const carPos = carsOnMap.find((c) => c.carId === selectedCarId);
+      const cam = nearestCamera(
+        carStatus?.cameraIds,
+        carPos ? { x: carPos.x, y: carPos.y } : undefined,
+        true
+      );
+      return cam ? [cam] : [];
+    }
+
+    if (viewMode === "incidentFocused") {
+      const targetIncident = selectedIncident ?? obstaclesStatus.find((ob) => ob.cameraIds && ob.cameraIds.length);
+      const targetPos = targetIncident
+        ? obstaclesOnMap.find((ob) => ob.obstacleId === targetIncident.id || ob.id === targetIncident.id)
+        : undefined;
+      const cam = nearestCamera(
+        targetIncident?.cameraIds,
+        targetPos ? { x: targetPos.x, y: targetPos.y } : undefined,
+        true
+      );
+      return cam ? [cam] : [];
+    }
+
+    return [];
+  }, [
+    viewMode,
+    selectedCameraIds,
+    selectedCarId,
+    selectedIncident,
+    obstaclesStatus,
+    carsStatus,
+    camerasStatus,
+    carsOnMap,
+    obstaclesOnMap,
+    cameraPosById,
+    camerasOnMap,
+  ]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
@@ -371,15 +453,46 @@ function App() {
       .filter((cam): cam is CameraStatus => !!cam);
   }, [monitoringCameraIds, camerasStatus]);
 
+  const monitoringFrames = useMemo(() => {
+    if (monitoringCameraIds.length === 0) return [];
+
+    if (viewMode === "incidentFocused") {
+      const cam = monitoringCameras[0];
+      if (cam) {
+        return [{ label: cam.name || cam.id, url: cam.streamUrl }];
+      }
+      return [];
+    }
+
+    if (viewMode === "cameraFocused") {
+      if (monitoringCameras.length === 1) {
+        const cam = monitoringCameras[0];
+        const labelBase = cam.name || cam.id;
+        return [
+          { label: `${labelBase} (Main)`, url: cam.streamUrl },
+          { label: `${labelBase} (BEV)`, url: cam.streamBEVUrl || cam.streamUrl },
+        ];
+      }
+      return monitoringCameras.slice(0, 2).map((cam, idx) => ({
+        label: `${cam.name || cam.id} (Cam ${idx})`,
+        url: cam.streamUrl,
+      }));
+    }
+
+    return monitoringCameras.slice(0, 2).map((cam) => ({
+      label: cam.name || cam.id,
+      url: cam.streamUrl,
+    }));
+  }, [monitoringCameraIds, monitoringCameras, viewMode]);
+
 
   const isLoading = !hasCamStatus;
 
   return (
     <div className="app-root">
-      <Header mode={appMode} onModeChange={handleModeChange} />
+      <Header mode={appMode} onModeChange={handleModeChange} adminEnabled={isAdminPage} />
       <Layout
         viewMode={viewMode}
-        hasIncident={!!incident}
       >
         {/* LEFT: MAP */}
         <div className="layout__map-inner">
@@ -395,7 +508,6 @@ function App() {
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
-            onCarClick={handleCarClick}
             onCameraClick={handleCameraClick}
           />
         </div>
@@ -431,7 +543,7 @@ function App() {
 
               {viewMode === "carFocused" && selectedCarId && (
                 <CarStatusPanel
-                  cars={carsStatusForPanel}
+                  cars={carsStatusForPanel.filter((c) => c.id === selectedCarId)}
                   carColorById={carColorById}
                   selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}
@@ -439,41 +551,32 @@ function App() {
                 />
               )}
 
-              {viewMode === "incidentFocused" && selectedCarId && (
-                <CarStatusPanel
-                  cars={vehiclesInIncidentView}
-                  selectedCarId={selectedCarId}
-                  onCarClick={handleCarClick}
-                  detailOnly
-                />
-              )}
-
-              {viewMode === "incidentFocused" &&
-                !selectedCarId &&
-                vehiclesInIncidentView.length > 0 && (
-                  <CarStatusPanel
-                    cars={vehiclesInIncidentView}
-                    carColorById={carColorById}
-                    selectedCarId={null}
-                    onCarClick={handleCarClick}
-                    scrollable
-                  />
-                )}
-
               {/* Incident */}
-              {(viewMode === "default" || viewMode === "incidentFocused") && (
+              {obstaclesStatus.length > 0 &&
+                viewMode !== "carFocused" &&
+                viewMode !== "cameraFocused" && (
                 <IncidentPanel
-                  incident={incident}
-                  isActive={isIncidentActive}
-                  onClick={handleIncidentClick}
+                  alerts={
+                    viewMode === "incidentFocused" && selectedIncidentId
+                      ? obstaclesStatus.filter((ob) => ob.id === selectedIncidentId)
+                      : obstaclesStatus
+                  }
+                  cameraNames={cameraNameById}
+                  isActive={obstaclesStatus.length > 0}
+                  onSelect={handleIncidentClick}
                 />
               )}
 
               {/* Monitoring View */}
-              {(viewMode === "cameraFocused" ||
-                viewMode === "carFocused" ||
-                viewMode === "incidentFocused") && (
-                  <MonitoringPanel cameras={monitoringCameras} />
+              {viewMode === "cameraFocused" && monitoringFrames.length > 0 && (
+                <MonitoringPanel frames={monitoringFrames} />
+              )}
+              {viewMode === "carFocused" && monitoringFrames.length > 0 && (
+                <MonitoringPanel frames={monitoringFrames} />
+              )}
+              {viewMode === "incidentFocused" &&
+                monitoringFrames.length > 0 && (
+                  <MonitoringPanel frames={monitoringFrames} />
                 )}
             </>
           )}

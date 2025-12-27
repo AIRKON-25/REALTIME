@@ -153,6 +153,16 @@ class RealtimeServer:
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
         ]
+        self._ui_traffic_lights_on_map = [
+            {"id": "tl-1", "trafficLightId": 1, "x": 0.50, "y": -0.02, "yaw": 0.0},
+            {"id": "tl-2", "trafficLightId": 2, "x": 0.50, "y": 1.02, "yaw": 180.0},
+        ]
+        self._ui_traffic_light_status = {
+            int(item["trafficLightId"]): {"trafficLightId": int(item["trafficLightId"]), "light": "red"}
+            for item in self._ui_traffic_lights_on_map
+        }
+        self._ui_traffic_light_map: Dict[str, dict] = {}
+        self._ui_traffic_light_status_cache: Dict[int, dict] = {}
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
         self._ui_obstacle_status_map: Dict[str, dict] = {}
@@ -727,12 +737,96 @@ class RealtimeServer:
             },
         }
 
+    def _build_traffic_light_status_message(self, ts: float) -> Optional[dict]:
+        current_map = {str(item["trafficLightId"]): item for item in self._ui_traffic_lights_on_map}
+        current_status = {int(tid): status for tid, status in self._ui_traffic_light_status.items()}
+
+        if not self._ui_traffic_light_map and not self._ui_traffic_light_status_cache:
+            self._ui_traffic_light_map = current_map
+            self._ui_traffic_light_status_cache = current_status
+            return {
+                "type": "trafficLightStatus",
+                "ts": ts,
+                "data": {
+                    "mode": "snapshot",
+                    "trafficLightsOnMap": list(current_map.values()),
+                    "trafficLightsStatus": list(current_status.values()),
+                },
+            }
+
+        upserts = [
+            item
+            for tid, item in current_map.items()
+            if self._ui_traffic_light_map.get(tid) != item
+        ]
+        deletes = [tid for tid in self._ui_traffic_light_map.keys() if tid not in current_map]
+        status_upserts = [
+            item
+            for tid, item in current_status.items()
+            if self._ui_traffic_light_status_cache.get(tid) != item
+        ]
+        status_deletes = [
+            tid for tid in self._ui_traffic_light_status_cache.keys()
+            if tid not in current_status
+        ]
+
+        if not (upserts or deletes or status_upserts or status_deletes):
+            return None
+
+        self._ui_traffic_light_map = current_map
+        self._ui_traffic_light_status_cache = current_status
+
+        data: Dict[str, object] = {"mode": "delta"}
+        if upserts:
+            data["trafficLightsOnMapUpserts"] = upserts
+        if deletes:
+            data["trafficLightsOnMapDeletes"] = [int(tid) for tid in deletes]
+        if status_upserts:
+            data["trafficLightsStatusUpserts"] = status_upserts
+        if status_deletes:
+            data["trafficLightsStatusDeletes"] = [int(tid) for tid in status_deletes]
+
+        return {"type": "trafficLightStatus", "ts": ts, "data": data}
+
     @staticmethod
     def _normalize_car_color(label: Optional[str]) -> str:
         allowed = {"red", "green", "blue", "yellow", "purple", "white"}
         if label in allowed:
             return label
         return "red"
+
+    @staticmethod
+    def _normalize_camera_id(cam_val: Optional[object]) -> Optional[str]:
+        if cam_val is None:
+            return None
+        cam_str = str(cam_val)
+        if cam_str.startswith("cam-"):
+            return cam_str
+        if cam_str.startswith("cam") and len(cam_str) > 3:
+            return f"cam-{cam_str[3:]}"
+        return cam_str
+
+    @staticmethod
+    def _normalize_camera_ids(cam_vals: Optional[object]) -> List[str]:
+        if cam_vals is None:
+            return []
+        if isinstance(cam_vals, (list, tuple, set, deque)):
+            candidates = cam_vals
+        else:
+            candidates = [cam_vals]
+        normalized: List[str] = []
+        for cam_val in candidates:
+            cid = RealtimeServer._normalize_camera_id(cam_val)
+            if cid:
+                normalized.append(cid)
+        seen = set()
+        unique_ids: List[str] = []
+        for cid in normalized:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            unique_ids.append(cid)
+        return unique_ids
 
     @staticmethod
     def _obstacle_kind(cls: int) -> str:
@@ -745,7 +839,6 @@ class RealtimeServer:
         obstacles_on_map: List[dict],
         obstacles_status: List[dict],
         ts: float,
-        incident: Optional[dict],
     ) -> Optional[dict]:
         current_map = {item["obstacleId"]: item for item in obstacles_on_map}
         current_status = {item["id"]: item for item in obstacles_status}
@@ -771,7 +864,7 @@ class RealtimeServer:
         self._ui_obstacle_map = current_map
         self._ui_obstacle_status_map = current_status
 
-        data: Dict[str, object] = {"mode": "delta", "incident": incident}
+        data: Dict[str, object] = {"mode": "delta"}
         if upserts:
             data["upserts"] = upserts
         if deletes:
@@ -791,12 +884,19 @@ class RealtimeServer:
     ) -> List[dict]:
         messages: List[dict] = []
 
+        traffic_light_msg = self._build_traffic_light_status_message(ts)
+
         if self._ui_cam_status is None:
             cam_msg = self._build_cam_status_message(ts)
             self._ui_cam_status = cam_msg
+            initial_messages = [cam_msg]
+            if traffic_light_msg:
+                initial_messages.append(traffic_light_msg)
             if self.ws_hub:
-                self.ws_hub.set_initial_messages([cam_msg])
-            messages.append(cam_msg)
+                self.ws_hub.set_initial_messages(initial_messages)
+            messages.extend(initial_messages)
+        elif traffic_light_msg:
+            messages.append(traffic_light_msg)
 
         cars_on_map: List[dict] = []
         cars_status: List[dict] = []
@@ -818,6 +918,8 @@ class RealtimeServer:
                 x_norm, y_norm = self._world_to_map_xy(cx, cy)
 
                 if cls == 0:
+                    source_cams = meta.get("source_cams") or []
+                    camera_ids = self._normalize_camera_ids(source_cams)
                     car_id = f"car-{tid}"
                     map_id = f"mcar-{tid}"
                     cars_on_map.append({
@@ -837,11 +939,13 @@ class RealtimeServer:
                         "battery": 100,
                         "fromLabel": "-",
                         "toLabel": "-",
-                        "cameraId": None,
+                        "cameraIds": camera_ids,
                         "routeChanged": False,
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
+                    source_cams = meta.get("source_cams") or []
+                    camera_ids = self._normalize_camera_ids(source_cams)
                     obstacles_on_map.append({
                         "id": obstacle_id,
                         "obstacleId": obstacle_id,
@@ -852,7 +956,7 @@ class RealtimeServer:
                     obstacles_status.append({
                         "id": obstacle_id,
                         "class": cls,
-                        "cameraId": None,
+                        "cameraIds": camera_ids,
                     })
 
         messages.append({
@@ -865,22 +969,10 @@ class RealtimeServer:
             },
         })
 
-        incident_payload = None
-        if obstacles_on_map:
-            primary = obstacles_on_map[0]
-            incident_payload = {
-                "id": f"inc-{primary['obstacleId']}",
-                "title": "[Obstacle]",
-                "description": "Obstacle detected",
-                "obstacle": primary,
-                "cameraId": None,
-            }
-
         obstacle_msg = self._build_obstacle_delta_message(
             obstacles_on_map,
             obstacles_status,
             ts,
-            incident_payload,
         )
         obstacle_snapshot = {
             "type": "obstacleStatus",

@@ -1,5 +1,5 @@
 // components/CarStatusPanel.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CarColor, CarId, CarStatus } from "../types";
 
 const normalizeCarColor = (
@@ -10,6 +10,15 @@ const normalizeCarColor = (
   const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
   if (allowed.includes(normalized as CarColor)) return normalized as CarColor;
   return fallback;
+};
+
+const getIdOrder = (id: string): number | string => {
+  const match = id.match(/(\d+(?:\.\d+)?)/);
+  if (match) {
+    const num = Number(match[1]);
+    if (Number.isFinite(num)) return num;
+  }
+  return id;
 };
 
 interface CarStatusPanelProps {
@@ -31,10 +40,20 @@ export const CarStatusPanel = ({
 }: CarStatusPanelProps) => {
   const latestCarsRef = useRef<CarStatus[]>(cars);
   const [speedById, setSpeedById] = useState<Record<CarId, number>>({});
+  const sortedCars = useMemo(() => {
+    return [...cars].sort((a, b) => {
+      const aOrder = getIdOrder(a.id);
+      const bOrder = getIdOrder(b.id);
+      if (typeof aOrder === "number" && typeof bOrder === "number") {
+        return aOrder - bOrder;
+      }
+      return aOrder.toString().localeCompare(bOrder.toString());
+    });
+  }, [cars]);
 
   useEffect(() => {
-    latestCarsRef.current = cars;
-  }, [cars]);
+    latestCarsRef.current = sortedCars;
+  }, [sortedCars]);
 
   useEffect(() => {
     const updateSpeeds = () => {
@@ -50,7 +69,7 @@ export const CarStatusPanel = ({
   }, []);
 
   if (detailOnly) {
-    const car = cars.find((c) => c.id === selectedCarId) ?? cars[0];
+    const car = sortedCars.find((c) => c.id === selectedCarId) ?? sortedCars[0];
     if (!car) return null;
     return (
       <section className="panel panel--card">
@@ -73,7 +92,7 @@ export const CarStatusPanel = ({
       <div
         className={`car-list ${scrollable ? "car-list--scrollable" : ""}`}
       >
-        {cars.map((car) => (
+        {sortedCars.map((car) => (
           <CarStatusCard
             key={car.id}
             car={car}
@@ -83,7 +102,7 @@ export const CarStatusPanel = ({
             onClick={onCarClick}
           />
         ))}
-        {cars.length === 0 && (
+        {sortedCars.length === 0 && (
           <div className="panel__empty">No vehicles detected</div>
         )}
       </div>
@@ -113,6 +132,13 @@ const CarStatusCard = ({
   const safeColor = normalizeCarColor(statusColor ?? mappedColor, "red")!;
   const speedValue = speedById?.[car.id] ?? car.speed;
   const speedText = speedValue.toFixed(2);
+  const isRouteChanged = !!car.routeChanged;
+  const primarySrc = isRouteChanged
+    ? `/assets/carS-${safeColor}-warning.svg`
+    : `/assets/carS-${safeColor}.svg`;
+  const fallbackSrc = isRouteChanged
+    ? `/assets/carS-${safeColor}.svg`
+    : "/assets/carS-red.svg";
 
   return (
     <button
@@ -121,27 +147,32 @@ const CarStatusCard = ({
       }`}
       onClick={() => onClick?.(car.id)}
     >
-      <img
-        src={`/assets/carS-${safeColor}.png`}
-        alt={`${car.id} icon`}
-        className="car-card__icon"
-        onError={(e) => {
-          if (e.currentTarget.src.endsWith("/assets/carS-red.png")) return;
-          e.currentTarget.src = "/assets/carS-red.png";
-        }}
-      />
       <div className="car-card__body">
-        <div className="car-card__row">
+        <div className="car-card__info">
+          <img
+            src={primarySrc}
+            alt={`${car.id} icon`}
+            className="car-card__icon"
+            onError={(e) => {
+              if (e.currentTarget.src === fallbackSrc) return;
+              e.currentTarget.src = fallbackSrc;
+            }}
+          />
           <span className="car-card__id">ID : {car.id.replace("car-", "")}</span>
-          <span className="car-card__speed">{speedText} m/s</span>
-          <span className="car-card__battery">{car.battery}%</span>
         </div>
-        <div className="car-card__row car-card__row--labels">
-          <span>출발지</span>
-          <span>목적지</span>
-        </div>
-        {car.routeChanged && (
+        {car.routeChanged ? (
           <div className="car-card__route-changed">Route Changed!</div>
+        ) : (
+          <div className="car-card__metrics">
+            <div className="car-card__metric">
+              <img src="/assets/speed.png" alt="speed" className="car-card__metric-icon" />
+              <span className="car-card__metric-text">{speedText} m/s</span>
+            </div>
+            <div className="car-card__metric">
+              <img src="/assets/battery.png" alt="battery" className="car-card__metric-icon" />
+              <span className="car-card__metric-text">{car.battery}%</span>
+            </div>
+          </div>
         )}
         {detailed && (
           <div className="car-card__detail-extra">
