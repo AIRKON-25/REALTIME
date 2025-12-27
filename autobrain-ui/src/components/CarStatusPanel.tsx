@@ -147,20 +147,28 @@ const CarStatusCard = ({
       }`}
       onClick={() => onClick?.(car.id)}
     >
-      <img
-        src={primarySrc}
-        alt={`${car.id} icon`}
-        className="car-card__icon"
-        onError={(e) => {
-          if (e.currentTarget.src === fallbackSrc) return;
-          e.currentTarget.src = fallbackSrc;
-        }}
-      />
       <div className="car-card__body">
-        <div className="car-card__row">
+        <div className="car-card__info">
+          <img
+            src={primarySrc}
+            alt={`${car.id} icon`}
+            className="car-card__icon"
+            onError={(e) => {
+              if (e.currentTarget.src === fallbackSrc) return;
+              e.currentTarget.src = fallbackSrc;
+            }}
+          />
           <span className="car-card__id">ID : {car.id.replace("car-", "")}</span>
-          <span className="car-card__speed">{speedText} m/s</span>
-          <span className="car-card__battery">{car.battery}%</span>
+        </div>
+        <div className="car-card__metrics">
+          <div className="car-card__metric">
+            <img src="/assets/speed.png" alt="speed" className="car-card__metric-icon" />
+            <span className="car-card__metric-text">{speedText} m/s</span>
+          </div>
+          <div className="car-card__metric">
+            <img src="/assets/battery.png" alt="battery" className="car-card__metric-icon" />
+            <span className="car-card__metric-text">{car.battery}%</span>
+          </div>
         </div>
         {car.routeChanged && (
           <div className="car-card__route-changed">Route Changed!</div>
