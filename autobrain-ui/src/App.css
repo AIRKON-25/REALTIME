@@ -304,7 +304,7 @@ body {
 
 .map {
   position: relative;
-  --map-scale: 3;
+  --map-scale: 4;
   --map-camera-size: calc(16px * var(--map-scale));
   --map-car-width: calc(14px * var(--map-scale));
   --map-car-height: calc(25px * var(--map-scale));
