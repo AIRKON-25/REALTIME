@@ -19,8 +19,10 @@ export const IncidentPanel = ({ alerts, cameraNames, isActive, onSelect }: Incid
       {alerts.length > 0 ? (
         <div className="incident__list">
           {alerts.map((alert) => {
-            const cameraText =
-              (alert.cameraId && cameraNames?.[alert.cameraId]) || alert.cameraId || "";
+            const description =
+              alert.class === 2
+                ? "Traffic congestion caused by a barricade."
+                : "Traffic congestion caused by traffic cones.";
             return (
               <button
                 type="button"
@@ -28,19 +30,14 @@ export const IncidentPanel = ({ alerts, cameraNames, isActive, onSelect }: Incid
                 className="incident__content"
                 onClick={() => onSelect?.(alert.id)}
               >
-                <div className="incident__icon">
-                  <img
-                    src="/assets/warning-signs.png"
-                    alt="Obstacle warning"
-                    className="incident__icon-image"
-                  />
-                </div>
-                <div>
-                  <div className="incident__title">Obstacle detected</div>
-                  <div className="incident__description">
-                    ID: {alert.id} · Class: {alert.class}
-                    {cameraText ? ` · Camera: ${cameraText}` : ""}
-                  </div>
+                <img
+                  src="/assets/warning-signs.png"
+                  alt="Obstacle warning"
+                  className="incident__icon-image"
+                />
+                <div className="incident__text">
+                  <div className="incident__title">[Obstacle]</div>
+                  <div className="incident__description">{description}</div>
                 </div>
               </button>
             );
