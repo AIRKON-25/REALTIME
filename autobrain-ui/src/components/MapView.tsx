@@ -132,7 +132,6 @@ interface MapViewProps {
   carPaths?: Record<CarId, RoutePoint[]>;
   carPathFlashKey?: number;
   onCameraClick?: (cameraId: CameraId) => void;
-  onCarClick?: (carId: CarId) => void;
   sizeScale?: number; // optional: tweak overlay element sizing together
 }
 
@@ -149,7 +148,6 @@ export const MapView = ({
   carPaths,
   carPathFlashKey,
   onCameraClick,
-  onCarClick,
   sizeScale = 1,
 }: MapViewProps) => {
   const mapContentRef = useRef<HTMLDivElement | null>(null);
@@ -425,7 +423,6 @@ export const MapView = ({
                   transform,
                 }}
                 aria-label={`${car.carId} icon`}
-                onClick={() => onCarClick?.(car.carId)}
               >
                 <img
                   src={carImage}

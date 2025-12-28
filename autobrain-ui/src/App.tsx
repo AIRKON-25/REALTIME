@@ -535,7 +535,6 @@ function App() {
             carPaths={carPaths}
             carPathFlashKey={carPathFlashKey}
             onCameraClick={handleCameraClick}
-            onCarClick={handleCarClick}
           />
         </div>
 
