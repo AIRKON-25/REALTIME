@@ -67,5 +67,5 @@ npm run dev -- --host 0.0.0.0
 1. edge 컴퓨터에서 python utils/camera/camera_output_http.py 실행
 2. 본인의 컴퓨터에서 edge_컴퓨터_ip:8080 (ex: 192.168.0.101:8080) 접속해서 이미지 다운로드
 3. python utils/roi/create_roi_from_image.py --image "방금 다운로드 받은 이미지" --out "roi/camX_roi.npz" 실행 (X는 카메라 번호)
-4. 내가 관심있는 영역(실제로 추론할때 사용할 영역) 색칠, + 누르면 브러쉬 크기 커지고, - 누르면 작아짐 --> 다 하면 s 눌러 저장
+4. 내가 관심있는 영역(실제로 추론할때 사용할 영역) 설정, 점찍을 수 있고, 점으로 인해서 만들어진 폴리곤 내부가 ROI가 됨 --> 다 하면 s 눌러 저장
 5. 저장된 .npz 파일이 roi 파일 --> 이걸 edge 컴퓨터로 전송해서 roi 파일로 사용
