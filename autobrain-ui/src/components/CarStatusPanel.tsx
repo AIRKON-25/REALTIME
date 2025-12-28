@@ -42,8 +42,8 @@ export const CarStatusPanel = ({
   const [speedById, setSpeedById] = useState<Record<CarId, number>>({});
   const sortedCars = useMemo(() => {
     return [...cars].sort((a, b) => {
-      const aOrder = getIdOrder(a.id ?? a.car_id);
-      const bOrder = getIdOrder(b.id ?? b.car_id);
+      const aOrder = getIdOrder(a.car_id);
+      const bOrder = getIdOrder(b.car_id);
       if (typeof aOrder === "number" && typeof bOrder === "number") {
         return aOrder - bOrder;
       }
@@ -54,17 +54,14 @@ export const CarStatusPanel = ({
   useEffect(() => {
     const next: Record<CarId, number> = {};
     sortedCars.forEach((car) => {
-      const key = (car.id ?? car.car_id) as CarId;
-      if (!key) return;
-      next[key] = car.speed;
+      next[car.car_id] = car.speed;
     });
     setSpeedById(next);
   }, [sortedCars]);
 
   if (detailOnly) {
     const car =
-      sortedCars.find((c) => (c.id ?? c.car_id) === selectedCarId) ??
-      sortedCars[0];
+      sortedCars.find((c) => c.car_id === selectedCarId) ?? sortedCars[0];
     if (!car) return null;
     return (
       <section className="panel panel--card">
@@ -89,11 +86,11 @@ export const CarStatusPanel = ({
       >
         {sortedCars.map((car) => (
           <CarStatusCard
-            key={car.id ?? car.car_id ?? `car-${car.color}-${car.speed}`}
+            key={car.car_id}
             car={car}
             carColorById={carColorById}
             speedById={speedById}
-            selected={(car.id ?? car.car_id) === selectedCarId}
+            selected={car.car_id === selectedCarId}
             onClick={onCarClick}
           />
         ))}
@@ -123,8 +120,8 @@ const CarStatusCard = ({
   onClick,
 }: CarStatusCardProps) => {
   const statusColor = normalizeCarColor(car.color);
-  const carKey = car.id ?? car.car_id ?? "";
-  const mappedColor = carColorById?.[carKey] ?? (car.car_id ? carColorById?.[car.car_id] : undefined);
+  const carKey = car.car_id;
+  const mappedColor = carColorById?.[carKey];
   const safeColor = normalizeCarColor(statusColor ?? mappedColor, "red")!;
   const speedValue = speedById?.[carKey] ?? car.speed;
   const speedText = speedValue.toFixed(2);
@@ -142,7 +139,7 @@ const CarStatusCard = ({
       className={`car-card ${selected ? "car-card--active" : ""} ${
         car.routeChanged ? "car-card--alert" : ""
       }`}
-      onClick={() => onClick?.(carKey || car.id || car.car_id)}
+      onClick={() => onClick?.(carKey)}
     >
       <div className="car-card__body">
         <div className="car-card__info">
@@ -156,7 +153,7 @@ const CarStatusCard = ({
             }}
           />
           <span className="car-card__id">
-            ID : {(car.id ?? car.car_id ?? "car-").toString().replace("car-", "")}
+            ID : {(car.car_id ?? "car-").toString().replace("car-", "")}
           </span>
         </div>
         {car.routeChanged ? (

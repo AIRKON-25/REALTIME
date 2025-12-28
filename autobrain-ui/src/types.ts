@@ -54,7 +54,6 @@ export interface TrafficLightStatus {
 }
 
 export interface CarStatus {
-  id?: CarId;
   car_id: CarId;
   color: CarColor;
   class?: number; // 1 => obstacle (rubber cone)

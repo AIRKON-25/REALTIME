@@ -1082,7 +1082,6 @@ class RealtimeServer:
                     })
                     cars_status.append({
                         "class": cls,
-                        "id": car_id,
                         "car_id": car_id,
                         "color": car_color,
                         "speed": meta.get("speed", 0.0),
