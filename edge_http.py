@@ -584,6 +584,37 @@ def _world2img_homography(K: np.ndarray,
     return H
 
 
+def _look_at_rotation(cam_pos: np.ndarray,
+                      target_pos: np.ndarray,
+                      roll_deg: float = 0.0) -> np.ndarray:
+    """World->cam rotation using look-at (Z forward, X right, Y down-ish with roll=0)."""
+    forward = target_pos - cam_pos
+    n = np.linalg.norm(forward)
+    if n < 1e-6:
+        forward = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    else:
+        forward = forward / n
+    world_up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    right = np.cross(world_up, forward)
+    r_norm = np.linalg.norm(right)
+    if r_norm < 1e-6:
+        right = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+    else:
+        right = right / r_norm
+    up = np.cross(forward, right)
+    R = np.vstack([right, up, forward])
+    if abs(roll_deg) > 1e-6:
+        roll = math.radians(roll_deg)
+        c, s = math.cos(roll), math.sin(roll)
+        R_roll = np.array([
+            [c, -s, 0.0],
+            [s, c, 0.0],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float64)
+        R = R_roll @ R
+    return R
+
+
 def compute_intermediate_warp(frame_bgr: np.ndarray,
                               img2world: np.ndarray,
                               fly_cfg: Optional[dict],
@@ -600,23 +631,17 @@ def compute_intermediate_warp(frame_bgr: np.ndarray,
         eased = 0.5 - 0.5 * math.cos(math.pi * max(0.0, min(1.0, alpha)))
         start_pos = fly_cfg["start_pos"]
         end_pos = fly_cfg["end_pos"]
-        start_pitch = fly_cfg["start_pitch"]
-        end_pitch = fly_cfg["end_pitch"]
-        start_yaw = fly_cfg["start_yaw"]
-        end_yaw = fly_cfg["end_yaw"]
+        target = fly_cfg["target"]
+        roll_deg = fly_cfg.get("roll_deg", 0.0)
         K = fly_cfg["K"]
 
         pos = (1.0 - eased) * start_pos + eased * end_pos
-        pitch = (1.0 - eased) * start_pitch + eased * end_pitch
-        yaw = (1.0 - eased) * start_yaw + eased * end_yaw
-
-        H_virtual = _world2img_homography(
-            K,
-            yaw_deg=yaw,
-            pitch_deg=pitch,
-            roll_deg=0.0,
-            cam_pos_xyz=pos
-        )
+        target_vec = (1.0 - eased) * start_pos + eased * end_pos  # keep looking near own vertical track
+        target_vec[0:2] = target[0:2]  # anchor look-at XY to target
+        target_vec[2] = 0.0  # look at ground plane near target
+        R = _look_at_rotation(pos, target_vec, roll_deg=roll_deg)
+        t = -R @ pos.reshape(3, 1)
+        H_virtual = K @ np.column_stack((R[:, 0:2], t))
         # Map original image -> world -> virtual image
         H_map = H_virtual @ img2world
         warped = cv2.warpPerspective(
@@ -906,10 +931,8 @@ def run_live_inference_http(args) -> None:
         "K": K_fly,
         "start_pos": np.array([-25.0, 0.0, 18.0], dtype=np.float64),
         "end_pos": np.array([-25.0, 0.0, 30.0], dtype=np.float64),
-        "start_pitch": 50.0,
-        "end_pitch": 90.0,
-        "start_yaw": 0.0,
-        "end_yaw": 0.0
+        "target": np.array([0.0, 0.0, 0.0], dtype=np.float64),
+        "roll_deg": 0.0
     }
 
     broadcaster = FrameBroadcaster()
