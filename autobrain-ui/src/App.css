@@ -502,6 +502,8 @@ body {
   object-fit: contain;
   display: block;
   transform-origin: center center;
+  position: absolute;
+  z-index: 3;
 }
 
 .map__route-rect,
