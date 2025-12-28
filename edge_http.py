@@ -285,21 +285,28 @@ class HttpVisualizationWorker(threading.Thread):
                 if success:
                     self.broadcaster.update(encoded.tobytes())
             else:
-                # Blend between normal (vis_frame) and warp_frame
-                warp_for_blend = warp_frame
-                if warp_frame.shape[:2] != vis_frame.shape[:2]:
-                    warp_for_blend = cv2.resize(
-                        warp_frame,
-                        (vis_frame.shape[1], vis_frame.shape[0]),
-                        interpolation=cv2.INTER_LINEAR
-                    )
-                blended = cv2.addWeighted(
-                    warp_for_blend,
-                    float(warp_weight),
+                # Perspective fly-up: interpolate corners between normal and warp
+                blended = compute_intermediate_warp(
                     vis_frame,
-                    float(1.0 - warp_weight),
-                    0.0
+                    self.warp_cfg,
+                    float(warp_weight)
                 )
+                if blended is None:
+                    # Fallback to simple blend with size match
+                    warp_for_blend = warp_frame
+                    if warp_frame.shape[:2] != vis_frame.shape[:2]:
+                        warp_for_blend = cv2.resize(
+                            warp_frame,
+                            (vis_frame.shape[1], vis_frame.shape[0]),
+                            interpolation=cv2.INTER_LINEAR
+                        )
+                    blended = cv2.addWeighted(
+                        warp_for_blend,
+                        float(warp_weight),
+                        vis_frame,
+                        float(1.0 - warp_weight),
+                        0.0
+                    )
                 success, encoded = cv2.imencode(
                     ".jpg",
                     blended,
@@ -526,6 +533,55 @@ def highlight_vehicle_front_faces(vis_frame: np.ndarray,
         cv2.polylines(vis_frame, [front_poly], True, front_color, 2, cv2.LINE_AA)
         for idx in range(2):
             cv2.line(vis_frame, tuple(base[idx]), tuple(top[idx]), front_color, 2, cv2.LINE_AA)
+
+
+def compute_intermediate_warp(frame_bgr: np.ndarray,
+                              warp_cfg: dict,
+                              alpha: float) -> Optional[np.ndarray]:
+    """
+    Create an intermediate warped frame by interpolating corner points between
+    the original view and the final warped view. Alpha in [0,1] (0: normal, 1: fully warped).
+    """
+    try:
+        H_out = warp_cfg["H"]
+        dsize = warp_cfg["dsize"]
+        h, w = frame_bgr.shape[:2]
+        src_pts = np.array([
+            [0.0, 0.0],
+            [w - 1.0, 0.0],
+            [w - 1.0, h - 1.0],
+            [0.0, h - 1.0]
+        ], dtype=np.float32)
+        dst_pts = cv2.perspectiveTransform(
+            src_pts.reshape(-1, 1, 2),
+            H_out.astype(np.float64)
+        ).reshape(-1, 2)
+        interp_pts = (1.0 - alpha) * src_pts + alpha * dst_pts.astype(np.float32)
+        H_interp = cv2.getPerspectiveTransform(src_pts, interp_pts.astype(np.float32))
+
+        warped = cv2.warpPerspective(
+            frame_bgr,
+            H_interp,
+            dsize,
+            flags=cv2.INTER_LINEAR
+        )
+        mask_keep = warp_cfg.get("mask_keep")
+        if mask_keep is not None and mask_keep.shape[:2] == warped.shape[:2]:
+            warped = warped.copy()
+            warped[~mask_keep] = 0
+        rotate_code = warp_cfg.get("rotate_code")
+        if rotate_code is not None:
+            warped = cv2.rotate(warped, rotate_code)
+        if warped.shape[:2] != frame_bgr.shape[:2]:
+            warped = cv2.resize(
+                warped,
+                (frame_bgr.shape[1], frame_bgr.shape[0]),
+                interpolation=cv2.INTER_LINEAR
+            )
+        return warped
+    except Exception as exc:
+        print(f"[Warp] WARN: intermediate warp failed: {exc}")
+        return None
 
 
 def load_roi_mask(npz_path: str,
