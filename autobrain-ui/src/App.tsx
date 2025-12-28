@@ -13,6 +13,7 @@ import type {
   ObstacleStatusPacket,
   RouteChangePacket,
   TrafficLightStatusPacket,
+  RoutePoint,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -76,7 +77,7 @@ const applyCarStatus = (
       prev.carsStatus,
       data.carsStatusUpserts,
       data.carsStatusDeletes,
-      (item) => item.id
+      (item) => item.car_id
     );
     return { ...prev, carsOnMap, carsStatus };
   }
@@ -161,6 +162,7 @@ function App() {
   const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
+  const [carPathFlashKey, setCarPathFlashKey] = useState<number>(0);
   const routeFlashTimersRef = useRef<number[]>([]);
 
   // ===========================
@@ -240,6 +242,8 @@ function App() {
   const obstaclesOnMap = serverState.obstaclesOnMap;
   const obstaclesStatus = serverState.obstaclesStatus;
   const routeChanges = serverState.routeChanges;
+  const trafficLightsOnMap = serverState.trafficLightsOnMap;
+  const trafficLightsStatus = serverState.trafficLightsStatus;
   const selectedIncident = useMemo(
     () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
     [obstaclesStatus, selectedIncidentId]
@@ -266,7 +270,7 @@ function App() {
     });
     carsStatus.forEach((status) => {
       const n = normalize(status.color);
-      if (n) map[status.id] = n;
+      if (n) map[status.car_id] = n;
     });
     return map;
   }, [carsOnMap, carsStatus]);
@@ -286,6 +290,24 @@ function App() {
     });
     return map;
   }, [camerasOnMap]);
+
+  const carPaths = useMemo(() => {
+    const map: Record<CarId, RoutePoint[]> = {};
+    carsStatus.forEach((status) => {
+      const pts = (status.path_future ?? [])
+        .map((pt) => {
+          const x = Number((pt as any).x);
+          const y = Number((pt as any).y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y };
+        })
+        .filter((p): p is RoutePoint => Boolean(p));
+      if (pts.length > 1) {
+        map[status.car_id] = pts;
+      }
+    });
+    return map;
+  }, [carsStatus]);
 
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -325,13 +347,13 @@ function App() {
   //  3) 클릭 핸들러들
   // ===========================
   const handleCarClick = (carId: CarId) => {
-    if (selectedCarId === carId) {
-      setSelectedCarId(null);
-      return;
-    }
-    setSelectedCarId(carId);
+    const nextSelected = selectedCarId === carId ? null : carId;
+    setSelectedCarId(nextSelected);
     setSelectedIncidentId(null);
     setSelectedCameraIds([]);
+    if (nextSelected) {
+      setCarPathFlashKey(Date.now());
+    }
   };
 
   const handleCameraClick = (cameraId: CameraId) => {
@@ -407,7 +429,7 @@ function App() {
     }
 
     if (viewMode === "carFocused" && selectedCarId) {
-      const carStatus = carsStatus.find((c) => c.id === selectedCarId);
+      const carStatus = carsStatus.find((c) => c.car_id === selectedCarId);
       const carPos = carsOnMap.find((c) => c.carId === selectedCarId);
       const cam = nearestCamera(
         carStatus?.cameraIds,
@@ -505,9 +527,13 @@ function App() {
             carsOnMap={carsOnMap}
             camerasOnMap={camerasOnMap}
             obstacles={obstaclesOnMap}
+            trafficLightsOnMap={trafficLightsOnMap}
+            trafficLightsStatus={trafficLightsStatus}
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
+            carPaths={carPaths}
+            carPathFlashKey={carPathFlashKey}
             onCameraClick={handleCameraClick}
           />
         </div>
@@ -543,7 +569,9 @@ function App() {
 
               {viewMode === "carFocused" && selectedCarId && (
                 <CarStatusPanel
-                  cars={carsStatusForPanel.filter((c) => c.id === selectedCarId)}
+                  cars={carsStatusForPanel.filter(
+                    (c) => c.car_id === selectedCarId
+                  )}
                   carColorById={carColorById}
                   selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}

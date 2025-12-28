@@ -4,7 +4,7 @@ export type CarId = string;
 export type TrafficLightId = number;
 
 export type CarColor = "red" | "green" | "blue" | "yellow" | "purple" | "white";
-export type TrafficLightSignal = "red" | "yellow" | "green" | "left";
+export type TrafficLightSignal = "red" | "yellow" | "green";
 
 export type ViewMode =
   | "default"          // base: map + car status list
@@ -50,14 +50,18 @@ export interface ObstacleStatus {
 export interface TrafficLightStatus {
   trafficLightId: TrafficLightId;
   light: TrafficLightSignal;
+  left_green?: boolean;
 }
 
 export interface CarStatus {
-  id: CarId;
+  car_id: CarId;
   color: CarColor;
   class?: number; // 1 => obstacle (rubber cone)
   speed: number; // m/s
   battery: number; // 0 ~ 100
+  path_future: RoutePoint[]; // future route
+  category: string; // normal | battery 굳이
+  resolution: string; // path의 해상도 각 점의 간격
   cameraIds?: CameraId[]; // cameras currently seeing this car
   routeChanged?: boolean;
 }
@@ -143,7 +147,7 @@ export interface MonitorState {
   camerasStatus: CameraStatus[];
   obstaclesOnMap: ObstacleOnMap[];
   obstaclesStatus: ObstacleStatus[];
-  routeChanges: CarRouteChange[];
+  // routeChanges: CarRouteChange[];
   trafficLightsOnMap: TrafficLightOnMap[];
   trafficLightsStatus: TrafficLightStatus[];
 }

@@ -304,10 +304,12 @@ body {
 
 .map {
   position: relative;
-  --map-scale: 4;
+  --map-scale: 3;
   --map-camera-size: calc(16px * var(--map-scale));
-  --map-car-width: calc(14px * var(--map-scale));
-  --map-car-height: calc(25px * var(--map-scale));
+  /* --map-car-width: calc(14px * var(--map-scale));
+  --map-car-height: calc(25px * var(--map-scale)); */
+  --map-car-width: calc(25px * var(--map-scale));
+  --map-car-height: calc(14px * var(--map-scale));
   --map-obstacle-cone: calc(12px * var(--map-scale));
   --map-obstacle-barricade-width: calc(14px * var(--map-scale));
   --map-obstacle-barricade-height: calc(10px * var(--map-scale));
@@ -406,6 +408,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 2;
 }
 
 .map__car--active {
@@ -414,6 +417,10 @@ body {
 
 .map__car--warning {
   outline: 3px solid var(--danger);
+}
+
+.map__car--on-top {
+  z-index: 4;
 }
 
 .map__car-image {
@@ -450,6 +457,22 @@ body {
 
 /* 경로 변경 */
 
+.map__path-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.map__path-line {
+  fill: none;
+  stroke: #38bdf8;
+  opacity: 0.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 10 7;
+}
+
 .map__route-svg {
   position: absolute;
   inset: 0;
@@ -473,6 +496,16 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  z-index: 1;
+}
+
+.map__traffic-light {
+  height: auto;
+  object-fit: contain;
+  display: block;
+  transform-origin: center center;
+  position: absolute;
+  z-index: 3;
 }
 
 .map__route-rect,
