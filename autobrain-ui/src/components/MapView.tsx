@@ -329,19 +329,23 @@ export const MapView = ({
         setVisibleClickedRouteCounts((prev) => {
           const current = prev[activeCarId] ?? 0;
           if (current >= total) return prev;
-          return { ...prev, [activeCarId]: current + 1 };
+          const next = current + 1;
+          if (next >= total) {
+            window.clearInterval(timer);
+            clickPathStepTimersRef.current = [];
+            if (!clickPathTimerRef.current) {
+              clickPathTimerRef.current = window.setTimeout(() => {
+                setClickedRouteSprites([]);
+                setVisibleClickedRouteCounts({});
+                clickPathTimerRef.current = null;
+              }, CLICK_PATH_DURATION_MS);
+            }
+          }
+          return { ...prev, [activeCarId]: next };
         });
       }, 90);
       clickPathStepTimersRef.current.push(timer);
     }
-
-    clickPathTimerRef.current = window.setTimeout(() => {
-      setClickedRouteSprites([]);
-      setVisibleClickedRouteCounts({});
-      clickPathTimerRef.current = null;
-      clickPathStepTimersRef.current.forEach((t) => window.clearInterval(t));
-      clickPathStepTimersRef.current = [];
-    }, CLICK_PATH_DURATION_MS);
 
     return () => {
       if (clickPathTimerRef.current) {
