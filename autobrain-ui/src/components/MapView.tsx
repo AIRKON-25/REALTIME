@@ -494,19 +494,13 @@ export const MapView = ({
                   left: `${car.x * 100}%`,
                   top: `${car.y * 100}%`,
                   transform,
+                  backgroundImage: `url(${carImage})`,
+                  backgroundSize: "cover",
+                  backgroundPosition: "center",
+                  backgroundRepeat: "no-repeat",
                 }}
                 aria-label={`${car.carId} icon`}
-              >
-                <img
-                  src={carImage}
-                  alt={`${car.carId} icon`}
-                  className="map__car-image"
-                  onError={(e) => {
-                    if (e.currentTarget.src.endsWith("/assets/car-red.png")) return;
-                    e.currentTarget.src = "/assets/car-red.png";
-                  }}
-                />
-              </div>
+              />
             );
           })}
 
