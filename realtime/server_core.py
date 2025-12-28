@@ -160,10 +160,32 @@ class RealtimeServer:
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
         ]
-        self._ui_traffic_lights_on_map = [
-            {"id": "tl-1", "trafficLightId": 1, "x": 0.50, "y": -0.02, "yaw": 0.0},
-            {"id": "tl-2", "trafficLightId": 2, "x": 0.50, "y": 1.02, "yaw": 180.0},
+        _raw_traffic_lights = [
+            {"id": "tl-1", "trafficLightId": 1, "x": -6.0, "y": 12.5, "yaw": 90.0},
+            {"id": "tl-2", "trafficLightId": 2, "x": 6.0, "y": 16.5, "yaw": -90.0},
+            {"id": "tl-3", "trafficLightId": 3, "x": 2.0, "y": 10.0, "yaw": 0.0},
+            {"id": "tl-4", "trafficLightId": 4, "x": -19.0, "y": -7.0, "yaw": 0.0},
+            {"id": "tl-5", "trafficLightId": 5, "x": -23.0, "y": 6.0, "yaw": 180.0},
+            {"id": "tl-6", "trafficLightId": 6, "x": -15.0, "y": 1.5, "yaw": -90.0},
+            {"id": "tl-7", "trafficLightId": 7, "x": 19.0, "y": 6.0, "yaw": 180.0},
+            {"id": "tl-8", "trafficLightId": 8, "x": 23.0, "y": -7.0, "yaw": 0.0},
+            {"id": "tl-9", "trafficLightId": 9, "x": 15.0, "y": -2.5, "yaw": 90.0},
         ]
+        self._ui_traffic_lights_on_map = []
+        for item in _raw_traffic_lights:
+            try:
+                x_map, y_map = self._world_to_map_xy(float(item["x"]), -float(item["y"]))
+            except Exception:
+                continue
+            self._ui_traffic_lights_on_map.append(
+                {
+                    "id": item["id"],
+                    "trafficLightId": int(item["trafficLightId"]),
+                    "x": x_map,
+                    "y": y_map,
+                    "yaw": float(item["yaw"]),
+                }
+            )
         self._ui_traffic_light_status = {
             int(item["trafficLightId"]): {
                 "trafficLightId": int(item["trafficLightId"]),
@@ -1140,6 +1162,20 @@ class RealtimeServer:
             initial_msgs: List[dict] = []
             if self._ui_cam_status:
                 initial_msgs.append(self._ui_cam_status)
+            # Always include latest traffic light snapshot for new connections.
+            try:
+                tl_snapshot = {
+                    "type": "trafficLightStatus",
+                    "ts": ts,
+                    "data": {
+                        "mode": "snapshot",
+                        "trafficLightsOnMap": list(self._ui_traffic_lights_on_map),
+                        "trafficLightsStatus": list(self._ui_traffic_light_status.values()),
+                    },
+                }
+                initial_msgs.append(tl_snapshot)
+            except Exception:
+                pass
             initial_msgs.append({
                 "type": "carStatus",
                 "ts": ts,

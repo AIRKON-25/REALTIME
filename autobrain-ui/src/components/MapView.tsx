@@ -7,6 +7,8 @@ import type {
   CarOnMap,
   CarId,
   ObstacleOnMap,
+  TrafficLightOnMap,
+  TrafficLightStatus,
   CarRouteChange,
 } from "../types";
 
@@ -54,6 +56,8 @@ interface MapViewProps {
   carsOnMap: CarOnMap[];
   camerasOnMap: CameraOnMap[];
   obstacles: ObstacleOnMap[];
+  trafficLightsOnMap: TrafficLightOnMap[];
+  trafficLightsStatus: TrafficLightStatus[];
   activeCameraIds: CameraId[];
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
@@ -66,6 +70,8 @@ export const MapView = ({
   carsOnMap,
   camerasOnMap,
   obstacles,
+  trafficLightsOnMap,
+  trafficLightsStatus,
   activeCameraIds,
   activeCarId,
   routeChanges,
@@ -266,6 +272,7 @@ export const MapView = ({
   // Camera icon size (px) to ensure padding accounts for its radius.
   const cameraSizePx = 60 * mapScale;
   const cameraRadiusPx = cameraSizePx / 2;
+  const trafficLightSizePx = 58 * mapScale;
 
   const paddingStyle = {
     paddingLeft: `calc(${Math.max(0, -minX) * 100}% + ${cameraRadiusPx}px)`,
@@ -356,6 +363,36 @@ export const MapView = ({
                   }}
                 />
               </div>
+            );
+          })}
+
+          {/* Traffic Lights */}
+          {trafficLightsOnMap.map((tl) => {
+            const status = trafficLightsStatus.find(
+              (s) => s.trafficLightId === tl.trafficLightId
+            );
+            const color = (status?.light ?? "green").toLowerCase();
+            const left = status?.left_green;
+            const isFourWay = [2, 3, 5].includes(tl.trafficLightId);
+            const variant = isFourWay ? 4 : 3;
+            const suffix = left ? "-left" : "";
+            const imgSrc = `/assets/trafficLight${variant}-${color}${suffix}.png`;
+            const transform = `translate(-50%, -50%) rotate(${tl.yaw}deg)`;
+            return (
+              <img
+                key={tl.id}
+                src={imgSrc}
+                alt={`traffic light ${tl.trafficLightId}`}
+                className="map__traffic-light"
+                style={{
+                  position: "absolute",
+                  left: `${tl.x * 100}%`,
+                  top: `${tl.y * 100}%`,
+                  width: `${trafficLightSizePx}px`,
+                  height: `${trafficLightSizePx * 2}px`,
+                  transform,
+                }}
+              />
             );
           })}
 

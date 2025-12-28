@@ -240,6 +240,8 @@ function App() {
   const obstaclesOnMap = serverState.obstaclesOnMap;
   const obstaclesStatus = serverState.obstaclesStatus;
   const routeChanges = serverState.routeChanges;
+  const trafficLightsOnMap = serverState.trafficLightsOnMap;
+  const trafficLightsStatus = serverState.trafficLightsStatus;
   const selectedIncident = useMemo(
     () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
     [obstaclesStatus, selectedIncidentId]
@@ -505,6 +507,8 @@ function App() {
             carsOnMap={carsOnMap}
             camerasOnMap={camerasOnMap}
             obstacles={obstaclesOnMap}
+            trafficLightsOnMap={trafficLightsOnMap}
+            trafficLightsStatus={trafficLightsStatus}
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
