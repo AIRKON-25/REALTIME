@@ -154,6 +154,7 @@ export const MapView = ({
   const mapImageRef = useRef<HTMLImageElement | null>(null);
   const [visibleRouteCounts, setVisibleRouteCounts] = useState<Record<CarId, number>>({});
   const [clickedRouteSprites, setClickedRouteSprites] = useState<RouteSprite[]>([]);
+  const [visibleClickedRouteCounts, setVisibleClickedRouteCounts] = useState<Record<CarId, number>>({});
   const [mapLayout, setMapLayout] = useState({
     contentWidth: 0,
     contentHeight: 0,
@@ -163,6 +164,7 @@ export const MapView = ({
     offsetY: 0,
   });
   const clickPathTimerRef = useRef<number | null>(null);
+  const clickPathStepTimersRef = useRef<number[]>([]);
   const carsOnMapRef = useRef<CarOnMap[]>([]);
   const carPathsRef = useRef<Record<CarId, RoutePoint[]>>({});
 
@@ -297,15 +299,19 @@ export const MapView = ({
       window.clearTimeout(clickPathTimerRef.current);
       clickPathTimerRef.current = null;
     }
+    clickPathStepTimersRef.current.forEach((t) => window.clearInterval(t));
+    clickPathStepTimersRef.current = [];
 
     if (!activeCarId) {
       setClickedRouteSprites([]);
+      setVisibleClickedRouteCounts({});
       return;
     }
 
     const points = carPathsRef.current?.[activeCarId];
     if (!points || points.length < 2) {
       setClickedRouteSprites([]);
+      setVisibleClickedRouteCounts({});
       return;
     }
 
@@ -315,10 +321,26 @@ export const MapView = ({
       idPrefix: `click-${activeCarId}-${carPathFlashKey ?? "0"}`,
     });
     setClickedRouteSprites(sprites);
+    setVisibleClickedRouteCounts({ [activeCarId]: 0 });
+
+    if (sprites.length) {
+      const total = sprites.length;
+      const timer = window.setInterval(() => {
+        setVisibleClickedRouteCounts((prev) => {
+          const current = prev[activeCarId] ?? 0;
+          if (current >= total) return prev;
+          return { ...prev, [activeCarId]: current + 1 };
+        });
+      }, 90);
+      clickPathStepTimersRef.current.push(timer);
+    }
 
     clickPathTimerRef.current = window.setTimeout(() => {
       setClickedRouteSprites([]);
+      setVisibleClickedRouteCounts({});
       clickPathTimerRef.current = null;
+      clickPathStepTimersRef.current.forEach((t) => window.clearInterval(t));
+      clickPathStepTimersRef.current = [];
     }, CLICK_PATH_DURATION_MS);
 
     return () => {
@@ -326,6 +348,8 @@ export const MapView = ({
         window.clearTimeout(clickPathTimerRef.current);
         clickPathTimerRef.current = null;
       }
+      clickPathStepTimersRef.current.forEach((t) => window.clearInterval(t));
+      clickPathStepTimersRef.current = [];
     };
   }, [activeCarId, carPathFlashKey]);
 
@@ -527,26 +551,33 @@ export const MapView = ({
           {/* Clicked car path sprites (PNG) */}
           {clickedRouteSprites.length > 0 && (
             <div className="map__route-layer">
-              {clickedRouteSprites.map((sprite) => {
-                const isArrow = sprite.kind === "arrow";
-                const size = isArrow ? 34 * mapScale : 26 * mapScale;
-                const imgSrc = isArrow ? ArrowHead : ArrowRect;
-                return (
-                  <img
-                    key={sprite.id}
-                    src={imgSrc}
-                    alt={isArrow ? "car path arrow" : "car path segment"}
-                    className={isArrow ? "map__route-arrow" : "map__route-rect"}
-                    style={{
-                      left: `${sprite.x * 100}%`,
-                      top: `${sprite.y * 100}%`,
-                      width: `${size}px`,
-                      height: isArrow ? `${size}px` : `${size * 0.45}px`,
-                      transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
-                    }}
-                  />
-                );
-              })}
+              {(() => {
+                const progress: Record<CarId, number> = {};
+                return clickedRouteSprites.map((sprite) => {
+                  const visibleCount = visibleClickedRouteCounts[sprite.carId] ?? 0;
+                  const shownSoFar = progress[sprite.carId] ?? 0;
+                  if (shownSoFar >= visibleCount) return null;
+                  progress[sprite.carId] = shownSoFar + 1;
+                  const isArrow = sprite.kind === "arrow";
+                  const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                  const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                  return (
+                    <img
+                      key={sprite.id}
+                      src={imgSrc}
+                      alt={isArrow ? "car path arrow" : "car path segment"}
+                      className={isArrow ? "map__route-arrow" : "map__route-rect"}
+                      style={{
+                        left: `${sprite.x * 100}%`,
+                        top: `${sprite.y * 100}%`,
+                        width: `${size}px`,
+                        height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                        transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
+                      }}
+                    />
+                  );
+                });
+              })()}
             </div>
           )}
         </div>
