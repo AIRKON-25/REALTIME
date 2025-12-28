@@ -40,6 +40,10 @@ from realtime.runtime_constants import (
     VELOCITY_ZERO_THRESH,
     vehicle_fixed_length,
     vehicle_fixed_width,
+    rubberCone_fixed_length,
+    rubberCone_fixed_width,
+    barricade_fixed_length,
+    barricade_fixed_width,
 )
 from realtime.status_core import StatusState
 
@@ -1252,6 +1256,16 @@ class RealtimeServer:
                 dq.clear()
                 continue
             for det in entry["dets"]:
+                cls = int(det.get("class", 1))
+                if cls==0: 
+                    det["length"] = vehicle_fixed_length
+                    det["width"] = vehicle_fixed_width
+                if cls==1: 
+                    det["length"] = rubberCone_fixed_length
+                    det["width"] = rubberCone_fixed_width
+                if cls==2: 
+                    det["length"] = barricade_fixed_length
+                    det["width"] = barricade_fixed_width
                 det_copy = det.copy()
                 det_copy["cam"] = cam
                 det_copy["ts"] = ts
