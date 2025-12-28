@@ -51,14 +51,72 @@ interface RouteSprite {
 const ROUTE_STEP = 0.035; // normalized distance per sprite (~3.5% of map width/height)
 const RECT_BASE_ANGLE = -90; // adjust if your PNG default orientation differs
 const ARROW_BASE_ANGLE = -90;
+const CLICK_PATH_DURATION_MS = 2000;
 
-const PATH_COLOR_BY_CAR: Record<string, string> = {
-  red: "#ef4444",
-  green: "#22c55e",
-  blue: "#2563eb",
-  yellow: "#eab308",
-  purple: "#a855f7",
-  white: "#e5e7eb",
+const buildRouteSprites = (
+  carId: CarId,
+  points: RoutePoint[],
+  options?: { carPos?: { x: number; y: number }; idPrefix?: string }
+): RouteSprite[] => {
+  if (!points || points.length < 2) return [];
+  const prefix = options?.idPrefix ?? "route";
+  const samples: RouteSprite[] = [];
+  let counter = 0;
+
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i];
+    const b = points[i + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist === 0) continue;
+    const steps = Math.max(1, Math.floor(dist / ROUTE_STEP));
+    const stepSize = dist / steps;
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    for (let s = 0; s < steps; s++) {
+      const t = ((s + 0.5) * stepSize) / dist;
+      samples.push({
+        id: `${prefix}-${carId}-seg-${i}-${s}-${counter++}`,
+        x: a.x + dx * t,
+        y: a.y + dy * t,
+        angleDeg: angleDeg + RECT_BASE_ANGLE,
+        kind: "rect",
+        carId,
+      });
+    }
+  }
+
+  if (options?.carPos && samples.length > 0) {
+    const { carPos } = options;
+    let nearestIdx = 0;
+    let nearestDist = Number.POSITIVE_INFINITY;
+    samples.forEach((sample, idx) => {
+      const d = Math.hypot(sample.x - carPos.x, sample.y - carPos.y);
+      if (d < nearestDist) {
+        nearestDist = d;
+        nearestIdx = idx;
+      }
+    });
+    samples.splice(0, nearestIdx);
+  }
+
+  if (points.length >= 2) {
+    const tailPoint = points[points.length - 1];
+    const prevPoint = points[points.length - 2];
+    const dx = tailPoint.x - prevPoint.x;
+    const dy = tailPoint.y - prevPoint.y;
+    const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    samples.push({
+      id: `${prefix}-${carId}-arrow-${counter}`,
+      x: tailPoint.x,
+      y: tailPoint.y,
+      angleDeg: angleDeg + ARROW_BASE_ANGLE,
+      kind: "arrow",
+      carId,
+    });
+  }
+
+  return samples;
 };
 
 interface MapViewProps {
@@ -72,7 +130,9 @@ interface MapViewProps {
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
   carPaths?: Record<CarId, RoutePoint[]>;
+  carPathFlashKey?: number;
   onCameraClick?: (cameraId: CameraId) => void;
+  onCarClick?: (carId: CarId) => void;
   sizeScale?: number; // optional: tweak overlay element sizing together
 }
 
@@ -87,12 +147,15 @@ export const MapView = ({
   activeCarId,
   routeChanges,
   carPaths,
+  carPathFlashKey,
   onCameraClick,
+  onCarClick,
   sizeScale = 1,
 }: MapViewProps) => {
   const mapContentRef = useRef<HTMLDivElement | null>(null);
   const mapImageRef = useRef<HTMLImageElement | null>(null);
   const [visibleRouteCounts, setVisibleRouteCounts] = useState<Record<CarId, number>>({});
+  const [clickedRouteSprites, setClickedRouteSprites] = useState<RouteSprite[]>([]);
   const [mapLayout, setMapLayout] = useState({
     contentWidth: 0,
     contentHeight: 0,
@@ -101,6 +164,9 @@ export const MapView = ({
     offsetX: 0,
     offsetY: 0,
   });
+  const clickPathTimerRef = useRef<number | null>(null);
+  const carsOnMapRef = useRef<CarOnMap[]>([]);
+  const carPathsRef = useRef<Record<CarId, RoutePoint[]>>({});
 
   const recomputeLayout = useCallback(() => {
     const contentEl = mapContentRef.current;
@@ -159,6 +225,14 @@ export const MapView = ({
     };
   }, [recomputeLayout]);
 
+  useEffect(() => {
+    carsOnMapRef.current = carsOnMap;
+  }, [carsOnMap]);
+
+  useEffect(() => {
+    carPathsRef.current = carPaths ?? {};
+  }, [carPaths]);
+
   const mapScale = useMemo(() => {
     const basisWidth = mapLayout.mapWidth || mapLayout.contentWidth;
     if (!basisWidth) return 1;
@@ -167,96 +241,17 @@ export const MapView = ({
     return Math.min(1.4, Math.max(0.4, scale));
   }, [mapLayout, sizeScale]);
 
-  const carColorById = useMemo(() => {
-    const map: Record<CarId, string> = {};
-    carsOnMap.forEach((car) => {
-      map[car.carId] = car.color;
-    });
-    return map;
-  }, [carsOnMap]);
-
-  const carPathPolylines = useMemo(() => {
-    if (!carPaths) return [];
-    const entries: { carId: CarId; points: string; color: string }[] = [];
-    Object.entries(carPaths).forEach(([carIdRaw, pts]) => {
-      const cleaned = (pts || [])
-        .map((p) => {
-          const x = Number((p as any).x);
-          const y = Number((p as any).y);
-          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-          return { x, y };
-        })
-        .filter((p): p is RoutePoint => Boolean(p));
-      if (cleaned.length < 2) return;
-      const points = cleaned.map((p) => `${p.x * 100},${p.y * 100}`).join(" ");
-      const safeColor = normalizeCarColor(carColorById[carIdRaw as CarId]);
-      const stroke = PATH_COLOR_BY_CAR[safeColor ?? "red"] ?? PATH_COLOR_BY_CAR.red;
-      entries.push({ carId: carIdRaw as CarId, points, color: stroke });
-    });
-    return entries;
-  }, [carPaths, carColorById]);
-
   const routeSprites = useMemo(() => {
     const sprites: RouteSprite[] = [];
     routeChanges.forEach((change, changeIdx) => {
-      const points = change.newRoute;
-      if (!points || points.length < 2) return;
-
+      if (!change.newRoute || change.newRoute.length < 2) return;
       const carPos = carsOnMap.find((c) => c.carId === change.carId);
-      const samples: RouteSprite[] = [];
-
-      for (let i = 0; i < points.length - 1; i++) {
-        const a = points[i];
-        const b = points[i + 1];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist === 0) continue;
-        const steps = Math.max(1, Math.floor(dist / ROUTE_STEP));
-        const stepSize = dist / steps;
-        const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
-        for (let s = 0; s < steps; s++) {
-          const t = (s + 0.5) * stepSize / dist;
-          samples.push({
-            id: `${change.carId}-seg-${changeIdx}-${i}-${s}`,
-            x: a.x + dx * t,
-            y: a.y + dy * t,
-            angleDeg: angleDeg + RECT_BASE_ANGLE,
-            kind: "rect",
-            carId: change.carId,
-          });
-        }
-      }
-
-      if (carPos && samples.length > 0) {
-        let nearestIdx = 0;
-        let nearestDist = Number.POSITIVE_INFINITY;
-        samples.forEach((sample, idx) => {
-          const d = Math.hypot(sample.x - carPos.x, sample.y - carPos.y);
-          if (d < nearestDist) {
-            nearestDist = d;
-            nearestIdx = idx;
-          }
-        });
-        samples.splice(0, nearestIdx);
-      }
-
-      if (samples.length) {
-        sprites.push(...samples);
-        const tailPoint = points[points.length - 1];
-        const prevPoint = points[points.length - 2];
-        const dx = tailPoint.x - prevPoint.x;
-        const dy = tailPoint.y - prevPoint.y;
-        const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
-        sprites.push({
-          id: `${change.carId}-arrow-${changeIdx}`,
-          x: tailPoint.x,
-          y: tailPoint.y,
-          angleDeg: angleDeg + ARROW_BASE_ANGLE,
-          kind: "arrow",
-          carId: change.carId,
-        });
-      }
+      sprites.push(
+        ...buildRouteSprites(change.carId, change.newRoute, {
+          carPos: carPos ? { x: carPos.x, y: carPos.y } : undefined,
+          idPrefix: `change-${changeIdx}`,
+        })
+      );
     });
     return sprites;
   }, [routeChanges, carsOnMap]);
@@ -298,6 +293,43 @@ export const MapView = ({
       timers.forEach((t) => window.clearInterval(t));
     };
   }, [routeSprites]);
+
+  useEffect(() => {
+    if (clickPathTimerRef.current) {
+      window.clearTimeout(clickPathTimerRef.current);
+      clickPathTimerRef.current = null;
+    }
+
+    if (!activeCarId) {
+      setClickedRouteSprites([]);
+      return;
+    }
+
+    const points = carPathsRef.current?.[activeCarId];
+    if (!points || points.length < 2) {
+      setClickedRouteSprites([]);
+      return;
+    }
+
+    const carPos = carsOnMapRef.current.find((c) => c.carId === activeCarId);
+    const sprites = buildRouteSprites(activeCarId, points, {
+      carPos: carPos ? { x: carPos.x, y: carPos.y } : undefined,
+      idPrefix: `click-${activeCarId}-${carPathFlashKey ?? "0"}`,
+    });
+    setClickedRouteSprites(sprites);
+
+    clickPathTimerRef.current = window.setTimeout(() => {
+      setClickedRouteSprites([]);
+      clickPathTimerRef.current = null;
+    }, CLICK_PATH_DURATION_MS);
+
+    return () => {
+      if (clickPathTimerRef.current) {
+        window.clearTimeout(clickPathTimerRef.current);
+        clickPathTimerRef.current = null;
+      }
+    };
+  }, [activeCarId, carPathFlashKey]);
 
   const points = [
     { x: 0, y: 0 },
@@ -348,25 +380,6 @@ export const MapView = ({
         </div>
 
         <div className="map__overlay" style={overlayStyle}>
-          {/* Planned paths (from carStatus.path_future) */}
-          {carPathPolylines.length > 0 && (
-            <svg
-              className="map__path-layer"
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-            >
-              {carPathPolylines.map((path) => (
-                <polyline
-                  key={`path-${path.carId}`}
-                  className="map__path-line"
-                  points={path.points}
-                  stroke={path.color}
-                  strokeWidth={1.4 * mapScale}
-                />
-              ))}
-            </svg>
-          )}
-
           {/* Cameras */}
           {camerasOnMap.map((cam) => {
             const isActive = activeCameraIds.includes(cam.cameraId);
@@ -412,6 +425,7 @@ export const MapView = ({
                   transform,
                 }}
                 aria-label={`${car.carId} icon`}
+                onClick={() => onCarClick?.(car.carId)}
               >
                 <img
                   src={carImage}
@@ -510,6 +524,32 @@ export const MapView = ({
                   );
                 });
               })()}
+            </div>
+          )}
+
+          {/* Clicked car path sprites (PNG) */}
+          {clickedRouteSprites.length > 0 && (
+            <div className="map__route-layer">
+              {clickedRouteSprites.map((sprite) => {
+                const isArrow = sprite.kind === "arrow";
+                const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                return (
+                  <img
+                    key={sprite.id}
+                    src={imgSrc}
+                    alt={isArrow ? "car path arrow" : "car path segment"}
+                    className={isArrow ? "map__route-arrow" : "map__route-rect"}
+                    style={{
+                      left: `${sprite.x * 100}%`,
+                      top: `${sprite.y * 100}%`,
+                      width: `${size}px`,
+                      height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                      transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
+                    }}
+                  />
+                );
+              })}
             </div>
           )}
         </div>

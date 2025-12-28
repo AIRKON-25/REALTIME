@@ -400,8 +400,8 @@ body {
   background: transparent;
   padding: 0;
   border-radius: 8px;
-  cursor: default;
-  pointer-events: none;
+  cursor: pointer;
+  pointer-events: auto;
   box-shadow: none;
   display: flex;
   align-items: center;

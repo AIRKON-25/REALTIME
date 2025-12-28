@@ -162,6 +162,7 @@ function App() {
   const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
   const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
+  const [carPathFlashKey, setCarPathFlashKey] = useState<number>(0);
   const routeFlashTimersRef = useRef<number[]>([]);
 
   // ===========================
@@ -346,13 +347,13 @@ function App() {
   //  3) 클릭 핸들러들
   // ===========================
   const handleCarClick = (carId: CarId) => {
-    if (selectedCarId === carId) {
-      setSelectedCarId(null);
-      return;
-    }
-    setSelectedCarId(carId);
+    const nextSelected = selectedCarId === carId ? null : carId;
+    setSelectedCarId(nextSelected);
     setSelectedIncidentId(null);
     setSelectedCameraIds([]);
+    if (nextSelected) {
+      setCarPathFlashKey(Date.now());
+    }
   };
 
   const handleCameraClick = (cameraId: CameraId) => {
@@ -532,7 +533,9 @@ function App() {
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
             carPaths={carPaths}
+            carPathFlashKey={carPathFlashKey}
             onCameraClick={handleCameraClick}
+            onCarClick={handleCarClick}
           />
         </div>
 
