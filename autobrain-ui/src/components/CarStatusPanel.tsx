@@ -12,8 +12,9 @@ const normalizeCarColor = (
   return fallback;
 };
 
-const getIdOrder = (id: string): number | string => {
-  const match = id.match(/(\d+(?:\.\d+)?)/);
+const getIdOrder = (id: string | undefined | null): number | string => {
+  if (!id) return "";
+  const match = id.toString().match(/(\d+(?:\.\d+)?)/);
   if (match) {
     const num = Number(match[1]);
     if (Number.isFinite(num)) return num;
@@ -41,8 +42,8 @@ export const CarStatusPanel = ({
   const [speedById, setSpeedById] = useState<Record<CarId, number>>({});
   const sortedCars = useMemo(() => {
     return [...cars].sort((a, b) => {
-      const aOrder = getIdOrder(a.id);
-      const bOrder = getIdOrder(b.id);
+      const aOrder = getIdOrder(a.id ?? a.car_id);
+      const bOrder = getIdOrder(b.id ?? b.car_id);
       if (typeof aOrder === "number" && typeof bOrder === "number") {
         return aOrder - bOrder;
       }
@@ -53,13 +54,17 @@ export const CarStatusPanel = ({
   useEffect(() => {
     const next: Record<CarId, number> = {};
     sortedCars.forEach((car) => {
-      next[car.id] = car.speed;
+      const key = (car.id ?? car.car_id) as CarId;
+      if (!key) return;
+      next[key] = car.speed;
     });
     setSpeedById(next);
   }, [sortedCars]);
 
   if (detailOnly) {
-    const car = sortedCars.find((c) => c.id === selectedCarId) ?? sortedCars[0];
+    const car =
+      sortedCars.find((c) => (c.id ?? c.car_id) === selectedCarId) ??
+      sortedCars[0];
     if (!car) return null;
     return (
       <section className="panel panel--card">
@@ -84,11 +89,11 @@ export const CarStatusPanel = ({
       >
         {sortedCars.map((car) => (
           <CarStatusCard
-            key={car.id}
+            key={car.id ?? car.car_id ?? `car-${car.color}-${car.speed}`}
             car={car}
             carColorById={carColorById}
             speedById={speedById}
-            selected={car.id === selectedCarId}
+            selected={(car.id ?? car.car_id) === selectedCarId}
             onClick={onCarClick}
           />
         ))}
@@ -118,11 +123,13 @@ const CarStatusCard = ({
   onClick,
 }: CarStatusCardProps) => {
   const statusColor = normalizeCarColor(car.color);
-  const mappedColor = carColorById?.[car.id];
+  const carKey = car.id ?? car.car_id ?? "";
+  const mappedColor = carColorById?.[carKey] ?? (car.car_id ? carColorById?.[car.car_id] : undefined);
   const safeColor = normalizeCarColor(statusColor ?? mappedColor, "red")!;
-  const speedValue = speedById?.[car.id] ?? car.speed;
+  const speedValue = speedById?.[carKey] ?? car.speed;
   const speedText = speedValue.toFixed(2);
   const isRouteChanged = !!car.routeChanged;
+  const labelId = carKey || "car";
   const primarySrc = isRouteChanged
     ? `/assets/carS-${safeColor}-warning.svg`
     : `/assets/carS-${safeColor}.svg`;
@@ -135,20 +142,22 @@ const CarStatusCard = ({
       className={`car-card ${selected ? "car-card--active" : ""} ${
         car.routeChanged ? "car-card--alert" : ""
       }`}
-      onClick={() => onClick?.(car.id)}
+      onClick={() => onClick?.(carKey || car.id || car.car_id)}
     >
       <div className="car-card__body">
         <div className="car-card__info">
           <img
             src={primarySrc}
-            alt={`${car.id} icon`}
+            alt={`${labelId} icon`}
             className="car-card__icon"
             onError={(e) => {
               if (e.currentTarget.src === fallbackSrc) return;
               e.currentTarget.src = fallbackSrc;
             }}
           />
-          <span className="car-card__id">ID : {car.id.replace("car-", "")}</span>
+          <span className="car-card__id">
+            ID : {(car.id ?? car.car_id ?? "car-").toString().replace("car-", "")}
+          </span>
         </div>
         {car.routeChanged ? (
           <div className="car-card__route-changed">Route Changed!</div>

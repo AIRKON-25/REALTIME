@@ -15,14 +15,14 @@ from realtime.runtime_constants import PATH_PROGRESS_DIST_M
 class CarStatus:
     car_id: int
     battery: Optional[float]
-    path: List[List[float]] = field(default_factory=list)  # 항상 존재, 없으면 빈 리스트
+    path: List[List[float]] = field(default_factory=list)  # 항상 존재, 없으면 빈 리스트 웹에안줌
     path_past: List[List[float]] = field(default_factory=list)  # 지나온 구간
     path_future: List[List[float]] = field(default_factory=list)  # 앞으로 갈 구간
     category: str = ""
     resolution: Optional[float] = None
     s_start: List[Any] = field(default_factory=list)
     s_end: List[Any] = field(default_factory=list)
-    end: Optional[str] = None
+    end: Optional[str] = None # 웹에 안줌
     ts: float = field(default_factory=time.time)
 
 

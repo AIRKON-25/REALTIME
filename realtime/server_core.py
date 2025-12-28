@@ -165,7 +165,11 @@ class RealtimeServer:
             {"id": "tl-2", "trafficLightId": 2, "x": 0.50, "y": 1.02, "yaw": 180.0},
         ]
         self._ui_traffic_light_status = {
-            int(item["trafficLightId"]): {"trafficLightId": int(item["trafficLightId"]), "light": "red"}
+            int(item["trafficLightId"]): {
+                "trafficLightId": int(item["trafficLightId"]),
+                "light": "red",
+                "left_green": None,
+            }
             for item in self._ui_traffic_lights_on_map
         }
         self._ui_traffic_light_map: Dict[str, dict] = {}
@@ -813,6 +817,31 @@ class RealtimeServer:
         }
 
     def _build_traffic_light_status_message(self, ts: float) -> Optional[dict]:
+        if self.status_state:
+            for item in self._ui_traffic_lights_on_map:
+                try:
+                    tid = int(item.get("trafficLightId"))
+                except Exception:
+                    continue
+                try:
+                    latest = self.status_state.get_traffic(tid)
+                except Exception:
+                    latest = None
+                if not latest:
+                    continue
+                prev = self._ui_traffic_light_status.get(
+                    tid, {"trafficLightId": tid, "light": "red", "left_green": None}
+                )
+                updated = dict(prev)
+                updated["trafficLightId"] = tid
+                light_val = latest.get("light")
+                if light_val is not None:
+                    updated["light"] = str(light_val)
+                if "left_green" in latest:
+                    left = latest.get("left_green")
+                    updated["left_green"] = bool(left) if left is not None else None
+                self._ui_traffic_light_status[tid] = updated
+
         current_map = {str(item["trafficLightId"]): item for item in self._ui_traffic_lights_on_map}
         current_status = {int(tid): status for tid, status in self._ui_traffic_light_status.items()}
 
@@ -978,6 +1007,27 @@ class RealtimeServer:
         obstacles_on_map: List[dict] = []
         obstacles_status: List[dict] = []
 
+        def _normalize_route_points(raw_points) -> List[dict]:
+            points: List[dict] = []
+            if not raw_points:
+                return points
+            for pt in raw_points:
+                try:
+                    if isinstance(pt, dict):
+                        px, py = float(pt.get("x")), float(pt.get("y"))
+                    elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        px, py = float(pt[0]), float(pt[1])
+                    else:
+                        continue
+                except Exception:
+                    continue
+                try:
+                    x_route, y_route = self._world_to_map_xy(px, -py)
+                except Exception:
+                    continue
+                points.append({"x": x_route, "y": y_route})
+            return points
+
         if tracks is not None and len(tracks):
             for row in tracks:
                 tid = int(row[0])
@@ -997,6 +1047,30 @@ class RealtimeServer:
                     camera_ids = self._normalize_camera_ids(source_cams)
                     car_id = f"car-{tid}"
                     map_id = f"mcar-{tid}"
+                    car_state = None
+                    if self.status_state:
+                        try:
+                            car_state = self.status_state.get_car(tid)
+                        except Exception:
+                            car_state = None
+                    battery_val: float = 100
+                    path_future_raw = []
+                    category_val = ""
+                    resolution_val = None
+                    route_changed = False
+                    if car_state:
+                        try:
+                            battery_raw = car_state.get("battery")
+                            if battery_raw is not None:
+                                battery_val = float(battery_raw)
+                        except Exception:
+                            pass
+                        path_future_raw = car_state.get("path_future") or car_state.get("path") or []
+                        category_val = car_state.get("category") or ""
+                        resolution_val = car_state.get("resolution")
+                        route_changed = bool(car_state.get("s_start"))
+                    route_points = _normalize_route_points(path_future_raw)
+                    map_status = "routeChanged" if route_changed else "normal"
                     cars_on_map.append({
                         "id": map_id,
                         "carId": car_id,
@@ -1004,18 +1078,20 @@ class RealtimeServer:
                         "y": y_norm,
                         "yaw": yaw,
                         "color": car_color,
-                        "status": "normal",
+                        "status": map_status,
                     })
                     cars_status.append({
                         "class": cls,
                         "id": car_id,
+                        "car_id": car_id,
                         "color": car_color,
                         "speed": meta.get("speed", 0.0),
-                        "battery": 100,
-                        "fromLabel": "-",
-                        "toLabel": "-",
+                        "battery": battery_val,
                         "cameraIds": camera_ids,
-                        "routeChanged": False,
+                        "path_future": route_points,
+                        "category": category_val,
+                        "resolution": str(resolution_val) if resolution_val is not None else "",
+                        "routeChanged": route_changed,
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
@@ -1049,7 +1125,6 @@ class RealtimeServer:
             obstacles_status,
             ts,
         )
-        incident_payload = None  # 현재는 별도 인시던트 정보 없음
         obstacle_snapshot = {
             "type": "obstacleStatus",
             "ts": ts,
@@ -1057,7 +1132,6 @@ class RealtimeServer:
                 "mode": "snapshot",
                 "obstaclesOnMap": obstacles_on_map,
                 "obstaclesStatus": obstacles_status,
-                "incident": incident_payload,
             },
         }
         if obstacle_msg:

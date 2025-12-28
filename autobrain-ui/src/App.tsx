@@ -76,7 +76,7 @@ const applyCarStatus = (
       prev.carsStatus,
       data.carsStatusUpserts,
       data.carsStatusDeletes,
-      (item) => item.id
+      (item) => item.id ?? item.car_id
     );
     return { ...prev, carsOnMap, carsStatus };
   }
@@ -266,7 +266,8 @@ function App() {
     });
     carsStatus.forEach((status) => {
       const n = normalize(status.color);
-      if (n) map[status.id] = n;
+      const key = status.id ?? status.car_id;
+      if (n && key) map[key] = n;
     });
     return map;
   }, [carsOnMap, carsStatus]);
@@ -407,7 +408,9 @@ function App() {
     }
 
     if (viewMode === "carFocused" && selectedCarId) {
-      const carStatus = carsStatus.find((c) => c.id === selectedCarId);
+      const carStatus = carsStatus.find(
+        (c) => (c.id ?? c.car_id) === selectedCarId
+      );
       const carPos = carsOnMap.find((c) => c.carId === selectedCarId);
       const cam = nearestCamera(
         carStatus?.cameraIds,
@@ -543,7 +546,9 @@ function App() {
 
               {viewMode === "carFocused" && selectedCarId && (
                 <CarStatusPanel
-                  cars={carsStatusForPanel.filter((c) => c.id === selectedCarId)}
+                  cars={carsStatusForPanel.filter(
+                    (c) => (c.id ?? c.car_id) === selectedCarId
+                  )}
                   carColorById={carColorById}
                   selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}
