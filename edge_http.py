@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import socket
+import math
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -175,7 +176,9 @@ class HttpVisualizationWorker(threading.Thread):
                  show_annotations: bool,
                  warp_cfg: Optional[dict] = None,
                  warp_broadcaster: Optional[FrameBroadcaster] = None,
-                 toggle_controller: Optional["ToggleController"] = None):
+                 toggle_controller: Optional["ToggleController"] = None,
+                 img2world: Optional[np.ndarray] = None,
+                 fly_cfg: Optional[dict] = None):
         super().__init__(daemon=True)
         self.queue: queue.Queue = queue.Queue(maxsize=3)
         self.broadcaster = broadcaster
@@ -188,6 +191,8 @@ class HttpVisualizationWorker(threading.Thread):
         self.warp_cfg = warp_cfg
         self.warp_broadcaster = warp_broadcaster
         self.toggle_controller = toggle_controller
+        self.img2world = img2world
+        self.fly_cfg = fly_cfg
         self.stop_evt = threading.Event()
         self._last_key = -1
 
@@ -285,14 +290,14 @@ class HttpVisualizationWorker(threading.Thread):
                 if success:
                     self.broadcaster.update(encoded.tobytes())
             else:
-                # Perspective fly-up: interpolate corners between normal and warp
+                # Perspective fly-up using virtual camera pose; fallback to size-matched blend
                 blended = compute_intermediate_warp(
                     vis_frame,
-                    self.warp_cfg,
+                    self.img2world,
+                    self.fly_cfg,
                     float(warp_weight)
                 )
                 if blended is None:
-                    # Fallback to simple blend with size match
                     warp_for_blend = warp_frame
                     if warp_frame.shape[:2] != vis_frame.shape[:2]:
                         warp_for_blend = cv2.resize(
@@ -535,74 +540,91 @@ def highlight_vehicle_front_faces(vis_frame: np.ndarray,
             cv2.line(vis_frame, tuple(base[idx]), tuple(top[idx]), front_color, 2, cv2.LINE_AA)
 
 
+def _build_intrinsics_from_fov(w: int, h: int, fov_deg: float = 70.0) -> np.ndarray:
+    f = (0.5 * float(w)) / math.tan(math.radians(fov_deg) * 0.5)
+    cx = 0.5 * float(w)
+    cy = 0.5 * float(h)
+    return np.array([
+        [f, 0.0, cx],
+        [0.0, f, cy],
+        [0.0, 0.0, 1.0]
+    ], dtype=np.float64)
+
+
+def _world2img_homography(K: np.ndarray,
+                          yaw_deg: float,
+                          pitch_deg: float,
+                          roll_deg: float,
+                          cam_pos_xyz: Tuple[float, float, float]) -> np.ndarray:
+    """
+    Build plane (z=0) world->image homography for given camera pose.
+    World frame assumption: Z up, X right, Y forward.
+    Rotation order: yaw (Z), pitch (X), roll (Y). Pitch > 0 looks down.
+    """
+    yaw = math.radians(yaw_deg)
+    pitch = math.radians(pitch_deg)
+    roll = math.radians(roll_deg)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cr, sr = math.cos(roll), math.sin(roll)
+
+    Rz = np.array([[cy, -sy, 0.0],
+                   [sy, cy, 0.0],
+                   [0.0, 0.0, 1.0]], dtype=np.float64)
+    Rx = np.array([[1.0, 0.0, 0.0],
+                   [0.0, cp, -sp],
+                   [0.0, sp, cp]], dtype=np.float64)
+    Ry = np.array([[cr, 0.0, sr],
+                   [0.0, 1.0, 0.0],
+                   [-sr, 0.0, cr]], dtype=np.float64)
+    R = Rz @ Rx @ Ry
+    cam_pos = np.array(cam_pos_xyz, dtype=np.float64).reshape(3, 1)
+    t = -R @ cam_pos
+    H = K @ np.column_stack((R[:, 0:2], t))
+    return H
+
+
 def compute_intermediate_warp(frame_bgr: np.ndarray,
-                              warp_cfg: dict,
+                              img2world: np.ndarray,
+                              fly_cfg: Optional[dict],
                               alpha: float) -> Optional[np.ndarray]:
     """
-    Create an intermediate warped frame with a "fly-up" feel.
-    Two-phase path:
-      1) zoom-out / slight upward shift
-      2) morph toward final topdown corners
-    Alpha in [0,1] (0: normal, 1: fully warped).
+    Create an intermediate frame by building a virtual camera homography
+    from a flying pose and applying it to the original frame.
+    Alpha in [0,1] (0: normal, 1: fully warped). Ease-in-out timing.
     """
+    if fly_cfg is None:
+        return None
     try:
-        H_out = warp_cfg["H"]
-        dsize = warp_cfg["dsize"]
         h, w = frame_bgr.shape[:2]
-        src_pts = np.array([
-            [0.0, 0.0],
-            [w - 1.0, 0.0],
-            [w - 1.0, h - 1.0],
-            [0.0, h - 1.0]
-        ], dtype=np.float32)
-        dst_pts = cv2.perspectiveTransform(
-            src_pts.reshape(-1, 1, 2),
-            H_out.astype(np.float64)
-        ).reshape(-1, 2)
+        eased = 0.5 - 0.5 * math.cos(math.pi * max(0.0, min(1.0, alpha)))
+        start_pos = fly_cfg["start_pos"]
+        end_pos = fly_cfg["end_pos"]
+        start_pitch = fly_cfg["start_pitch"]
+        end_pitch = fly_cfg["end_pitch"]
+        start_yaw = fly_cfg["start_yaw"]
+        end_yaw = fly_cfg["end_yaw"]
+        K = fly_cfg["K"]
 
-        # Ease-in-out for smoother timing
-        eased = 0.5 - 0.5 * np.cos(np.pi * np.clip(alpha, 0.0, 1.0))
+        pos = (1.0 - eased) * start_pos + eased * end_pos
+        pitch = (1.0 - eased) * start_pitch + eased * end_pitch
+        yaw = (1.0 - eased) * start_yaw + eased * end_yaw
 
-        # Phase 1: zoom-out + lift
-        if eased < 0.5:
-            t = eased / 0.5
-            center = np.array([w * 0.5, h * 0.5], dtype=np.float32)
-            scale = 1.0 - 0.3 * t  # shrink FOV
-            y_shift = -0.12 * h * t  # move up a bit
-            mid_pts = center + (src_pts - center) * scale
-            mid_pts[:, 1] += y_shift
-            interp_pts = mid_pts
-        else:
-            # Phase 2: from zoomed-out view to final topdown
-            t = (eased - 0.5) / 0.5
-            center = np.array([w * 0.5, h * 0.5], dtype=np.float32)
-            scale = 1.0 - 0.3  # final scale of phase 1
-            y_shift = -0.12 * h
-            start_pts = center + (src_pts - center) * scale
-            start_pts[:, 1] += y_shift
-            interp_pts = (1.0 - t) * start_pts + t * dst_pts.astype(np.float32)
-
-        H_interp = cv2.getPerspectiveTransform(src_pts, interp_pts.astype(np.float32))
-
+        H_virtual = _world2img_homography(
+            K,
+            yaw_deg=yaw,
+            pitch_deg=pitch,
+            roll_deg=0.0,
+            cam_pos_xyz=pos
+        )
+        # Map original image -> world -> virtual image
+        H_map = H_virtual @ img2world
         warped = cv2.warpPerspective(
             frame_bgr,
-            H_interp,
-            dsize,
+            H_map.astype(np.float64),
+            (w, h),
             flags=cv2.INTER_LINEAR
         )
-        mask_keep = warp_cfg.get("mask_keep")
-        if mask_keep is not None and mask_keep.shape[:2] == warped.shape[:2]:
-            warped = warped.copy()
-            warped[~mask_keep] = 0
-        rotate_code = warp_cfg.get("rotate_code")
-        if rotate_code is not None:
-            warped = cv2.rotate(warped, rotate_code)
-        if warped.shape[:2] != frame_bgr.shape[:2]:
-            warped = cv2.resize(
-                warped,
-                (frame_bgr.shape[1], frame_bgr.shape[0]),
-                interpolation=cv2.INTER_LINEAR
-            )
         return warped
     except Exception as exc:
         print(f"[Warp] WARN: intermediate warp failed: {exc}")
@@ -827,6 +849,7 @@ def run_live_inference_http(args) -> None:
     warp_server_thread: Optional[threading.Thread] = None
     if homography is None:
         raise ValueError("Warp stream requires homography (--homography).")
+    img2world = homography
     world_json_path = args.warp_world_json or args.homography
     world_pts = None
     if world_json_path and str(world_json_path).lower().endswith(".json"):
@@ -876,6 +899,19 @@ def run_live_inference_http(args) -> None:
     front_color = (0, 0, 255)
     toggle_controller = ToggleController()
 
+    # Virtual camera fly-up config (approximate values; adjust as needed)
+    cam_w, cam_h = map(int, args.camera_size.split(","))
+    K_fly = _build_intrinsics_from_fov(cam_w, cam_h, fov_deg=95.0)
+    fly_cfg = {
+        "K": K_fly,
+        "start_pos": np.array([25.0, 0.0, 18.0], dtype=np.float64),
+        "end_pos": np.array([25.0, 0.0, 30.0], dtype=np.float64),
+        "start_pitch": 50.0,
+        "end_pitch": 90.0,
+        "start_yaw": 0.0,
+        "end_yaw": 0.0
+    }
+
     broadcaster = FrameBroadcaster()
     handler_cls = build_handler(
         broadcaster,
@@ -914,7 +950,9 @@ def run_live_inference_http(args) -> None:
             show_annotations=args.show_annotations,
             warp_cfg=warp_cfg,
             warp_broadcaster=warp_broadcaster,
-            toggle_controller=toggle_controller
+            toggle_controller=toggle_controller,
+            img2world=img2world,
+            fly_cfg=fly_cfg
         )
         vis_worker.start()
 
