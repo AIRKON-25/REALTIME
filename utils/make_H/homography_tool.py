@@ -548,12 +548,12 @@ def main():
         hud_y0 = target_h + 10
         n_pairs = min(len(pairs.cam_pts), len(pairs.map_pts))
 
-        msg1 = "Click: CAM(left) then MAP(right) | U:undo"
-        msg2 = "ENTER: apply adjust (or compute H if none) | Z: undo apply | I/J/K/L: tx/ty | Q/E: rot | +/-: scale | S: save | ESC: quit"
-        msg3 = f"Pairs={n_pairs} (cam={len(pairs.cam_pts)}, map={len(pairs.map_pts)})  RANSAC_th={args.ransac_th}px"
-        msg4 = f"Adjust: tx={adj_tx:.1f}px  ty={adj_ty:.1f}px  theta={adj_theta:.2f}deg  scale={adj_scale:.6f}"
-        msg5 = "Mouse: magnifier | Drag point | Z/X/C: drag sensitivity"
-        msg6 = f"Drag sensitivity: {drag_mode_name} ({drag_sensitivity}x)"
+        msg1 = "Click: CAM(left) then MAP(right) | Backspace: remove last point"
+        msg2 = "ENTER: compute/apply H | U: undo last apply | S: save | ESC: quit"
+        msg3 = "Adjust keys: I/J/K/L=move  Q/E=rotate  +/-=scale (applied on ENTER)"
+        msg4 = f"Adjust values: tx={adj_tx:.1f}px  ty={adj_ty:.1f}px  theta={adj_theta:.2f}deg  scale={adj_scale:.6f}"
+        msg5 = f"Pairs={n_pairs} (cam={len(pairs.cam_pts)}, map={len(pairs.map_pts)})  RANSAC_th={args.ransac_th}px"
+        msg6 = f"Mouse: magnifier | Drag point | Z/X/C drag sensitivity -> {drag_mode_name} ({drag_sensitivity}x)"
 
         cv2.putText(canvas, msg1, (10, hud_y0 + 25), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220,220,220), 1, cv2.LINE_AA)
         cv2.putText(canvas, msg2, (10, hud_y0 + 55), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (220,220,220), 1, cv2.LINE_AA)
@@ -638,6 +638,12 @@ def main():
 
         elif key in (ord('s'), ord('S')):
             save_final()
+
+        elif key in (8, 127):  # Backspace/Delete: remove last clicked point
+            pending_cam = None
+            pairs.pop_last()
+            print("[OK] Removed last clicked point.")
+            continue
 
         elif key == 27:  # ESC
             break
