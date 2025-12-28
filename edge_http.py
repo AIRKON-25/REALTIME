@@ -67,6 +67,45 @@ class FrameBroadcaster:
             self._condition.notify_all()
 
 
+class ToggleController:
+    """Thread-safe flip-flop with smooth blending support."""
+
+    def __init__(self, transition_sec: float = 1.0):
+        self._lock = threading.Lock()
+        self._warp_mode = False  # target mode
+        self._start_mode = False
+        self._toggle_ts: Optional[float] = None
+        self._transition_sec = max(0.05, float(transition_sec))
+        self._animating = False
+
+    def toggle(self) -> bool:
+        with self._lock:
+            self._start_mode = self._warp_mode
+            self._warp_mode = not self._warp_mode
+            self._toggle_ts = time.time()
+            self._animating = True
+            return self._warp_mode
+
+    def is_warp_mode(self) -> bool:
+        with self._lock:
+            return self._warp_mode
+
+    def get_warp_weight(self) -> float:
+        """
+        Returns a weight in [0,1] representing how much warp view to show.
+        0 → pure normal view, 1 → pure warp view. Values in-between are used for blending.
+        """
+        with self._lock:
+            if not self._animating or self._toggle_ts is None:
+                return 1.0 if self._warp_mode else 0.0
+            elapsed = time.time() - self._toggle_ts
+            if elapsed >= self._transition_sec:
+                self._animating = False
+                return 1.0 if self._warp_mode else 0.0
+            alpha = max(0.0, min(1.0, elapsed / self._transition_sec))
+            return alpha if self._warp_mode else 1.0 - alpha
+
+
 class UDPRecorder(threading.Thread):
     def __init__(self, record_path: str):
         super().__init__(daemon=True)
@@ -135,7 +174,8 @@ class HttpVisualizationWorker(threading.Thread):
                  front_color: Tuple[int, int, int],
                  show_annotations: bool,
                  warp_cfg: Optional[dict] = None,
-                 warp_broadcaster: Optional[FrameBroadcaster] = None):
+                 warp_broadcaster: Optional[FrameBroadcaster] = None,
+                 toggle_controller: Optional["ToggleController"] = None):
         super().__init__(daemon=True)
         self.queue: queue.Queue = queue.Queue(maxsize=3)
         self.broadcaster = broadcaster
@@ -147,6 +187,7 @@ class HttpVisualizationWorker(threading.Thread):
         self.show_annotations = show_annotations
         self.warp_cfg = warp_cfg
         self.warp_broadcaster = warp_broadcaster
+        self.toggle_controller = toggle_controller
         self.stop_evt = threading.Event()
         self._last_key = -1
 
@@ -195,6 +236,8 @@ class HttpVisualizationWorker(threading.Thread):
                 self.show_annotations
             )
 
+            warp_frame = None
+            warp_bytes = None
             if self.warp_cfg is not None and self.warp_broadcaster is not None:
                 try:
                     src_for_warp = vis_frame if vis_frame is not None else frame_bgr
@@ -210,13 +253,15 @@ class HttpVisualizationWorker(threading.Thread):
                     rotate_code = self.warp_cfg.get("rotate_code")
                     if rotate_code is not None:
                         warped = cv2.rotate(warped, rotate_code)
+                    warp_frame = warped
                     success_warp, encoded_warp = cv2.imencode(
                         ".jpg",
                         warped,
                         [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
                     )
                     if success_warp:
-                        self.warp_broadcaster.update(encoded_warp.tobytes())
+                        warp_bytes = encoded_warp.tobytes()
+                        self.warp_broadcaster.update(warp_bytes)
                 except Exception as exc:
                     print(f"[Warp] WARN: warp render failed: {exc}")
 
@@ -226,13 +271,35 @@ class HttpVisualizationWorker(threading.Thread):
                 except Exception as exc:
                     print(f"[VisWorker] WARN: failed to save {save_path}: {exc}")
 
-            success, encoded = cv2.imencode(
-                ".jpg",
-                vis_frame,
-                [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
-            )
-            if success:
-                self.broadcaster.update(encoded.tobytes())
+            warp_weight = self.toggle_controller.get_warp_weight() if self.toggle_controller else 0.0
+            if warp_weight >= 1.0 and warp_bytes is not None:
+                # Fully warped
+                self.broadcaster.update(warp_bytes)
+            elif warp_weight <= 0.0 or warp_frame is None:
+                # Pure normal view
+                success, encoded = cv2.imencode(
+                    ".jpg",
+                    vis_frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+                )
+                if success:
+                    self.broadcaster.update(encoded.tobytes())
+            else:
+                # Blend between normal (vis_frame) and warp_frame
+                blended = cv2.addWeighted(
+                    warp_frame,
+                    float(warp_weight),
+                    vis_frame,
+                    float(1.0 - warp_weight),
+                    0.0
+                )
+                success, encoded = cv2.imencode(
+                    ".jpg",
+                    blended,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality]
+                )
+                if success:
+                    self.broadcaster.update(encoded.tobytes())
 
             if self.show_window:
                 preview = vis_frame
@@ -247,7 +314,9 @@ class HttpVisualizationWorker(threading.Thread):
             cv2.destroyAllWindows()
 
 
-def build_handler(broadcaster: FrameBroadcaster, page_title: str):
+def build_handler(broadcaster: FrameBroadcaster,
+                  page_title: str,
+                  toggle_controller: Optional["ToggleController"] = None):
     class StreamingHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             if self.path == "/":
@@ -256,6 +325,8 @@ def build_handler(broadcaster: FrameBroadcaster, page_title: str):
                 self._handle_stream()
             elif self.path == "/snapshot":
                 self._handle_snapshot()
+            elif self.path == "/toggle":
+                self._handle_toggle()
             else:
                 self.send_error(404, "Not Found")
 
@@ -275,10 +346,16 @@ def build_handler(broadcaster: FrameBroadcaster, page_title: str):
                 "document.body.appendChild(a);a.click();a.remove();"
                 "URL.revokeObjectURL(url);})"
                 ".catch(err=>alert('프레임 저장 실패: '+err));}"
+                "function toggleView(){"
+                "fetch('/toggle').then(r=>r.json()).then(data=>{"
+                "const mode=data.warp_mode?'warp':'normal';"
+                "alert('뷰 모드 전환: '+mode);})"
+                ".catch(err=>alert('토글 실패: '+err));}"
                 "</script></head>"
                 f"<body><h1>{page_title}</h1>"
                 '<img src="/stream" alt="stream" />'
-                '<p><button onclick="saveFrame()">현재 프레임 저장</button></p>'
+                '<p><button onclick="saveFrame()">현재 프레임 저장</button>'
+                '<button onclick="toggleView()">뷰 토글</button></p>'
                 "</body></html>"
             )
             body = html.encode("utf-8")
@@ -325,6 +402,25 @@ def build_handler(broadcaster: FrameBroadcaster, page_title: str):
 
         def log_message(self, format, *args):
             return
+
+        def _handle_toggle(self):
+            if toggle_controller is None:
+                self.send_error(404, "Toggle not configured")
+                return
+            try:
+                warp_mode = toggle_controller.toggle()
+                resp = {
+                    "warp_mode": warp_mode
+                }
+                body = json.dumps(resp).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, private")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self.send_error(500, f"Toggle failed: {exc}")
 
     return StreamingHandler
 
@@ -690,9 +786,14 @@ def run_live_inference_http(args) -> None:
 
     vehicle_cls_set: Optional[Set[int]] = {0}
     front_color = (0, 0, 255)
+    toggle_controller = ToggleController()
 
     broadcaster = FrameBroadcaster()
-    handler_cls = build_handler(broadcaster, args.page_title)
+    handler_cls = build_handler(
+        broadcaster,
+        args.page_title,
+        toggle_controller=toggle_controller
+    )
     server = ThreadingHTTPServer((args.http_host, args.http_port), handler_cls)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -724,7 +825,8 @@ def run_live_inference_http(args) -> None:
             front_color,
             show_annotations=args.show_annotations,
             warp_cfg=warp_cfg,
-            warp_broadcaster=warp_broadcaster
+            warp_broadcaster=warp_broadcaster,
+            toggle_controller=toggle_controller
         )
         vis_worker.start()
 
