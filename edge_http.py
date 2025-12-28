@@ -904,8 +904,8 @@ def run_live_inference_http(args) -> None:
     K_fly = _build_intrinsics_from_fov(cam_w, cam_h, fov_deg=95.0)
     fly_cfg = {
         "K": K_fly,
-        "start_pos": np.array([25.0, 0.0, 18.0], dtype=np.float64),
-        "end_pos": np.array([25.0, 0.0, 30.0], dtype=np.float64),
+        "start_pos": np.array([-25.0, 0.0, 18.0], dtype=np.float64),
+        "end_pos": np.array([-25.0, 0.0, 30.0], dtype=np.float64),
         "start_pitch": 50.0,
         "end_pitch": 90.0,
         "start_yaw": 0.0,
