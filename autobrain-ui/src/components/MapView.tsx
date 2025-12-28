@@ -152,6 +152,7 @@ export const MapView = ({
 }: MapViewProps) => {
   const mapContentRef = useRef<HTMLDivElement | null>(null);
   const mapImageRef = useRef<HTMLImageElement | null>(null);
+  const [routeSprites, setRouteSprites] = useState<RouteSprite[]>([]);
   const [visibleRouteCounts, setVisibleRouteCounts] = useState<Record<CarId, number>>({});
   const [clickedRouteSprites, setClickedRouteSprites] = useState<RouteSprite[]>([]);
   const [visibleClickedRouteCounts, setVisibleClickedRouteCounts] = useState<Record<CarId, number>>({});
@@ -165,6 +166,9 @@ export const MapView = ({
   });
   const clickPathTimerRef = useRef<number | null>(null);
   const clickPathStepTimersRef = useRef<number[]>([]);
+  const routeHideTimerRef = useRef<number | null>(null);
+  const routeStepTimersRef = useRef<number[]>([]);
+  const lastRouteChangeSigRef = useRef<string | null>(null);
   const carsOnMapRef = useRef<CarOnMap[]>([]);
   const carPathsRef = useRef<Record<CarId, RoutePoint[]>>({});
 
@@ -241,37 +245,52 @@ export const MapView = ({
     return Math.min(1.4, Math.max(0.4, scale));
   }, [mapLayout, sizeScale]);
 
-  const routeSprites = useMemo(() => {
+  useEffect(() => {
+    if (!routeChanges.length) return;
+    const sig = JSON.stringify(routeChanges);
+    if (sig === lastRouteChangeSigRef.current) return;
+    lastRouteChangeSigRef.current = sig;
+
     const sprites: RouteSprite[] = [];
     routeChanges.forEach((change, changeIdx) => {
       if (!change.newRoute || change.newRoute.length < 2) return;
-      const carPos = carsOnMap.find((c) => c.carId === change.carId);
+      const carPos = carsOnMapRef.current.find((c) => c.carId === change.carId);
       sprites.push(
         ...buildRouteSprites(change.carId, change.newRoute, {
           carPos: carPos ? { x: carPos.x, y: carPos.y } : undefined,
-          idPrefix: `change-${changeIdx}`,
+          idPrefix: `change-${changeIdx}-${Date.now()}`,
         })
       );
     });
-    return sprites;
-  }, [routeChanges, carsOnMap]);
+    setRouteSprites(sprites);
+  }, [routeChanges]);
 
   useEffect(() => {
+    if (routeHideTimerRef.current) {
+      window.clearTimeout(routeHideTimerRef.current);
+      routeHideTimerRef.current = null;
+    }
+    routeStepTimersRef.current.forEach((t) => window.clearInterval(t));
+    routeStepTimersRef.current = [];
+
+    if (!routeSprites.length) {
+      setVisibleRouteCounts({});
+      return;
+    }
+
     const timers: number[] = [];
+    const doneCars = new Set<CarId>();
     const byCar: Record<CarId, RouteSprite[]> = {};
     routeSprites.forEach((sprite) => {
       if (!byCar[sprite.carId]) byCar[sprite.carId] = [];
       byCar[sprite.carId].push(sprite);
     });
 
-    setVisibleRouteCounts((prev) => {
-      const next = { ...prev };
+    setVisibleRouteCounts(() => {
+      const next: Record<CarId, number> = {};
       Object.entries(byCar).forEach(([carId, sprites]) => {
-        const total = sprites.length;
-        if (total === 0) return;
-        if (!(carId in next) || next[carId] > total) {
-          next[carId] = 0;
-        }
+        if (sprites.length === 0) return;
+        next[carId] = 0; // always restart animation so the final arrow is shown
       });
       return next;
     });
@@ -283,14 +302,32 @@ export const MapView = ({
         setVisibleRouteCounts((prev) => {
           const now = prev[carId] ?? 0;
           if (now >= total) return prev;
-          return { ...prev, [carId]: now + 1 };
+          const next = now + 1;
+          if (next >= total) {
+            doneCars.add(carId);
+            if (doneCars.size === Object.keys(byCar).length && !routeHideTimerRef.current) {
+              routeHideTimerRef.current = window.setTimeout(() => {
+                setRouteSprites([]);
+                setVisibleRouteCounts({});
+                lastRouteChangeSigRef.current = null;
+                routeHideTimerRef.current = null;
+              }, CLICK_PATH_DURATION_MS);
+            }
+          }
+          return { ...prev, [carId]: next };
         });
       }, 90);
       timers.push(timer);
     });
+    routeStepTimersRef.current = timers;
 
     return () => {
       timers.forEach((t) => window.clearInterval(t));
+      if (routeHideTimerRef.current) {
+        window.clearTimeout(routeHideTimerRef.current);
+        routeHideTimerRef.current = null;
+      }
+      routeStepTimersRef.current = [];
     };
   }, [routeSprites]);
 
