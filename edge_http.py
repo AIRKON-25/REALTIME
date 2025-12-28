@@ -539,8 +539,11 @@ def compute_intermediate_warp(frame_bgr: np.ndarray,
                               warp_cfg: dict,
                               alpha: float) -> Optional[np.ndarray]:
     """
-    Create an intermediate warped frame by interpolating corner points between
-    the original view and the final warped view. Alpha in [0,1] (0: normal, 1: fully warped).
+    Create an intermediate warped frame with a "fly-up" feel.
+    Two-phase path:
+      1) zoom-out / slight upward shift
+      2) morph toward final topdown corners
+    Alpha in [0,1] (0: normal, 1: fully warped).
     """
     try:
         H_out = warp_cfg["H"]
@@ -556,7 +559,29 @@ def compute_intermediate_warp(frame_bgr: np.ndarray,
             src_pts.reshape(-1, 1, 2),
             H_out.astype(np.float64)
         ).reshape(-1, 2)
-        interp_pts = (1.0 - alpha) * src_pts + alpha * dst_pts.astype(np.float32)
+
+        # Ease-in-out for smoother timing
+        eased = 0.5 - 0.5 * np.cos(np.pi * np.clip(alpha, 0.0, 1.0))
+
+        # Phase 1: zoom-out + lift
+        if eased < 0.5:
+            t = eased / 0.5
+            center = np.array([w * 0.5, h * 0.5], dtype=np.float32)
+            scale = 1.0 - 0.3 * t  # shrink FOV
+            y_shift = -0.12 * h * t  # move up a bit
+            mid_pts = center + (src_pts - center) * scale
+            mid_pts[:, 1] += y_shift
+            interp_pts = mid_pts
+        else:
+            # Phase 2: from zoomed-out view to final topdown
+            t = (eased - 0.5) / 0.5
+            center = np.array([w * 0.5, h * 0.5], dtype=np.float32)
+            scale = 1.0 - 0.3  # final scale of phase 1
+            y_shift = -0.12 * h
+            start_pts = center + (src_pts - center) * scale
+            start_pts[:, 1] += y_shift
+            interp_pts = (1.0 - t) * start_pts + t * dst_pts.astype(np.float32)
+
         H_interp = cv2.getPerspectiveTransform(src_pts, interp_pts.astype(np.float32))
 
         warped = cv2.warpPerspective(
