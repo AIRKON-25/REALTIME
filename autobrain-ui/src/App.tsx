@@ -13,6 +13,7 @@ import type {
   ObstacleStatusPacket,
   RouteChangePacket,
   TrafficLightStatusPacket,
+  RoutePoint,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -289,6 +290,24 @@ function App() {
     return map;
   }, [camerasOnMap]);
 
+  const carPaths = useMemo(() => {
+    const map: Record<CarId, RoutePoint[]> = {};
+    carsStatus.forEach((status) => {
+      const pts = (status.path_future ?? [])
+        .map((pt) => {
+          const x = Number((pt as any).x);
+          const y = Number((pt as any).y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y };
+        })
+        .filter((p): p is RoutePoint => Boolean(p));
+      if (pts.length > 1) {
+        map[status.car_id] = pts;
+      }
+    });
+    return map;
+  }, [carsStatus]);
+
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     routeFlashTimersRef.current = [];
@@ -512,6 +531,7 @@ function App() {
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
+            carPaths={carPaths}
             onCameraClick={handleCameraClick}
           />
         </div>

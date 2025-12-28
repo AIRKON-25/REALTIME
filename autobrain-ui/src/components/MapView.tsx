@@ -10,6 +10,7 @@ import type {
   TrafficLightOnMap,
   TrafficLightStatus,
   CarRouteChange,
+  RoutePoint,
 } from "../types";
 
 import CameraIcon from "../assets/camera-icon.svg";
@@ -51,6 +52,15 @@ const ROUTE_STEP = 0.035; // normalized distance per sprite (~3.5% of map width/
 const RECT_BASE_ANGLE = -90; // adjust if your PNG default orientation differs
 const ARROW_BASE_ANGLE = -90;
 
+const PATH_COLOR_BY_CAR: Record<string, string> = {
+  red: "#ef4444",
+  green: "#22c55e",
+  blue: "#2563eb",
+  yellow: "#eab308",
+  purple: "#a855f7",
+  white: "#e5e7eb",
+};
+
 interface MapViewProps {
   mapImage: string;
   carsOnMap: CarOnMap[];
@@ -61,6 +71,7 @@ interface MapViewProps {
   activeCameraIds: CameraId[];
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
+  carPaths?: Record<CarId, RoutePoint[]>;
   onCameraClick?: (cameraId: CameraId) => void;
   sizeScale?: number; // optional: tweak overlay element sizing together
 }
@@ -75,6 +86,7 @@ export const MapView = ({
   activeCameraIds,
   activeCarId,
   routeChanges,
+  carPaths,
   onCameraClick,
   sizeScale = 1,
 }: MapViewProps) => {
@@ -154,6 +166,35 @@ export const MapView = ({
     const scale = (basisWidth / 1000) * normalizedSizeScale;
     return Math.min(1.4, Math.max(0.4, scale));
   }, [mapLayout, sizeScale]);
+
+  const carColorById = useMemo(() => {
+    const map: Record<CarId, string> = {};
+    carsOnMap.forEach((car) => {
+      map[car.carId] = car.color;
+    });
+    return map;
+  }, [carsOnMap]);
+
+  const carPathPolylines = useMemo(() => {
+    if (!carPaths) return [];
+    const entries: { carId: CarId; points: string; color: string }[] = [];
+    Object.entries(carPaths).forEach(([carIdRaw, pts]) => {
+      const cleaned = (pts || [])
+        .map((p) => {
+          const x = Number((p as any).x);
+          const y = Number((p as any).y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y };
+        })
+        .filter((p): p is RoutePoint => Boolean(p));
+      if (cleaned.length < 2) return;
+      const points = cleaned.map((p) => `${p.x * 100},${p.y * 100}`).join(" ");
+      const safeColor = normalizeCarColor(carColorById[carIdRaw as CarId]);
+      const stroke = PATH_COLOR_BY_CAR[safeColor ?? "red"] ?? PATH_COLOR_BY_CAR.red;
+      entries.push({ carId: carIdRaw as CarId, points, color: stroke });
+    });
+    return entries;
+  }, [carPaths, carColorById]);
 
   const routeSprites = useMemo(() => {
     const sprites: RouteSprite[] = [];
@@ -307,6 +348,25 @@ export const MapView = ({
         </div>
 
         <div className="map__overlay" style={overlayStyle}>
+          {/* Planned paths (from carStatus.path_future) */}
+          {carPathPolylines.length > 0 && (
+            <svg
+              className="map__path-layer"
+              viewBox="0 0 100 100"
+              preserveAspectRatio="none"
+            >
+              {carPathPolylines.map((path) => (
+                <polyline
+                  key={`path-${path.carId}`}
+                  className="map__path-line"
+                  points={path.points}
+                  stroke={path.color}
+                  strokeWidth={1.4 * mapScale}
+                />
+              ))}
+            </svg>
+          )}
+
           {/* Cameras */}
           {camerasOnMap.map((cam) => {
             const isActive = activeCameraIds.includes(cam.cameraId);
@@ -373,7 +433,7 @@ export const MapView = ({
             );
             const color = (status?.light ?? "green").toLowerCase();
             const left = status?.left_green;
-            const isFourWay = [2, 3, 5].includes(tl.trafficLightId);
+            const isFourWay = [2, 8, 5].includes(tl.trafficLightId);
             const variant = isFourWay ? 4 : 3;
             const suffix = left ? "-left" : "";
             const imgSrc = `/assets/trafficLight${variant}-${color}${suffix}.png`;
