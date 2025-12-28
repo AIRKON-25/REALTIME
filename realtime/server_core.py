@@ -161,15 +161,15 @@ class RealtimeServer:
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
         ]
         _raw_traffic_lights = [
-            {"id": "tl-1", "trafficLightId": 1, "x": -6.0, "y": -12.5, "yaw": 90.0},
-            {"id": "tl-2", "trafficLightId": 2, "x": 6.0, "y": -16.5, "yaw": -90.0},
-            {"id": "tl-3", "trafficLightId": 3, "x": 2.0, "y": -10.0, "yaw": 0.0},
-            {"id": "tl-4", "trafficLightId": 4, "x": -19.0, "y": 7.0, "yaw": 0.0},
-            {"id": "tl-5", "trafficLightId": 5, "x": -23.0, "y": -6.0, "yaw": 180.0},
-            {"id": "tl-6", "trafficLightId": 6, "x": -15.0, "y": -1.5, "yaw": -90.0},
-            {"id": "tl-7", "trafficLightId": 7, "x": 19.0, "y": -6.0, "yaw": 180.0},
-            {"id": "tl-8", "trafficLightId": 8, "x": 23.0, "y": 7.0, "yaw": 0.0},
-            {"id": "tl-9", "trafficLightId": 9, "x": 15.0, "y": 2.5, "yaw": 90.0},
+            {"id": "tl-1", "trafficLightId": 1, "x": -5.4, "y": -13.4, "yaw": 90.0},
+            {"id": "tl-2", "trafficLightId": 2, "x": 5.4, "y": -17.2, "yaw": -90.0},
+            {"id": "tl-3", "trafficLightId": 3, "x": 2.0, "y": -9.9, "yaw": 0.0},
+            {"id": "tl-4", "trafficLightId": 4, "x": -19.15, "y": 5.7, "yaw": 0.0},
+            {"id": "tl-5", "trafficLightId": 5, "x": -23.0, "y": -6.3, "yaw": 180.0},
+            {"id": "tl-6", "trafficLightId": 6, "x": -15.8, "y": -2.35, "yaw": -90.0},
+            {"id": "tl-7", "trafficLightId": 7, "x": 19.1, "y": -6.2, "yaw": 180.0},
+            {"id": "tl-8", "trafficLightId": 8, "x": 23.0, "y": 5.7, "yaw": 0.0},
+            {"id": "tl-9", "trafficLightId": 9, "x": 15.7, "y": 2, "yaw": 90.0},
         ]
         self._ui_traffic_lights_on_map = []
         for item in _raw_traffic_lights:

@@ -475,6 +475,13 @@ body {
   pointer-events: none;
 }
 
+.map__traffic-light {
+  height: auto;
+  object-fit: contain;
+  display: block;
+  transform-origin: center center;
+}
+
 .map__route-rect,
 .map__route-arrow {
   position: absolute;

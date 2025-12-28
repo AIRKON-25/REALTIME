@@ -389,7 +389,6 @@ export const MapView = ({
                   left: `${tl.x * 100}%`,
                   top: `${tl.y * 100}%`,
                   width: `${trafficLightSizePx}px`,
-                  height: `${trafficLightSizePx * 2}px`,
                   transform,
                 }}
               />
