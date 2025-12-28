@@ -429,6 +429,13 @@ export const MapView = ({
     height: mapLayout.mapHeight || "100%",
   };
 
+  const carsWithVisibleRoute = useMemo(() => {
+    const ids = new Set<CarId>();
+    routeSprites.forEach((s) => ids.add(s.carId));
+    clickedRouteSprites.forEach((s) => ids.add(s.carId));
+    return ids;
+  }, [routeSprites, clickedRouteSprites]);
+
   return (
     <div className="map" style={mapStyle}>
       <div className="map__content" ref={mapContentRef}>
@@ -472,6 +479,7 @@ export const MapView = ({
           {carsOnMap.map((car) => {
             const isSelected = car.carId === activeCarId;
             const isRouteChanged = car.status === "routeChanged";
+            const isOnTop = carsWithVisibleRoute.has(car.carId);
             const safeColor = normalizeCarColor(car.color);
             const carImage = `/assets/car-${safeColor}.svg`;
             const transform = `translate(-50%, -50%) rotate(${car.yaw}deg)`;
@@ -481,7 +489,7 @@ export const MapView = ({
                 key={car.id}
                 className={`map__car ${isSelected ? "map__car--active" : ""} ${
                   isRouteChanged ? "map__car--warning" : ""
-                }`}
+                } ${isOnTop ? "map__car--on-top" : ""}`}
                 style={{
                   left: `${car.x * 100}%`,
                   top: `${car.y * 100}%`,

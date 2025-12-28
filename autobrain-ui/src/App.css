@@ -406,6 +406,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  z-index: 2;
 }
 
 .map__car--active {
@@ -414,6 +415,10 @@ body {
 
 .map__car--warning {
   outline: 3px solid var(--danger);
+}
+
+.map__car--on-top {
+  z-index: 4;
 }
 
 .map__car-image {
@@ -489,6 +494,7 @@ body {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  z-index: 1;
 }
 
 .map__traffic-light {
