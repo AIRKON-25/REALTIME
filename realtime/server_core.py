@@ -1256,7 +1256,7 @@ class RealtimeServer:
                 dq.clear()
                 continue
             for det in entry["dets"]:
-                cls = int(det.get("class", 1))
+                cls = int(det.get("cls", det.get("class", 1)))
                 if cls==0: 
                     det["length"] = vehicle_fixed_length
                     det["width"] = vehicle_fixed_width
