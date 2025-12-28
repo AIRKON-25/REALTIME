@@ -286,8 +286,15 @@ class HttpVisualizationWorker(threading.Thread):
                     self.broadcaster.update(encoded.tobytes())
             else:
                 # Blend between normal (vis_frame) and warp_frame
+                warp_for_blend = warp_frame
+                if warp_frame.shape[:2] != vis_frame.shape[:2]:
+                    warp_for_blend = cv2.resize(
+                        warp_frame,
+                        (vis_frame.shape[1], vis_frame.shape[0]),
+                        interpolation=cv2.INTER_LINEAR
+                    )
                 blended = cv2.addWeighted(
-                    warp_frame,
+                    warp_for_blend,
                     float(warp_weight),
                     vis_frame,
                     float(1.0 - warp_weight),
