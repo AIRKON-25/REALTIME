@@ -149,12 +149,12 @@ class RealtimeServer:
                 self.ws_hub = None
 
         self._ui_cameras_on_map = [
-            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.50},
-            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.01},
-            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.01},
-            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.01, "y": 0.50},
-            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.01},
-            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.01},
+            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.015, "y": 0.52},
+            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.02},
+            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.02},
+            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.015, "y": 0.52},
+            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.02},
+            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.02},
         ]
         self._ui_cameras_status = [
             {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
@@ -165,15 +165,15 @@ class RealtimeServer:
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
         ]
         _raw_traffic_lights = [
-            {"id": "tl-1", "trafficLightId": 1, "x": -5.4, "y": -13.4, "yaw": 90.0},
-            {"id": "tl-2", "trafficLightId": 2, "x": 5.4, "y": -17.2, "yaw": -90.0},
-            {"id": "tl-3", "trafficLightId": 3, "x": 2.0, "y": -9.9, "yaw": 0.0},
-            {"id": "tl-4", "trafficLightId": 4, "x": -19.15, "y": 5.7, "yaw": 0.0},
-            {"id": "tl-5", "trafficLightId": 5, "x": -23.0, "y": -6.3, "yaw": 180.0},
-            {"id": "tl-6", "trafficLightId": 6, "x": -15.8, "y": -2.35, "yaw": -90.0},
-            {"id": "tl-7", "trafficLightId": 7, "x": 19.1, "y": -6.2, "yaw": 180.0},
-            {"id": "tl-8", "trafficLightId": 8, "x": 23.0, "y": 5.7, "yaw": 0.0},
-            {"id": "tl-9", "trafficLightId": 9, "x": 15.7, "y": 2, "yaw": 90.0},
+            {"id": "tl-1", "trafficLightId": 1, "x": -5.5, "y": -13.1, "yaw": 90.0},
+            {"id": "tl-2", "trafficLightId": 2, "x": 5.6, "y": -17.1, "yaw": -90.0},
+            {"id": "tl-3", "trafficLightId": 3, "x": 2.1, "y": -9.8, "yaw": 0.0},
+            {"id": "tl-4", "trafficLightId": 4, "x": -19.5, "y": 6, "yaw": 0.0},
+            {"id": "tl-5", "trafficLightId": 5, "x": -23.5, "y": -5.9, "yaw": 180.0},
+            {"id": "tl-6", "trafficLightId": 6, "x": -16.1, "y": -1.9, "yaw": -90.0},
+            {"id": "tl-7", "trafficLightId": 7, "x": 19.5, "y": -5.8, "yaw": 180.0},
+            {"id": "tl-8", "trafficLightId": 8, "x": 23.7, "y": 6.2, "yaw": 0.0},
+            {"id": "tl-9", "trafficLightId": 9, "x": 16.1, "y": 2.2, "yaw": 90.0},
         ]
         self._ui_traffic_lights_on_map = []
         for item in _raw_traffic_lights:
