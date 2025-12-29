@@ -203,6 +203,7 @@ class RealtimeServer:
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
         self._ui_obstacle_status_map: Dict[str, dict] = {}
+        self._cluster_stage_snapshots: Dict[str, dict] = {}
 
         self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
@@ -1006,6 +1007,94 @@ class RealtimeServer:
 
         return {"type": "obstacleStatus", "ts": ts, "data": data}
 
+    def _build_cluster_stage_message(
+        self,
+        stage: str,
+        dets: Optional[List[dict]],
+        ts: float,
+    ) -> dict:
+        cars_on_map: List[dict] = []
+        cars_status: List[dict] = []
+        obstacles_on_map: List[dict] = []
+        obstacles_status: List[dict] = []
+
+        for idx, det in enumerate(dets or []):
+            try:
+                cls = int(det.get("cls", det.get("class", 1)))
+            except Exception:
+                cls = 1
+            try:
+                cx = float(det.get("cx", 0.0))
+                cy = float(det.get("cy", 0.0))
+                x_norm, y_norm = self._world_to_map_xy(cx, -cy)
+            except Exception:
+                continue
+            try:
+                yaw_val = float(det.get("yaw", 0.0) or 0.0)
+            except Exception:
+                yaw_val = 0.0
+            color_label = det.get("color") or hex_to_color_label(det.get("color_hex"))
+            car_color = self._normalize_car_color(color_label)
+            camera_ids = self._normalize_camera_ids(det.get("cam") or det.get("source_cams"))
+
+            if cls == 0:
+                car_id = f"{stage}-car-{idx}"
+                map_id = f"{stage}-mcar-{idx}"
+                cars_on_map.append({
+                    "id": map_id,
+                    "carId": car_id,
+                    "x": x_norm,
+                    "y": y_norm,
+                    "yaw": yaw_val,
+                    "color": car_color,
+                    "status": "normal",
+                })
+                cars_status.append({
+                    "class": cls,
+                    "car_id": car_id,
+                    "color": car_color,
+                    "speed": 0.0,
+                    "battery": 0.0,
+                    "cameraIds": camera_ids,
+                    "path_future": [],
+                    "category": "",
+                    "resolution": "",
+                    "routeChanged": False,
+                })
+            else:
+                obstacle_id = f"{stage}-ob-{idx}"
+                obstacles_on_map.append({
+                    "id": obstacle_id,
+                    "obstacleId": obstacle_id,
+                    "x": x_norm,
+                    "y": y_norm,
+                    "kind": self._obstacle_kind(cls),
+                })
+                obstacles_status.append({
+                    "id": obstacle_id,
+                    "class": cls,
+                    "cameraIds": camera_ids,
+                })
+
+        return {
+            "type": "clusterStage",
+            "ts": ts,
+            "data": {
+                "stage": stage,
+                "mode": "snapshot",
+                "carsOnMap": cars_on_map,
+                "carsStatus": cars_status,
+                "obstaclesOnMap": obstacles_on_map,
+                "obstaclesStatus": obstacles_status,
+            },
+        }
+
+    def _broadcast_cluster_stage(self, stage: str, dets: Optional[List[dict]], ts: float):
+        message = self._build_cluster_stage_message(stage, dets or [], ts)
+        self._cluster_stage_snapshots[stage] = message
+        if self.ws_hub:
+            self.ws_hub.broadcast(message)
+
     def _build_ui_messages(
         self,
         tracks: np.ndarray,
@@ -1190,6 +1279,9 @@ class RealtimeServer:
                 },
             })
             initial_msgs.append(obstacle_snapshot)
+            if self._cluster_stage_snapshots:
+                for key in sorted(self._cluster_stage_snapshots.keys()):
+                    initial_msgs.append(self._cluster_stage_snapshots[key])
             self.ws_hub.set_initial_messages(initial_msgs)
 
         messages.append(obstacle_snapshot)
@@ -1787,9 +1879,11 @@ class RealtimeServer:
                 if ts_vals:
                     frame_ts = float(sum(ts_vals) / len(ts_vals))
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
+            self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
             timings["fuse"] = (time.perf_counter() - t1) * 1000.0
+            self._broadcast_cluster_stage("postCluster", fused, frame_ts)
             t2 = time.perf_counter()
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0

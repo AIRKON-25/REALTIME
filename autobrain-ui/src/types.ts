@@ -140,6 +140,19 @@ export interface RouteChangePacket {
   changes?: CarRouteChange[];
 }
 
+export type ClusterStage = "preCluster" | "postCluster";
+
+export interface ClusterStageSnapshot {
+  stage: ClusterStage;
+  mode?: "snapshot";
+  carsOnMap: CarOnMap[];
+  carsStatus: CarStatus[];
+  obstaclesOnMap: ObstacleOnMap[];
+  obstaclesStatus: ObstacleStatus[];
+}
+
+export type ClusterStagePacket = ClusterStageSnapshot;
+
 export interface MonitorState {
   carsOnMap: CarOnMap[];
   carsStatus: CarStatus[];
@@ -147,7 +160,7 @@ export interface MonitorState {
   camerasStatus: CameraStatus[];
   obstaclesOnMap: ObstacleOnMap[];
   obstaclesStatus: ObstacleStatus[];
-  // routeChanges: CarRouteChange[];
+  routeChanges: CarRouteChange[];
   trafficLightsOnMap: TrafficLightOnMap[];
   trafficLightsStatus: TrafficLightStatus[];
 }
@@ -168,4 +181,5 @@ export type RealtimeMessage =
   | { type: "trafficLightStatus"; ts: number; data: TrafficLightStatusPacket }
   | { type: "obstacleStatus"; ts: number; data: ObstacleStatusPacket }
   | { type: "carRouteChange"; ts: number; data: RouteChangePacket }
+  | { type: "clusterStage"; ts: number; data: ClusterStagePacket }
   | AdminResponseMessage;

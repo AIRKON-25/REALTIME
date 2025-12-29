@@ -14,6 +14,7 @@ import type {
   RouteChangePacket,
   TrafficLightStatusPacket,
   RoutePoint,
+  ClusterStage,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -30,6 +31,18 @@ const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
 const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
 const ROUTE_FLASH_MS = 600;
 type AppMode = "monitor" | "admin";
+type PageRoute = "monitor" | "admin" | "clusterBefore" | "clusterAfter";
+
+const resolveRoute = (pathname: string): PageRoute => {
+  const normalized = pathname.toLowerCase();
+  if (normalized.startsWith("/admin")) return "admin";
+  if (normalized.startsWith("/cluster/before") || normalized.startsWith("/cluster/pre")) return "clusterBefore";
+  if (normalized.startsWith("/cluster/after") || normalized.startsWith("/cluster/post")) return "clusterAfter";
+  return "monitor";
+};
+
+const CLUSTER_BEFORE_STAGE: ClusterStage = "preCluster";
+const CLUSTER_AFTER_STAGE: ClusterStage = "postCluster";
 
 const emptyState: MonitorState = {
   carsOnMap: [],
@@ -144,8 +157,14 @@ const applyTrafficLightStatus = (
 
 function App() {
   // 🔹 서버에서 오는 전체 상태
-  const isAdminPage = window.location.pathname === "/admin";
+  const initialRoute = resolveRoute(window.location.pathname);
+  const [pageRoute] = useState<PageRoute>(initialRoute);
+  const isAdminPage = pageRoute === "admin";
+  const isClusterBefore = pageRoute === "clusterBefore";
+  const isClusterAfter = pageRoute === "clusterAfter";
   const [serverState, setServerState] = useState<MonitorState>(emptyState);
+  const [clusterBeforeState, setClusterBeforeState] = useState<MonitorState>(emptyState);
+  const [clusterAfterState, setClusterAfterState] = useState<MonitorState>(emptyState);
   const [hasCamStatus, setHasCamStatus] = useState<boolean>(false);
   const [appMode, setAppMode] = useState<AppMode>(() =>
     isAdminPage ? "admin" : "monitor"
@@ -184,19 +203,41 @@ function App() {
           const msg: RealtimeMessage = JSON.parse(event.data);
           if (msg.type === "camStatus") {
             setHasCamStatus(true);
+            const applyCam = (prev: MonitorState) => ({
+              ...prev,
+              camerasOnMap: msg.data.camerasOnMap,
+              camerasStatus: msg.data.camerasStatus,
+            });
+            setServerState(applyCam);
+            setClusterBeforeState(applyCam);
+            setClusterAfterState(applyCam);
+            return;
+          }
+          if (msg.type === "trafficLightStatus") {
+            setServerState((prev) => applyTrafficLightStatus(prev, msg.data));
+            setClusterBeforeState((prev) => applyTrafficLightStatus(prev, msg.data));
+            setClusterAfterState((prev) => applyTrafficLightStatus(prev, msg.data));
+            return;
+          }
+          if (msg.type === "clusterStage") {
+            const applyStage = (prev: MonitorState) => ({
+              ...prev,
+              carsOnMap: msg.data.carsOnMap,
+              carsStatus: msg.data.carsStatus,
+              obstaclesOnMap: msg.data.obstaclesOnMap ?? [],
+              obstaclesStatus: msg.data.obstaclesStatus ?? [],
+            });
+            if (msg.data.stage === CLUSTER_BEFORE_STAGE) {
+              setClusterBeforeState(applyStage);
+            } else if (msg.data.stage === CLUSTER_AFTER_STAGE) {
+              setClusterAfterState(applyStage);
+            }
+            return;
           }
           setServerState((prev) => {
             switch (msg.type) {
-              case "camStatus":
-                return {
-                  ...prev,
-                  camerasOnMap: msg.data.camerasOnMap,
-                  camerasStatus: msg.data.camerasStatus,
-                };
               case "carStatus":
                 return applyCarStatus(prev, msg.data);
-              case "trafficLightStatus":
-                return applyTrafficLightStatus(prev, msg.data);
               case "obstacleStatus":
                 return applyObstacleStatus(prev, msg.data);
               case "carRouteChange":
@@ -205,6 +246,10 @@ function App() {
                 return prev;
             }
           });
+          if (msg.type === "carRouteChange") {
+            setClusterBeforeState((prev) => applyRouteChange(prev, msg.data));
+            setClusterAfterState((prev) => applyRouteChange(prev, msg.data));
+          }
         } catch (e) {
           console.error("Invalid message from server:", e);
         }
@@ -235,15 +280,23 @@ function App() {
   }, []);
 
   // 서버에서 아직 아무것도 안 보냈을 때의 기본 값들
-  const carsOnMap = serverState.carsOnMap;
-  const carsStatus = serverState.carsStatus;
-  const camerasOnMap = serverState.camerasOnMap;
-  const camerasStatus = serverState.camerasStatus;
-  const obstaclesOnMap = serverState.obstaclesOnMap;
-  const obstaclesStatus = serverState.obstaclesStatus;
-  const routeChanges = serverState.routeChanges;
-  const trafficLightsOnMap = serverState.trafficLightsOnMap;
-  const trafficLightsStatus = serverState.trafficLightsStatus;
+  const activeState = useMemo(
+    () => {
+      if (isClusterBefore) return clusterBeforeState;
+      if (isClusterAfter) return clusterAfterState;
+      return serverState;
+    },
+    [isClusterBefore, isClusterAfter, clusterBeforeState, clusterAfterState, serverState]
+  );
+  const carsOnMap = activeState.carsOnMap;
+  const carsStatus = activeState.carsStatus;
+  const camerasOnMap = activeState.camerasOnMap;
+  const camerasStatus = activeState.camerasStatus;
+  const obstaclesOnMap = activeState.obstaclesOnMap;
+  const obstaclesStatus = activeState.obstaclesStatus;
+  const routeChanges = activeState.routeChanges;
+  const trafficLightsOnMap = activeState.trafficLightsOnMap;
+  const trafficLightsStatus = activeState.trafficLightsStatus;
   const selectedIncident = useMemo(
     () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
     [obstaclesStatus, selectedIncidentId]
