@@ -304,8 +304,8 @@ body {
 
 .map {
   position: relative;
-  --map-scale: 3;
-  --map-camera-size: calc(16px * var(--map-scale));
+  --map-scale: 2.4;
+  --map-camera-size: calc(25px * var(--map-scale));
   /* --map-car-width: calc(14px * var(--map-scale));
   --map-car-height: calc(25px * var(--map-scale)); */
   --map-car-width: calc(25px * var(--map-scale));
@@ -354,8 +354,8 @@ body {
   position: absolute;
   transform: translate(-50%, -50%);
   border: none;
-  width: 44px;
-  height: 32px;
+  /* width: 44px;
+  height: 32px; */
   border-radius: 999px;
   background: #f9fafb;
   display: flex;
