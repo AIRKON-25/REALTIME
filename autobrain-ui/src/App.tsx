@@ -13,6 +13,7 @@ import type {
   ObstacleStatusPacket,
   RouteChangePacket,
   TrafficLightStatusPacket,
+  CarRouteChange,
   RoutePoint,
   ClusterStage,
 } from "./types";
@@ -362,10 +363,34 @@ function App() {
     return map;
   }, [carsStatus]);
 
+  const routeChangesFromStatus = useMemo(() => {
+    const changes: CarRouteChange[] = [];
+    Object.entries(carPaths).forEach(([carId, pts]) => {
+      if (!pts || pts.length < 2) return;
+      const status = carsStatus.find((c) => c.car_id === carId);
+      if (!status?.routeChanged) return;
+      changes.push({ carId, newRoute: pts });
+    });
+    return changes;
+  }, [carPaths, carsStatus]);
+
+  const mergedRouteChanges = useMemo(() => {
+    const byCar = new Map<CarId, CarRouteChange>();
+    routeChanges.forEach((change) => {
+      if (!change?.carId || !change.newRoute || change.newRoute.length < 2) return;
+      byCar.set(change.carId, change);
+    });
+    routeChangesFromStatus.forEach((change) => {
+      if (byCar.has(change.carId)) return;
+      byCar.set(change.carId, change);
+    });
+    return Array.from(byCar.values());
+  }, [routeChanges, routeChangesFromStatus]);
+
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     routeFlashTimersRef.current = [];
-    if (routeChanges.length === 0) {
+    if (mergedRouteChanges.length === 0) {
       setRouteFlashPhase("none");
       return;
     }
@@ -379,7 +404,7 @@ function App() {
       routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
       routeFlashTimersRef.current = [];
     };
-  }, [routeChanges]);
+  }, [mergedRouteChanges]);
 
   // ===========================
   //  2) 뷰 모드 계산
@@ -440,10 +465,10 @@ function App() {
 
   const visibleRouteChanges = useMemo(() => {
     if (routeFlashPhase === "new") {
-      return routeChanges;
+      return mergedRouteChanges;
     }
     return [];
-  }, [routeChanges, routeFlashPhase]);
+  }, [mergedRouteChanges, routeFlashPhase]);
 
 // Monitoring에 실제로 띄울 카메라 선택 로직
   const monitoringCameraIds: CameraId[] = useMemo(() => {
