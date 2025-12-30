@@ -5,7 +5,6 @@ import type {
   CameraId,
   CarId,
   CarColor,
-  IncidentId,
   ViewMode,
   MonitorState,
   RealtimeMessage,
@@ -13,7 +12,9 @@ import type {
   CarStatusPacket,
   ObstacleStatusPacket,
   RouteChangePacket,
-  CarRouteChange,
+  TrafficLightStatusPacket,
+  RoutePoint,
+  ClusterStage,
 } from "./types";
 
 import { Header } from "./components/Header";
@@ -30,6 +31,18 @@ const WS_PORT = import.meta.env.VITE_WS_PORT || "18000";
 const WS_URL = `ws://${WS_HOST}:${WS_PORT}/monitor`;
 const ROUTE_FLASH_MS = 600;
 type AppMode = "monitor" | "admin";
+type PageRoute = "monitor" | "admin" | "clusterBefore" | "clusterAfter";
+
+const resolveRoute = (pathname: string): PageRoute => {
+  const normalized = pathname.toLowerCase();
+  if (normalized.startsWith("/admin")) return "admin";
+  if (normalized.startsWith("/cluster/before") || normalized.startsWith("/cluster/pre")) return "clusterBefore";
+  if (normalized.startsWith("/cluster/after") || normalized.startsWith("/cluster/post")) return "clusterAfter";
+  return "monitor";
+};
+
+const CLUSTER_BEFORE_STAGE: ClusterStage = "preCluster";
+const CLUSTER_AFTER_STAGE: ClusterStage = "postCluster";
 
 const emptyState: MonitorState = {
   carsOnMap: [],
@@ -38,14 +51,15 @@ const emptyState: MonitorState = {
   camerasStatus: [],
   obstaclesOnMap: [],
   obstaclesStatus: [],
-  incident: null,
   routeChanges: [],
+  trafficLightsOnMap: [],
+  trafficLightsStatus: [],
 };
 
 const mergeByKey = <T,>(
   prev: T[],
   upserts: T[] | undefined,
-  deletes: string[] | undefined,
+  deletes: (string | number)[] | undefined,
   keyFn: (item: T) => string
 ): T[] => {
   if ((!upserts || upserts.length === 0) && (!deletes || deletes.length === 0)) {
@@ -53,7 +67,7 @@ const mergeByKey = <T,>(
   }
   const byKey = new Map(prev.map((item) => [keyFn(item), item]));
   if (deletes) {
-    deletes.forEach((id) => byKey.delete(id));
+    deletes.forEach((id) => byKey.delete(id.toString()));
   }
   if (upserts) {
     upserts.forEach((item) => byKey.set(keyFn(item), item));
@@ -76,7 +90,7 @@ const applyCarStatus = (
       prev.carsStatus,
       data.carsStatusUpserts,
       data.carsStatusDeletes,
-      (item) => item.id
+      (item) => item.car_id
     );
     return { ...prev, carsOnMap, carsStatus };
   }
@@ -87,7 +101,6 @@ const applyObstacleStatus = (
   prev: MonitorState,
   data: ObstacleStatusPacket
 ): MonitorState => {
-  let next = prev;
   if (data.mode === "delta") {
     const obstaclesOnMap = mergeByKey(
       prev.obstaclesOnMap,
@@ -101,72 +114,74 @@ const applyObstacleStatus = (
       data.statusDeletes,
       (item) => item.id
     );
-    next = { ...prev, obstaclesOnMap, obstaclesStatus };
-  } else {
-    next = {
-      ...prev,
-      obstaclesOnMap: data.obstaclesOnMap,
-      obstaclesStatus: data.obstaclesStatus ?? prev.obstaclesStatus,
-    };
+    return { ...prev, obstaclesOnMap, obstaclesStatus };
   }
-  if (Object.prototype.hasOwnProperty.call(data, "incident")) {
-    const incident = data.incident ?? null;
-    return { ...next, incident };
-  }
-  return next;
-};
-
-const deriveRouteChanges = (
-  steps: RouteChangePacket["steps"]
-): CarRouteChange[] => {
-  if (!steps || steps.length === 0) {
-    return [];
-  }
-  return steps.map((step) => ({
-    carId: step.carId,
-    newRoute: [step.from, step.to],
-  }));
+  const obstaclesOnMap = data.obstaclesOnMap;
+  const obstaclesStatus = data.obstaclesStatus ?? prev.obstaclesStatus;
+  return { ...prev, obstaclesOnMap, obstaclesStatus };
 };
 
 const applyRouteChange = (
   prev: MonitorState,
   data: RouteChangePacket
 ): MonitorState => {
-  if (data.changes && data.changes.length > 0) {
-    return { ...prev, routeChanges: data.changes };
+  const changes = data.changes ?? [];
+  return { ...prev, routeChanges: changes };
+};
+
+const applyTrafficLightStatus = (
+  prev: MonitorState,
+  data: TrafficLightStatusPacket
+): MonitorState => {
+  if (data.mode === "delta") {
+    const trafficLightsOnMap = mergeByKey(
+      prev.trafficLightsOnMap,
+      data.trafficLightsOnMapUpserts,
+      data.trafficLightsOnMapDeletes,
+      (item) => item.trafficLightId.toString()
+    );
+    const trafficLightsStatus = mergeByKey(
+      prev.trafficLightsStatus,
+      data.trafficLightsStatusUpserts,
+      data.trafficLightsStatusDeletes,
+      (item) => item.trafficLightId.toString()
+    );
+    return { ...prev, trafficLightsOnMap, trafficLightsStatus };
   }
-  return { ...prev, routeChanges: deriveRouteChanges(data.steps) };
+  return {
+    ...prev,
+    trafficLightsOnMap: data.trafficLightsOnMap,
+    trafficLightsStatus: data.trafficLightsStatus,
+  };
 };
 
 function App() {
   // 🔹 서버에서 오는 전체 상태
+  const initialRoute = resolveRoute(window.location.pathname);
+  const [pageRoute] = useState<PageRoute>(initialRoute);
+  const isAdminPage = pageRoute === "admin";
+  const isClusterBefore = pageRoute === "clusterBefore";
+  const isClusterAfter = pageRoute === "clusterAfter";
   const [serverState, setServerState] = useState<MonitorState>(emptyState);
+  const [clusterBeforeState, setClusterBeforeState] = useState<MonitorState>(emptyState);
+  const [clusterAfterState, setClusterAfterState] = useState<MonitorState>(emptyState);
   const [hasCamStatus, setHasCamStatus] = useState<boolean>(false);
   const [appMode, setAppMode] = useState<AppMode>(() =>
-    window.location.hash === "#admin" ? "admin" : "monitor"
+    isAdminPage ? "admin" : "monitor"
   );
 
-  useEffect(() => {
-    const syncMode = () => {
-      setAppMode(window.location.hash === "#admin" ? "admin" : "monitor");
-    };
-    window.addEventListener("hashchange", syncMode);
-    return () => window.removeEventListener("hashchange", syncMode);
-  }, []);
-
   const handleModeChange = (mode: AppMode) => {
+    if (!isAdminPage) return;
     setAppMode(mode);
-    window.location.hash = mode === "admin" ? "#admin" : "";
   };
 
   // 🔹 뷰 모드 관련 상태 (사용자 인터랙션용)
   const [viewMode, setViewMode] = useState<ViewMode>("default");
   const [selectedCarId, setSelectedCarId] = useState<CarId | null>(null);
   const [selectedCameraIds, setSelectedCameraIds] = useState<CameraId[]>([]);
-  const [activeIncidentId, setActiveIncidentId] = useState<IncidentId | null>(
-    null
-  );
+  const [selectedIncidentId, setSelectedIncidentId] = useState<string | null>(null);
   const [routeFlashPhase, setRouteFlashPhase] = useState<"none" | "new">("none");
+  const [carPathFlashKey, setCarPathFlashKey] = useState<number>(0);
   const routeFlashTimersRef = useRef<number[]>([]);
 
   // ===========================
@@ -188,15 +203,39 @@ function App() {
           const msg: RealtimeMessage = JSON.parse(event.data);
           if (msg.type === "camStatus") {
             setHasCamStatus(true);
+            const applyCam = (prev: MonitorState) => ({
+              ...prev,
+              camerasOnMap: msg.data.camerasOnMap,
+              camerasStatus: msg.data.camerasStatus,
+            });
+            setServerState(applyCam);
+            setClusterBeforeState(applyCam);
+            setClusterAfterState(applyCam);
+            return;
+          }
+          if (msg.type === "trafficLightStatus") {
+            setServerState((prev) => applyTrafficLightStatus(prev, msg.data));
+            setClusterBeforeState((prev) => applyTrafficLightStatus(prev, msg.data));
+            setClusterAfterState((prev) => applyTrafficLightStatus(prev, msg.data));
+            return;
+          }
+          if (msg.type === "clusterStage") {
+            const applyStage = (prev: MonitorState) => ({
+              ...prev,
+              carsOnMap: msg.data.carsOnMap,
+              carsStatus: msg.data.carsStatus,
+              obstaclesOnMap: msg.data.obstaclesOnMap ?? [],
+              obstaclesStatus: msg.data.obstaclesStatus ?? [],
+            });
+            if (msg.data.stage === CLUSTER_BEFORE_STAGE) {
+              setClusterBeforeState(applyStage);
+            } else if (msg.data.stage === CLUSTER_AFTER_STAGE) {
+              setClusterAfterState(applyStage);
+            }
+            return;
           }
           setServerState((prev) => {
             switch (msg.type) {
-              case "camStatus":
-                return {
-                  ...prev,
-                  camerasOnMap: msg.data.camerasOnMap,
-                  camerasStatus: msg.data.camerasStatus,
-                };
               case "carStatus":
                 return applyCarStatus(prev, msg.data);
               case "obstacleStatus":
@@ -207,6 +246,10 @@ function App() {
                 return prev;
             }
           });
+          if (msg.type === "carRouteChange") {
+            setClusterBeforeState((prev) => applyRouteChange(prev, msg.data));
+            setClusterAfterState((prev) => applyRouteChange(prev, msg.data));
+          }
         } catch (e) {
           console.error("Invalid message from server:", e);
         }
@@ -237,13 +280,33 @@ function App() {
   }, []);
 
   // 서버에서 아직 아무것도 안 보냈을 때의 기본 값들
-  const carsOnMap = serverState.carsOnMap;
-  const carsStatus = serverState.carsStatus;
-  const camerasOnMap = serverState.camerasOnMap;
-  const camerasStatus = serverState.camerasStatus;
-  const obstaclesOnMap = serverState.obstaclesOnMap;
-  const incident = serverState.incident;
-  const routeChanges = serverState.routeChanges;
+  const activeState = useMemo(
+    () => {
+      if (isClusterBefore) return clusterBeforeState;
+      if (isClusterAfter) return clusterAfterState;
+      return serverState;
+    },
+    [isClusterBefore, isClusterAfter, clusterBeforeState, clusterAfterState, serverState]
+  );
+  const carsOnMap = activeState.carsOnMap;
+  const carsStatus = activeState.carsStatus;
+  const camerasOnMap = activeState.camerasOnMap;
+  const camerasStatus = activeState.camerasStatus;
+  const obstaclesOnMap = activeState.obstaclesOnMap;
+  const obstaclesStatus = activeState.obstaclesStatus;
+  const routeChanges = activeState.routeChanges;
+  const trafficLightsOnMap = activeState.trafficLightsOnMap;
+  const trafficLightsStatus = activeState.trafficLightsStatus;
+  const selectedIncident = useMemo(
+    () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
+    [obstaclesStatus, selectedIncidentId]
+  );
+
+  useEffect(() => {
+    if (selectedIncidentId && !selectedIncident) {
+      setSelectedIncidentId(null);
+    }
+  }, [selectedIncidentId, selectedIncident]);
 
   const carColorById = useMemo(() => {
     const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
@@ -260,13 +323,44 @@ function App() {
     });
     carsStatus.forEach((status) => {
       const n = normalize(status.color);
-      if (n) map[status.id] = n;
+      if (n) map[status.car_id] = n;
     });
     return map;
   }, [carsOnMap, carsStatus]);
 
-  const isIncidentActive =
-    !!incident && activeIncidentId === incident.id;
+  const cameraNameById = useMemo(() => {
+    const map: Record<CameraId, string> = {};
+    camerasStatus.forEach((cam) => {
+      map[cam.id] = cam.name;
+    });
+    return map;
+  }, [camerasStatus]);
+
+  const cameraPosById = useMemo(() => {
+    const map: Record<CameraId, { x: number; y: number }> = {};
+    camerasOnMap.forEach((cam) => {
+      map[cam.cameraId] = { x: cam.x, y: cam.y };
+    });
+    return map;
+  }, [camerasOnMap]);
+
+  const carPaths = useMemo(() => {
+    const map: Record<CarId, RoutePoint[]> = {};
+    carsStatus.forEach((status) => {
+      const pts = (status.path_future ?? [])
+        .map((pt) => {
+          const x = Number((pt as any).x);
+          const y = Number((pt as any).y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y };
+        })
+        .filter((p): p is RoutePoint => Boolean(p));
+      if (pts.length > 1) {
+        map[status.car_id] = pts;
+      }
+    });
+    return map;
+  }, [carsStatus]);
 
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
@@ -291,31 +385,33 @@ function App() {
   //  2) 뷰 모드 계산
   // ===========================
   useEffect(() => {
-    if (isIncidentActive) {
-      setViewMode("incidentFocused");
-    } else if (selectedCarId) {
+    if (selectedCarId) {
       setViewMode("carFocused");
     } else if (selectedCameraIds.length > 0) {
       setViewMode("cameraFocused");
+    } else if (selectedIncidentId) {
+      setViewMode("incidentFocused");
     } else {
       setViewMode("default");
     }
-  }, [isIncidentActive, selectedCarId, selectedCameraIds]);
+  }, [selectedCarId, selectedIncidentId, selectedCameraIds]);
 
   // ===========================
   //  3) 클릭 핸들러들
   // ===========================
   const handleCarClick = (carId: CarId) => {
-    if (selectedCarId === carId) {
-      setSelectedCarId(null);
-      return;
-    }
-    setSelectedCarId(carId);
+    const nextSelected = selectedCarId === carId ? null : carId;
+    setSelectedCarId(nextSelected);
+    setSelectedIncidentId(null);
     setSelectedCameraIds([]);
+    if (nextSelected) {
+      setCarPathFlashKey(Date.now());
+    }
   };
 
   const handleCameraClick = (cameraId: CameraId) => {
     setSelectedCarId(null);
+    setSelectedIncidentId(null);
     setSelectedCameraIds((prev) => {
       if (prev.includes(cameraId)) {
         return prev.filter((id) => id !== cameraId);
@@ -327,24 +423,20 @@ function App() {
     });
   };
 
-  const handleIncidentClick = () => {
-    if (!incident) return;
-    if (isIncidentActive) {
-      setActiveIncidentId(null);
+  const handleIncidentClick = (incidentId: string | null) => {
+    if (!incidentId || selectedIncidentId === incidentId) {
+      setSelectedIncidentId(null);
     } else {
-      setActiveIncidentId(incident.id);
+      setSelectedIncidentId(incidentId);
     }
+    setSelectedCarId(null);
+    setSelectedCameraIds([]);
   };
 
-  // Incident가 비추는 영역에 있는 차량들
+  // 장애물 알림 시 보여줄 차량 목록 (현재는 전체 차량)
   const carsStatusForPanel = useMemo(() => carsStatus, [carsStatus]);
 
-  const vehiclesInIncidentView = useMemo(() => {
-    if (!incident?.relatedCarIds) return [];
-    return carsStatusForPanel.filter((car) =>
-      incident.relatedCarIds!.includes(car.id)
-    );
-  }, [incident, carsStatusForPanel]);
+  const vehiclesInAlertView = useMemo(() => carsStatusForPanel, [carsStatusForPanel]);
 
   const visibleRouteChanges = useMemo(() => {
     if (routeFlashPhase === "new") {
@@ -355,13 +447,78 @@ function App() {
 
 // Monitoring에 실제로 띄울 카메라 선택 로직
   const monitoringCameraIds: CameraId[] = useMemo(() => {
-    if (selectedCameraIds.length > 0) {
-      return Array.from(new Set(selectedCameraIds)).slice(0, 2);
+    const uniq = (ids?: CameraId[]) =>
+      Array.from(new Set((ids ?? []).filter((id): id is CameraId => Boolean(id))));
+
+    const nearestCamera = (
+      candidates: CameraId[] | undefined,
+      target?: { x: number; y: number },
+      allowFallbackToAll = false
+    ) => {
+      let ids = uniq(candidates);
+      if (allowFallbackToAll && ids.length === 0) {
+        ids = uniq(camerasOnMap.map((c) => c.cameraId));
+      }
+      if (!ids.length) return undefined;
+      if (!target) return ids[0];
+      let best: CameraId | undefined;
+      let bestDist = Number.POSITIVE_INFINITY;
+      ids.forEach((id) => {
+        const pos = cameraPosById[id];
+        if (!pos) return;
+        const dx = pos.x - target.x;
+        const dy = pos.y - target.y;
+        const dist = dx * dx + dy * dy;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = id;
+        }
+      });
+      return best ?? ids[0];
+    };
+
+    if (viewMode === "cameraFocused" && selectedCameraIds.length > 0) {
+      return uniq(selectedCameraIds).slice(0, 2);
     }
-    if (incident?.cameraId && isIncidentActive) return [incident.cameraId];
-    const car = carsStatus.find((c) => c.id === selectedCarId);
-    return car?.cameraId ? [car.cameraId] : [];
-  }, [selectedCameraIds, incident, isIncidentActive, selectedCarId, carsStatus]);
+
+    if (viewMode === "carFocused" && selectedCarId) {
+      const carStatus = carsStatus.find((c) => c.car_id === selectedCarId);
+      const carPos = carsOnMap.find((c) => c.carId === selectedCarId);
+      const cam = nearestCamera(
+        carStatus?.cameraIds,
+        carPos ? { x: carPos.x, y: carPos.y } : undefined,
+        true
+      );
+      return cam ? [cam] : [];
+    }
+
+    if (viewMode === "incidentFocused") {
+      const targetIncident = selectedIncident ?? obstaclesStatus.find((ob) => ob.cameraIds && ob.cameraIds.length);
+      const targetPos = targetIncident
+        ? obstaclesOnMap.find((ob) => ob.obstacleId === targetIncident.id || ob.id === targetIncident.id)
+        : undefined;
+      const cam = nearestCamera(
+        targetIncident?.cameraIds,
+        targetPos ? { x: targetPos.x, y: targetPos.y } : undefined,
+        true
+      );
+      return cam ? [cam] : [];
+    }
+
+    return [];
+  }, [
+    viewMode,
+    selectedCameraIds,
+    selectedCarId,
+    selectedIncident,
+    obstaclesStatus,
+    carsStatus,
+    camerasStatus,
+    carsOnMap,
+    obstaclesOnMap,
+    cameraPosById,
+    camerasOnMap,
+  ]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
@@ -371,15 +528,46 @@ function App() {
       .filter((cam): cam is CameraStatus => !!cam);
   }, [monitoringCameraIds, camerasStatus]);
 
+  const monitoringFrames = useMemo(() => {
+    if (monitoringCameraIds.length === 0) return [];
+
+    if (viewMode === "incidentFocused") {
+      const cam = monitoringCameras[0];
+      if (cam) {
+        return [{ label: cam.name || cam.id, url: cam.streamUrl }];
+      }
+      return [];
+    }
+
+    if (viewMode === "cameraFocused") {
+      if (monitoringCameras.length === 1) {
+        const cam = monitoringCameras[0];
+        const labelBase = cam.name || cam.id;
+        return [
+          { label: `${labelBase} (Main)`, url: cam.streamUrl },
+          { label: `${labelBase} (BEV)`, url: cam.streamBEVUrl || cam.streamUrl },
+        ];
+      }
+      return monitoringCameras.slice(0, 2).map((cam, idx) => ({
+        label: `${cam.name || cam.id} (Cam ${idx})`,
+        url: cam.streamUrl,
+      }));
+    }
+
+    return monitoringCameras.slice(0, 2).map((cam) => ({
+      label: cam.name || cam.id,
+      url: cam.streamUrl,
+    }));
+  }, [monitoringCameraIds, monitoringCameras, viewMode]);
+
 
   const isLoading = !hasCamStatus;
 
   return (
     <div className="app-root">
-      <Header mode={appMode} onModeChange={handleModeChange} />
+      <Header mode={appMode} onModeChange={handleModeChange} adminEnabled={isAdminPage} />
       <Layout
         viewMode={viewMode}
-        hasIncident={!!incident}
       >
         {/* LEFT: MAP */}
         <div className="layout__map-inner">
@@ -392,10 +580,13 @@ function App() {
             carsOnMap={carsOnMap}
             camerasOnMap={camerasOnMap}
             obstacles={obstaclesOnMap}
+            trafficLightsOnMap={trafficLightsOnMap}
+            trafficLightsStatus={trafficLightsStatus}
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
-            onCarClick={handleCarClick}
+            carPaths={carPaths}
+            carPathFlashKey={carPathFlashKey}
             onCameraClick={handleCameraClick}
           />
         </div>
@@ -431,7 +622,9 @@ function App() {
 
               {viewMode === "carFocused" && selectedCarId && (
                 <CarStatusPanel
-                  cars={carsStatusForPanel}
+                  cars={carsStatusForPanel.filter(
+                    (c) => c.car_id === selectedCarId
+                  )}
                   carColorById={carColorById}
                   selectedCarId={selectedCarId}
                   onCarClick={handleCarClick}
@@ -439,41 +632,32 @@ function App() {
                 />
               )}
 
-              {viewMode === "incidentFocused" && selectedCarId && (
-                <CarStatusPanel
-                  cars={vehiclesInIncidentView}
-                  selectedCarId={selectedCarId}
-                  onCarClick={handleCarClick}
-                  detailOnly
-                />
-              )}
-
-              {viewMode === "incidentFocused" &&
-                !selectedCarId &&
-                vehiclesInIncidentView.length > 0 && (
-                  <CarStatusPanel
-                    cars={vehiclesInIncidentView}
-                    carColorById={carColorById}
-                    selectedCarId={null}
-                    onCarClick={handleCarClick}
-                    scrollable
-                  />
-                )}
-
               {/* Incident */}
-              {(viewMode === "default" || viewMode === "incidentFocused") && (
+              {obstaclesStatus.length > 0 &&
+                viewMode !== "carFocused" &&
+                viewMode !== "cameraFocused" && (
                 <IncidentPanel
-                  incident={incident}
-                  isActive={isIncidentActive}
-                  onClick={handleIncidentClick}
+                  alerts={
+                    viewMode === "incidentFocused" && selectedIncidentId
+                      ? obstaclesStatus.filter((ob) => ob.id === selectedIncidentId)
+                      : obstaclesStatus
+                  }
+                  cameraNames={cameraNameById}
+                  isActive={obstaclesStatus.length > 0}
+                  onSelect={handleIncidentClick}
                 />
               )}
 
               {/* Monitoring View */}
-              {(viewMode === "cameraFocused" ||
-                viewMode === "carFocused" ||
-                viewMode === "incidentFocused") && (
-                  <MonitoringPanel cameras={monitoringCameras} />
+              {viewMode === "cameraFocused" && monitoringFrames.length > 0 && (
+                <MonitoringPanel frames={monitoringFrames} />
+              )}
+              {viewMode === "carFocused" && monitoringFrames.length > 0 && (
+                <MonitoringPanel frames={monitoringFrames} />
+              )}
+              {viewMode === "incidentFocused" &&
+                monitoringFrames.length > 0 && (
+                  <MonitoringPanel frames={monitoringFrames} />
                 )}
             </>
           )}

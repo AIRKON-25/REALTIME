@@ -1,5 +1,6 @@
 import asyncio
 import heapq
+import math
 import json
 import os
 import queue
@@ -26,7 +27,25 @@ from utils.tracking.geometry import aabb_iou_axis_aligned
 from utils.tracking.lane_matcher import LaneMatcher
 from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
 from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
-from realtime.runtime_constants import COLOR_BIAS_STRENGTH, COLOR_BIAS_MIN_VOTES, vehicle_fixed_length, vehicle_fixed_width
+from realtime.runtime_constants import (
+    COLOR_BIAS_STRENGTH,
+    COLOR_BIAS_MIN_VOTES,
+    PATH_REID_DIST_M,
+    PATH_REID_YAW_DEG,
+    VELOCITY_DT_MAX,
+    VELOCITY_DT_MIN,
+    VELOCITY_EWMA_ALPHA,
+    VELOCITY_MAX_MPS,
+    VELOCITY_SPEED_WINDOW,
+    VELOCITY_ZERO_THRESH,
+    vehicle_fixed_length,
+    vehicle_fixed_width,
+    rubberCone_fixed_length,
+    rubberCone_fixed_width,
+    barricade_fixed_length,
+    barricade_fixed_width,
+)
+from realtime.status_core import StatusState
 
 class RealtimeServer:
     def __init__(
@@ -59,6 +78,7 @@ class RealtimeServer:
         log_pipeline: bool = True,
         log_udp_packets: bool = False,
         lane_map_path: Optional[str] = "utils/make_H/lanes.json",
+        status_state: Optional[StatusState] = None,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -111,6 +131,8 @@ class RealtimeServer:
         self.last_cluster_debug: Dict[str, int] = {}
         self.debug_assoc_logging = debug_assoc_logging
         self.log_pipeline = log_pipeline
+        self.status_state = status_state
+        self._velocity_state: Dict[int, dict] = {}  # ext_id -> {cx, cy, ts, vx, vy, history}
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -127,12 +149,12 @@ class RealtimeServer:
                 self.ws_hub = None
 
         self._ui_cameras_on_map = [
-            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.01, "y": 0.50},
-            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.01},
-            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.01},
-            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.01, "y": 0.50},
-            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.01},
-            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.01},
+            {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.015, "y": 0.51},
+            {"id": "camMarker-2", "cameraId": "cam-2", "x": 0.25, "y": -0.02},
+            {"id": "camMarker-3", "cameraId": "cam-3", "x": 0.75, "y": -0.02},
+            {"id": "camMarker-4", "cameraId": "cam-4", "x": 1.015, "y": 0.51},
+            {"id": "camMarker-5", "cameraId": "cam-5", "x": 0.75, "y": 1.02},
+            {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.02},
         ]
         self._ui_cameras_status = [
             {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
@@ -142,9 +164,46 @@ class RealtimeServer:
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
         ]
+        _raw_traffic_lights = [
+            {"id": "tl-1", "trafficLightId": 1, "x": -5.5, "y": -13.1, "yaw": 90.0},
+            {"id": "tl-2", "trafficLightId": 2, "x": 5.6, "y": -17.1, "yaw": -90.0},
+            {"id": "tl-3", "trafficLightId": 3, "x": 2.1, "y": -9.8, "yaw": 0.0},
+            {"id": "tl-4", "trafficLightId": 4, "x": -19.5, "y": 6, "yaw": 0.0},
+            {"id": "tl-5", "trafficLightId": 5, "x": -23.5, "y": -5.9, "yaw": 180.0},
+            {"id": "tl-6", "trafficLightId": 6, "x": -16.1, "y": -1.9, "yaw": -90.0},
+            {"id": "tl-7", "trafficLightId": 7, "x": 19.5, "y": -5.8, "yaw": 180.0},
+            {"id": "tl-8", "trafficLightId": 8, "x": 23.7, "y": 6.2, "yaw": 0.0},
+            {"id": "tl-9", "trafficLightId": 9, "x": 16.1, "y": 2.2, "yaw": 90.0},
+        ]
+        self._ui_traffic_lights_on_map = []
+        for item in _raw_traffic_lights:
+            try:
+                x_map, y_map = self._world_to_map_xy(float(item["x"]), -float(item["y"]))
+            except Exception:
+                continue
+            self._ui_traffic_lights_on_map.append(
+                {
+                    "id": item["id"],
+                    "trafficLightId": int(item["trafficLightId"]),
+                    "x": x_map,
+                    "y": y_map,
+                    "yaw": float(item["yaw"]),
+                }
+            )
+        self._ui_traffic_light_status = {
+            int(item["trafficLightId"]): {
+                "trafficLightId": int(item["trafficLightId"]),
+                "light": "red",
+                "left_green": None,
+            }
+            for item in self._ui_traffic_lights_on_map
+        }
+        self._ui_traffic_light_map: Dict[str, dict] = {}
+        self._ui_traffic_light_status_cache: Dict[int, dict] = {}
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
         self._ui_obstacle_status_map: Dict[str, dict] = {}
+        self._cluster_stage_snapshots: Dict[str, dict] = {}
 
         self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
@@ -261,6 +320,131 @@ class RealtimeServer:
             else:
                 cost += self._reid_color_penalty
         return cost, dist
+
+    def _update_velocity(self, ext_id: int, cx: float, cy: float, ts: float) -> Optional[Dict[str, float]]:
+        """
+        외부 ID 기준 위치 차분 + EMA로 속도를 계산한다. SORT 내부는 건드리지 않는다.
+        """
+        try:
+            cx = float(cx)
+            cy = float(cy)
+            ts = float(ts)
+        except Exception:
+            return None
+        state = self._velocity_state.get(ext_id)
+        if state is None:
+            self._velocity_state[ext_id] = {
+                "cx": cx,
+                "cy": cy,
+                "ts": ts,
+                "vx": 0.0,
+                "vy": 0.0,
+                "history": deque(maxlen=VELOCITY_SPEED_WINDOW),
+            }
+            return {"vx": 0.0, "vy": 0.0, "speed": 0.0}
+        dt = ts - float(state.get("ts", ts))
+        if dt < VELOCITY_DT_MIN:
+            speed = float(np.hypot(state.get("vx", 0.0), state.get("vy", 0.0)))
+            return {"vx": state.get("vx", 0.0), "vy": state.get("vy", 0.0), "speed": speed}
+        if dt > VELOCITY_DT_MAX:
+            self._velocity_state[ext_id] = {
+                "cx": cx,
+                "cy": cy,
+                "ts": ts,
+                "vx": 0.0,
+                "vy": 0.0,
+                "history": deque(maxlen=VELOCITY_SPEED_WINDOW),
+            }
+            return {"vx": 0.0, "vy": 0.0, "speed": 0.0}
+        raw_vx = (cx - float(state.get("cx", cx))) / max(dt, 1e-6)
+        raw_vy = (cy - float(state.get("cy", cy))) / max(dt, 1e-6)
+        alpha = float(VELOCITY_EWMA_ALPHA)
+        vx = alpha * raw_vx + (1.0 - alpha) * float(state.get("vx", 0.0))
+        vy = alpha * raw_vy + (1.0 - alpha) * float(state.get("vy", 0.0))
+        speed = float(np.hypot(vx, vy))
+        if VELOCITY_ZERO_THRESH > 0 and speed < VELOCITY_ZERO_THRESH:
+            vx = 0.0
+            vy = 0.0
+            speed = 0.0
+            hist = deque([0.0], maxlen=VELOCITY_SPEED_WINDOW)
+            self._velocity_state[ext_id] = {"cx": cx, "cy": cy, "ts": ts, "vx": vx, "vy": vy, "history": hist}
+            return {"vx": vx, "vy": vy, "speed": speed}
+        if VELOCITY_MAX_MPS > 0:
+            speed = float(min(speed, VELOCITY_MAX_MPS))
+        hist: deque = state.get("history")
+        if hist is None:
+            hist = deque(maxlen=VELOCITY_SPEED_WINDOW)
+        hist.append(speed)
+        smooth_speed = float(np.median(hist)) if hist else speed
+        if VELOCITY_ZERO_THRESH > 0 and smooth_speed < VELOCITY_ZERO_THRESH:
+            smooth_speed = 0.0
+        self._velocity_state[ext_id] = {"cx": cx, "cy": cy, "ts": ts, "vx": vx, "vy": vy, "history": hist}
+        return {"vx": vx, "vy": vy, "speed": smooth_speed}
+
+    @staticmethod
+    def _deg_diff(a: float, b: float) -> float:
+        """Return absolute minimal difference of two angles in degrees."""
+        try:
+            diff = float(a) - float(b)
+        except Exception:
+            return 180.0
+        return abs((diff + 180.0) % 360.0 - 180.0)
+
+    def _path_reid_cost(self, ext_id: int, track_info: dict) -> Optional[float]:
+        """
+        경로 정보를 이용한 재-ID 비용 계산.
+        반환값: 매칭 가능 시 비용(낮을수록 좋음), 불가 시 None.
+        """
+        if not self.status_state:
+            return None
+        route = self.status_state.get_route(ext_id)
+        if not route:
+            return None
+        path_future = route.get("path_future") or []
+        path_full = route.get("path") or []
+        path = path_future if path_future else path_full
+        if not path:
+            return None
+        try:
+            px = float(track_info.get("cx"))
+            py = float(track_info.get("cy"))
+        except Exception:
+            return None
+
+        best_idx = None
+        best_dist = float("inf")
+        for idx, pt in enumerate(path):
+            try:
+                dx = px - float(pt[0])
+                dy = py - float(pt[1])
+            except Exception:
+                continue
+            dist = math.hypot(dx, dy)
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+        if best_idx is None or best_dist > PATH_REID_DIST_M:
+            return None
+
+        expected_yaw = None
+        if len(path) >= 2:
+            i0 = max(0, min(best_idx, len(path) - 2))
+            try:
+                dx = float(path[i0 + 1][0]) - float(path[i0][0])
+                dy = float(path[i0 + 1][1]) - float(path[i0][1])
+                expected_yaw = math.degrees(math.atan2(dy, dx))
+            except Exception:
+                expected_yaw = None
+
+        track_yaw = track_info.get("yaw")
+        if track_yaw is not None and expected_yaw is not None:
+            yaw_diff = self._deg_diff(track_yaw, expected_yaw)
+            if yaw_diff > PATH_REID_YAW_DEG:
+                return None
+            cost = best_dist + yaw_diff / max(PATH_REID_YAW_DEG, 1e-3)
+        else:
+            cost = best_dist
+        return float(cost)
 
     def _select_car_id(
         self,
@@ -530,6 +714,7 @@ class RealtimeServer:
             except (TypeError, ValueError):
                 speed = None
             yaw = float(row[6]) if len(row) > 6 else None
+            ext_id_existing = self._track_id_map.get(internal_id)
             info = {
                 "internal_id": internal_id,
                 "ts": now,
@@ -543,6 +728,14 @@ class RealtimeServer:
                 "yaw": yaw,
             }
             track_info_by_id[internal_id] = info
+            if self.status_state and ext_id_existing is not None and cls == 0:
+                try:
+                    self.status_state.advance_path_progress(
+                        ext_id_existing,
+                        (info["cx"], info["cy"]),
+                    )
+                except Exception:
+                    pass
             if internal_id in self._track_id_map:
                 continue
             new_track_rows.append(info)
@@ -555,6 +748,10 @@ class RealtimeServer:
                     continue
                 for ext_id, released_info in self._released_external.items():
                     if released_info.get("cls") != 0:
+                        continue
+                    path_cost = self._path_reid_cost(ext_id, track_info)
+                    if path_cost is not None:
+                        pairs.append((path_cost, track_info["internal_id"], ext_id))
                         continue
                     cost, dist = self._compute_reid_cost(track_info, released_info, now)
                     if not relax_gate and dist > self._reid_dist_gate_m:
@@ -622,10 +819,18 @@ class RealtimeServer:
         for idx, row in enumerate(tracks):
             internal_id = int(row[0])
             mapped[idx, 0] = float(id_map.get(internal_id, row[0]))
-        mapped_meta = {
-            id_map[int(row[0])]: self.track_meta.get(int(row[0]), {})
-            for row in tracks
-        }
+        mapped_meta: Dict[int, dict] = {}
+        for row in tracks:
+            internal_id = int(row[0])
+            ext_id = id_map.get(internal_id)
+            if ext_id is None:
+                continue
+            meta = dict(self.track_meta.get(internal_id, {}))
+            vel = self._update_velocity(ext_id, float(row[2]), float(row[3]), now)
+            if vel:
+                meta["velocity"] = [float(vel["vx"]), float(vel["vy"])]
+                meta["speed"] = float(vel["speed"])
+            mapped_meta[ext_id] = meta
         return mapped, mapped_meta
 
     def _build_cam_status_message(self, ts: float) -> dict:
@@ -638,12 +843,121 @@ class RealtimeServer:
             },
         }
 
+    def _build_traffic_light_status_message(self, ts: float) -> Optional[dict]:
+        if self.status_state:
+            for item in self._ui_traffic_lights_on_map:
+                try:
+                    tid = int(item.get("trafficLightId"))
+                except Exception:
+                    continue
+                try:
+                    latest = self.status_state.get_traffic(tid)
+                except Exception:
+                    latest = None
+                if not latest:
+                    continue
+                prev = self._ui_traffic_light_status.get(
+                    tid, {"trafficLightId": tid, "light": "red", "left_green": None}
+                )
+                updated = dict(prev)
+                updated["trafficLightId"] = tid
+                light_val = latest.get("light")
+                if light_val is not None:
+                    updated["light"] = str(light_val)
+                if "left_green" in latest:
+                    left = latest.get("left_green")
+                    updated["left_green"] = bool(left) if left is not None else None
+                self._ui_traffic_light_status[tid] = updated
+
+        current_map = {str(item["trafficLightId"]): item for item in self._ui_traffic_lights_on_map}
+        current_status = {int(tid): status for tid, status in self._ui_traffic_light_status.items()}
+
+        if not self._ui_traffic_light_map and not self._ui_traffic_light_status_cache:
+            self._ui_traffic_light_map = current_map
+            self._ui_traffic_light_status_cache = current_status
+            return {
+                "type": "trafficLightStatus",
+                "ts": ts,
+                "data": {
+                    "mode": "snapshot",
+                    "trafficLightsOnMap": list(current_map.values()),
+                    "trafficLightsStatus": list(current_status.values()),
+                },
+            }
+
+        upserts = [
+            item
+            for tid, item in current_map.items()
+            if self._ui_traffic_light_map.get(tid) != item
+        ]
+        deletes = [tid for tid in self._ui_traffic_light_map.keys() if tid not in current_map]
+        status_upserts = [
+            item
+            for tid, item in current_status.items()
+            if self._ui_traffic_light_status_cache.get(tid) != item
+        ]
+        status_deletes = [
+            tid for tid in self._ui_traffic_light_status_cache.keys()
+            if tid not in current_status
+        ]
+
+        if not (upserts or deletes or status_upserts or status_deletes):
+            return None
+
+        self._ui_traffic_light_map = current_map
+        self._ui_traffic_light_status_cache = current_status
+
+        data: Dict[str, object] = {"mode": "delta"}
+        if upserts:
+            data["trafficLightsOnMapUpserts"] = upserts
+        if deletes:
+            data["trafficLightsOnMapDeletes"] = [int(tid) for tid in deletes]
+        if status_upserts:
+            data["trafficLightsStatusUpserts"] = status_upserts
+        if status_deletes:
+            data["trafficLightsStatusDeletes"] = [int(tid) for tid in status_deletes]
+
+        return {"type": "trafficLightStatus", "ts": ts, "data": data}
+
     @staticmethod
     def _normalize_car_color(label: Optional[str]) -> str:
         allowed = {"red", "green", "blue", "yellow", "purple", "white"}
         if label in allowed:
             return label
         return "red"
+
+    @staticmethod
+    def _normalize_camera_id(cam_val: Optional[object]) -> Optional[str]:
+        if cam_val is None:
+            return None
+        cam_str = str(cam_val)
+        if cam_str.startswith("cam-"):
+            return cam_str
+        if cam_str.startswith("cam") and len(cam_str) > 3:
+            return f"cam-{cam_str[3:]}"
+        return cam_str
+
+    @staticmethod
+    def _normalize_camera_ids(cam_vals: Optional[object]) -> List[str]:
+        if cam_vals is None:
+            return []
+        if isinstance(cam_vals, (list, tuple, set, deque)):
+            candidates = cam_vals
+        else:
+            candidates = [cam_vals]
+        normalized: List[str] = []
+        for cam_val in candidates:
+            cid = RealtimeServer._normalize_camera_id(cam_val)
+            if cid:
+                normalized.append(cid)
+        seen = set()
+        unique_ids: List[str] = []
+        for cid in normalized:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            unique_ids.append(cid)
+        return unique_ids
 
     @staticmethod
     def _obstacle_kind(cls: int) -> str:
@@ -656,7 +970,6 @@ class RealtimeServer:
         obstacles_on_map: List[dict],
         obstacles_status: List[dict],
         ts: float,
-        incident: Optional[dict],
     ) -> Optional[dict]:
         current_map = {item["obstacleId"]: item for item in obstacles_on_map}
         current_status = {item["id"]: item for item in obstacles_status}
@@ -682,7 +995,7 @@ class RealtimeServer:
         self._ui_obstacle_map = current_map
         self._ui_obstacle_status_map = current_status
 
-        data: Dict[str, object] = {"mode": "delta", "incident": incident}
+        data: Dict[str, object] = {"mode": "delta"}
         if upserts:
             data["upserts"] = upserts
         if deletes:
@@ -694,6 +1007,94 @@ class RealtimeServer:
 
         return {"type": "obstacleStatus", "ts": ts, "data": data}
 
+    def _build_cluster_stage_message(
+        self,
+        stage: str,
+        dets: Optional[List[dict]],
+        ts: float,
+    ) -> dict:
+        cars_on_map: List[dict] = []
+        cars_status: List[dict] = []
+        obstacles_on_map: List[dict] = []
+        obstacles_status: List[dict] = []
+
+        for idx, det in enumerate(dets or []):
+            try:
+                cls = int(det.get("cls", det.get("class", 1)))
+            except Exception:
+                cls = 1
+            try:
+                cx = float(det.get("cx", 0.0))
+                cy = float(det.get("cy", 0.0))
+                x_norm, y_norm = self._world_to_map_xy(cx, -cy)
+            except Exception:
+                continue
+            try:
+                yaw_val = float(det.get("yaw", 0.0) or 0.0)
+            except Exception:
+                yaw_val = 0.0
+            color_label = det.get("color") or hex_to_color_label(det.get("color_hex"))
+            car_color = self._normalize_car_color(color_label)
+            camera_ids = self._normalize_camera_ids(det.get("cam") or det.get("source_cams"))
+
+            if cls == 0:
+                car_id = f"{stage}-car-{idx}"
+                map_id = f"{stage}-mcar-{idx}"
+                cars_on_map.append({
+                    "id": map_id,
+                    "carId": car_id,
+                    "x": x_norm,
+                    "y": y_norm,
+                    "yaw": yaw_val,
+                    "color": car_color,
+                    "status": "normal",
+                })
+                cars_status.append({
+                    "class": cls,
+                    "car_id": car_id,
+                    "color": car_color,
+                    "speed": 0.0,
+                    "battery": 0.0,
+                    "cameraIds": camera_ids,
+                    "path_future": [],
+                    "category": "",
+                    "resolution": "",
+                    "routeChanged": False,
+                })
+            else:
+                obstacle_id = f"{stage}-ob-{idx}"
+                obstacles_on_map.append({
+                    "id": obstacle_id,
+                    "obstacleId": obstacle_id,
+                    "x": x_norm,
+                    "y": y_norm,
+                    "kind": self._obstacle_kind(cls),
+                })
+                obstacles_status.append({
+                    "id": obstacle_id,
+                    "class": cls,
+                    "cameraIds": camera_ids,
+                })
+
+        return {
+            "type": "clusterStage",
+            "ts": ts,
+            "data": {
+                "stage": stage,
+                "mode": "snapshot",
+                "carsOnMap": cars_on_map,
+                "carsStatus": cars_status,
+                "obstaclesOnMap": obstacles_on_map,
+                "obstaclesStatus": obstacles_status,
+            },
+        }
+
+    def _broadcast_cluster_stage(self, stage: str, dets: Optional[List[dict]], ts: float):
+        message = self._build_cluster_stage_message(stage, dets or [], ts)
+        self._cluster_stage_snapshots[stage] = message
+        if self.ws_hub:
+            self.ws_hub.broadcast(message)
+
     def _build_ui_messages(
         self,
         tracks: np.ndarray,
@@ -702,17 +1103,45 @@ class RealtimeServer:
     ) -> List[dict]:
         messages: List[dict] = []
 
+        traffic_light_msg = self._build_traffic_light_status_message(ts)
+
         if self._ui_cam_status is None:
             cam_msg = self._build_cam_status_message(ts)
             self._ui_cam_status = cam_msg
+            initial_messages = [cam_msg]
+            if traffic_light_msg:
+                initial_messages.append(traffic_light_msg)
             if self.ws_hub:
-                self.ws_hub.set_initial_messages([cam_msg])
-            messages.append(cam_msg)
+                self.ws_hub.set_initial_messages(initial_messages)
+            messages.extend(initial_messages)
+        elif traffic_light_msg:
+            messages.append(traffic_light_msg)
 
         cars_on_map: List[dict] = []
         cars_status: List[dict] = []
         obstacles_on_map: List[dict] = []
         obstacles_status: List[dict] = []
+
+        def _normalize_route_points(raw_points) -> List[dict]:
+            points: List[dict] = []
+            if not raw_points:
+                return points
+            for pt in raw_points:
+                try:
+                    if isinstance(pt, dict):
+                        px, py = float(pt.get("x")), float(pt.get("y"))
+                    elif isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                        px, py = float(pt[0]), float(pt[1])
+                    else:
+                        continue
+                except Exception:
+                    continue
+                try:
+                    x_route, y_route = self._world_to_map_xy(px, -py)
+                except Exception:
+                    continue
+                points.append({"x": x_route, "y": y_route})
+            return points
 
         if tracks is not None and len(tracks):
             for row in tracks:
@@ -729,8 +1158,34 @@ class RealtimeServer:
                 x_norm, y_norm = self._world_to_map_xy(cx, cy)
 
                 if cls == 0:
+                    source_cams = meta.get("source_cams") or []
+                    camera_ids = self._normalize_camera_ids(source_cams)
                     car_id = f"car-{tid}"
                     map_id = f"mcar-{tid}"
+                    car_state = None
+                    if self.status_state:
+                        try:
+                            car_state = self.status_state.get_car(tid)
+                        except Exception:
+                            car_state = None
+                    battery_val: float = 100
+                    path_future_raw = []
+                    category_val = ""
+                    resolution_val = None
+                    route_changed = False
+                    if car_state:
+                        try:
+                            battery_raw = car_state.get("battery")
+                            if battery_raw is not None:
+                                battery_val = float(battery_raw)
+                        except Exception:
+                            pass
+                        path_future_raw = car_state.get("path_future") or car_state.get("path") or []
+                        category_val = car_state.get("category") or ""
+                        resolution_val = car_state.get("resolution")
+                        route_changed = bool(car_state.get("s_start"))
+                    route_points = _normalize_route_points(path_future_raw)
+                    map_status = "routeChanged" if route_changed else "normal"
                     cars_on_map.append({
                         "id": map_id,
                         "carId": car_id,
@@ -738,21 +1193,24 @@ class RealtimeServer:
                         "y": y_norm,
                         "yaw": yaw,
                         "color": car_color,
-                        "status": "normal",
+                        "status": map_status,
                     })
                     cars_status.append({
                         "class": cls,
-                        "id": car_id,
+                        "car_id": car_id,
                         "color": car_color,
                         "speed": meta.get("speed", 0.0),
-                        "battery": 100,
-                        "fromLabel": "-",
-                        "toLabel": "-",
-                        "cameraId": None,
-                        "routeChanged": False,
+                        "battery": battery_val,
+                        "cameraIds": camera_ids,
+                        "path_future": route_points,
+                        "category": category_val,
+                        "resolution": str(resolution_val) if resolution_val is not None else "",
+                        "routeChanged": route_changed,
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
+                    source_cams = meta.get("source_cams") or []
+                    camera_ids = self._normalize_camera_ids(source_cams)
                     obstacles_on_map.append({
                         "id": obstacle_id,
                         "obstacleId": obstacle_id,
@@ -763,7 +1221,7 @@ class RealtimeServer:
                     obstacles_status.append({
                         "id": obstacle_id,
                         "class": cls,
-                        "cameraId": None,
+                        "cameraIds": camera_ids,
                     })
 
         messages.append({
@@ -776,22 +1234,10 @@ class RealtimeServer:
             },
         })
 
-        incident_payload = None
-        if obstacles_on_map:
-            primary = obstacles_on_map[0]
-            incident_payload = {
-                "id": f"inc-{primary['obstacleId']}",
-                "title": "[Obstacle]",
-                "description": "Obstacle detected",
-                "obstacle": primary,
-                "cameraId": None,
-            }
-
         obstacle_msg = self._build_obstacle_delta_message(
             obstacles_on_map,
             obstacles_status,
             ts,
-            incident_payload,
         )
         obstacle_snapshot = {
             "type": "obstacleStatus",
@@ -800,7 +1246,6 @@ class RealtimeServer:
                 "mode": "snapshot",
                 "obstaclesOnMap": obstacles_on_map,
                 "obstaclesStatus": obstacles_status,
-                "incident": incident_payload,
             },
         }
         if obstacle_msg:
@@ -810,6 +1255,20 @@ class RealtimeServer:
             initial_msgs: List[dict] = []
             if self._ui_cam_status:
                 initial_msgs.append(self._ui_cam_status)
+            # Always include latest traffic light snapshot for new connections.
+            try:
+                tl_snapshot = {
+                    "type": "trafficLightStatus",
+                    "ts": ts,
+                    "data": {
+                        "mode": "snapshot",
+                        "trafficLightsOnMap": list(self._ui_traffic_lights_on_map),
+                        "trafficLightsStatus": list(self._ui_traffic_light_status.values()),
+                    },
+                }
+                initial_msgs.append(tl_snapshot)
+            except Exception:
+                pass
             initial_msgs.append({
                 "type": "carStatus",
                 "ts": ts,
@@ -820,6 +1279,9 @@ class RealtimeServer:
                 },
             })
             initial_msgs.append(obstacle_snapshot)
+            if self._cluster_stage_snapshots:
+                for key in sorted(self._cluster_stage_snapshots.keys()):
+                    initial_msgs.append(self._cluster_stage_snapshots[key])
             self.ws_hub.set_initial_messages(initial_msgs)
 
         messages.append(obstacle_snapshot)
@@ -886,6 +1348,16 @@ class RealtimeServer:
                 dq.clear()
                 continue
             for det in entry["dets"]:
+                cls = int(det.get("cls", det.get("class", 1)))
+                if cls==0: 
+                    det["length"] = vehicle_fixed_length
+                    det["width"] = vehicle_fixed_width
+                if cls==1: 
+                    det["length"] = rubberCone_fixed_length
+                    det["width"] = rubberCone_fixed_width
+                if cls==2: 
+                    det["length"] = barricade_fixed_length
+                    det["width"] = barricade_fixed_width
                 det_copy = det.copy()
                 det_copy["cam"] = cam
                 det_copy["ts"] = ts
@@ -1396,14 +1868,26 @@ class RealtimeServer:
 
             t0 = time.perf_counter()
             raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam","ts"}, ...]
+            frame_ts = now
+            if raw_dets:
+                ts_vals = []
+                for det in raw_dets:
+                    try:
+                        ts_vals.append(float(det.get("ts", now)))
+                    except Exception:
+                        continue
+                if ts_vals:
+                    frame_ts = float(sum(ts_vals) / len(ts_vals))
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
+            self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
             timings["fuse"] = (time.perf_counter() - t1) * 1000.0
+            self._broadcast_cluster_stage("postCluster", fused, frame_ts)
             t2 = time.perf_counter()
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
-            self._broadcast_tracks(tracks, now)
+            self._broadcast_tracks(tracks, frame_ts)
             self._prev_tracks_for_cluster = tracks.copy() if tracks is not None and len(tracks) else None
 
             if self.log_pipeline and self._should_log(): # 1초에 한번 로그
@@ -1411,7 +1895,7 @@ class RealtimeServer:
                 for det in raw_dets:
                     cam = det.get("cam", "?")
                     stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
-                self._log_pipeline(stats, fused, tracks, now, timings)
+                self._log_pipeline(stats, fused, tracks, frame_ts, timings)
                 if self.last_cluster_debug:
                     print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
                 tracker_metrics = self.tracker.get_last_metrics()

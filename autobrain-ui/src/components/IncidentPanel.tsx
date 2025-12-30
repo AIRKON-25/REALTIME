@@ -1,37 +1,50 @@
 // components/IncidentPanel.tsx
-import type { Incident } from "../types";
+import type { CameraId, ObstacleStatus } from "../types";
 
 interface IncidentPanelProps {
-  incident: Incident | null;
+  alerts: ObstacleStatus[];
+  cameraNames?: Record<CameraId, string>;
   isActive: boolean;
-  onClick?: () => void;
+  onSelect?: (id: string) => void;
 }
 
-export const IncidentPanel = ({ incident, isActive, onClick }: IncidentPanelProps) => {
+export const IncidentPanel = ({ alerts, cameraNames, isActive, onSelect }: IncidentPanelProps) => {
   return (
     <section
       className={`panel panel--card incident ${
         isActive ? "incident--active" : ""
       }`}
-      onClick={onClick}
     >
       <h2 className="panel__title">Incident Alert</h2>
-      {incident ? (
-        <div className="incident__content">
-          <div className="incident__icon">
-            <img
-              src="/assets/warning-signs.png"
-              alt="Incident warning"
-              className="incident__icon-image"
-            />
-          </div>
-          <div>
-            <div className="incident__title">{incident.title}</div>
-            <div className="incident__description">{incident.description}</div>
-          </div>
+      {alerts.length > 0 ? (
+        <div className="incident__list">
+          {alerts.map((alert) => {
+            const description =
+              alert.class === 2
+                ? "Traffic congestion caused by a barricade."
+                : "Traffic congestion caused by traffic cones.";
+            return (
+              <button
+                type="button"
+                key={alert.id}
+                className="incident__content"
+                onClick={() => onSelect?.(alert.id)}
+              >
+                <img
+                  src="/assets/warning-signs.png"
+                  alt="Obstacle warning"
+                  className="incident__icon-image"
+                />
+                <div className="incident__text">
+                  <div className="incident__title">[Obstacle]</div>
+                  <div className="incident__description">{description}</div>
+                </div>
+              </button>
+            );
+          })}
         </div>
       ) : (
-        <div className="panel__empty">No incidents</div>
+        <div className="panel__empty">No obstacle alerts</div>
       )}
     </section>
   );

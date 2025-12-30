@@ -83,6 +83,296 @@ def reprojection_errors(H: np.ndarray, src_pts: np.ndarray, dst_pts: np.ndarray)
     err = np.linalg.norm(proj - dst_pts, axis=1)
     return err
 
+def load_mask(path: Optional[str], shape) -> Optional[np.ndarray]:
+    """
+    Load binary mask; resize to image shape; return None if path missing.
+    """
+    if not path:
+        return None
+    m = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if m is None:
+        print(f"[WARN] Mask not found or unreadable: {path}. Ignoring mask.")
+        return None
+    h, w = shape[:2]
+    if m.shape[:2] != (h, w):
+        m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+    m = (m > 0).astype(np.uint8)
+    return m
+
+def road_like_mask(img_bgr: np.ndarray, sat_th: int = 80, val_min: int = 40, val_max: int = 255, ksize: int = 5) -> np.ndarray:
+    """
+    HSV 기반의 단순 도로 마스크 (저채도/중간~밝은 명도 영역 유지).
+    차량/간판처럼 채도가 높은 영역을 약하게 억제할 목적.
+    """
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
+    mask = (s < sat_th) & (v >= val_min) & (v <= val_max)
+    mask = mask.astype(np.uint8) * 255
+    if ksize > 1:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksize, ksize))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    return mask
+
+def select_keypoints_grid(kps, desc, shape, max_total, grid_rows=4, grid_cols=4):
+    """
+    분포가 한쪽에 몰리는 걸 막기 위해 grid별로 상위 response keypoint를 고른다.
+    """
+    if not kps or desc is None or max_total <= 0 or len(kps) <= max_total:
+        return kps, desc
+    h, w = shape[:2]
+    buckets = [[[] for _ in range(grid_cols)] for _ in range(grid_rows)]
+    for idx, kp in enumerate(kps):
+        x, y = kp.pt
+        c = min(grid_cols - 1, int(x / max(1, w / grid_cols)))
+        r = min(grid_rows - 1, int(y / max(1, h / grid_rows)))
+        buckets[r][c].append((kp.response, idx))
+
+    keep_indices = []
+    per_cell = max(1, int(np.ceil(max_total / float(grid_rows * grid_cols))))
+    for r in range(grid_rows):
+        for c in range(grid_cols):
+            cell = sorted(buckets[r][c], key=lambda x: x[0], reverse=True)
+            keep_indices.extend([idx for _, idx in cell[:per_cell]])
+    # 혹시 모자라면 전체에서 상위로 채워 넣기
+    if len(keep_indices) < max_total:
+        rest = sorted([(kp.response, idx) for idx, kp in enumerate(kps) if idx not in keep_indices],
+                      key=lambda x: x[0], reverse=True)
+        keep_indices.extend([idx for _, idx in rest[:max_total - len(keep_indices)]])
+    keep_indices = keep_indices[:max_total]
+    keep_indices = sorted(set(keep_indices))
+    kps_sel = [kps[i] for i in keep_indices]
+    desc_sel = desc[keep_indices]
+    return kps_sel, desc_sel
+
+def coverage_metrics(cam_pts: np.ndarray, map_pts: np.ndarray, map_shape, min_quadrants: int = 3):
+    """
+    매칭 분포가 한쪽에 몰리지 않았는지 확인하기 위한 간단한 커버리지 메트릭.
+    - span_x/span_y: 맵 크기에 대한 매칭 분포 범위 비율
+    - quadrants_hit: 맵을 2x2로 나눴을 때 매칭이 들어간 사분면 수
+    """
+    if cam_pts is None or map_pts is None or len(cam_pts) == 0 or len(map_pts) == 0:
+        return {
+            "span_x": 0.0,
+            "span_y": 0.0,
+            "quadrants_hit": 0,
+            "ok": False
+        }
+    map_h, map_w = map_shape[:2]
+    minx, miny = map_pts.min(axis=0)
+    maxx, maxy = map_pts.max(axis=0)
+    span_x = (maxx - minx) / max(1e-6, map_w)
+    span_y = (maxy - miny) / max(1e-6, map_h)
+
+    # quadrant count
+    qx = map_pts[:, 0] > (map_w / 2.0)
+    qy = map_pts[:, 1] > (map_h / 2.0)
+    quadrants = set()
+    for a, b in zip(qx, qy):
+        quadrants.add((bool(a), bool(b)))
+    quadrants_hit = len(quadrants)
+    ok = quadrants_hit >= min_quadrants
+    return {
+        "span_x": float(span_x),
+        "span_y": float(span_y),
+        "quadrants_hit": quadrants_hit,
+        "ok": ok
+    }
+
+def check_h_sanity(H: np.ndarray, cam_shape, map_shape, margin_ratio: float = 4.0) -> bool:
+    """
+    Reject obviously bad homographies (exploding warp, NaN, huge scale).
+    """
+    if H is None or not np.isfinite(H).all():
+        return False
+    cam_h, cam_w = cam_shape[:2]
+    map_h, map_w = map_shape[:2]
+
+    # determinant as crude scale check
+    det = np.linalg.det(H[0:2, 0:2])
+    if not np.isfinite(det) or abs(det) < 1e-6 or abs(det) > 1e6:
+        return False
+
+    # warp camera corners
+    corners = np.array([[0, 0], [cam_w, 0], [cam_w, cam_h], [0, cam_h]], dtype=np.float64)
+    corners_h = np.hstack([corners, np.ones((4, 1), dtype=np.float64)])
+    proj = (H @ corners_h.T).T
+    if not np.isfinite(proj).all():
+        return False
+    proj_xy = proj[:, :2] / np.clip(proj[:, 2:3], 1e-12, None)
+    if not np.isfinite(proj_xy).all():
+        return False
+
+    x0, y0 = proj_xy.min(axis=0)
+    x1, y1 = proj_xy.max(axis=0)
+    bw = x1 - x0
+    bh = y1 - y0
+    if bw <= 0 or bh <= 0:
+        return False
+
+    # bounding box must not explode relative to map size
+    if bw > map_w * margin_ratio or bh > map_h * margin_ratio:
+        return False
+
+    # area ratio to map area
+    area = bw * bh
+    if area > (map_w * map_h * margin_ratio):
+        return False
+
+    return True
+
+
+# -----------------------------
+# Auto matching helpers
+# -----------------------------
+def preprocess_gray(img_bgr: np.ndarray, use_clahe: bool = False) -> np.ndarray:
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    if use_clahe:
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+    return gray
+
+
+
+def detect_features(gray: np.ndarray, method: str, max_kp: int, grid_rows: int = 4, grid_cols: int = 4):
+    method = method.lower()
+    if method == "sift" and hasattr(cv2, "SIFT_create"):
+        detector = cv2.SIFT_create(nfeatures=int(max_kp))
+        method_used = "sift"
+    else:
+        detector = cv2.ORB_create(nfeatures=int(max_kp))
+        method_used = "orb"
+    kps, desc = detector.detectAndCompute(gray, None)
+    # 분포 균형을 위해 grid 기반 샘플링 적용
+    kps, desc = select_keypoints_grid(kps, desc, gray.shape, max_kp, grid_rows=grid_rows, grid_cols=grid_cols)
+    return method_used, kps, desc
+
+
+def match_features(desc1, desc2, method: str, ratio: float, topk: int, mutual_check: bool = True):
+    if desc1 is None or desc2 is None or len(desc1) == 0 or len(desc2) == 0:
+        return []
+    norm = cv2.NORM_L2 if method == "sift" else cv2.NORM_HAMMING
+    matcher = cv2.BFMatcher(norm, crossCheck=False)
+    raw_matches = matcher.knnMatch(desc1, desc2, k=2)
+    forward = []
+    for m_n in raw_matches:
+        if len(m_n) < 2:
+            continue
+        m, n = m_n
+        if m.distance < ratio * n.distance:
+            forward.append(m)
+
+    if mutual_check:
+        raw_back = matcher.knnMatch(desc2, desc1, k=2)
+        back_best = {}
+        for m_n in raw_back:
+            if len(m_n) < 2:
+                continue
+            m, n = m_n
+            if m.distance < ratio * n.distance:
+                # 더 좋은(back) 매치만 유지
+                prev = back_best.get(m.queryIdx)
+                if prev is None or m.distance < prev[0]:
+                    back_best[m.queryIdx] = (m.distance, m.trainIdx)
+        mutual = []
+        for m in forward:
+            back = back_best.get(m.trainIdx)
+            if back is not None and back[1] == m.queryIdx:
+                mutual.append(m)
+        forward = mutual
+
+    good = sorted(forward, key=lambda m: m.distance)
+    if topk and topk > 0:
+        good = good[:topk]
+    return good
+
+
+def auto_homography_from_images(cam_bgr: np.ndarray,
+                                map_bgr: np.ndarray,
+                                method: str = "orb",
+                                max_kp: int = 2000,
+                                ratio: float = 0.75,
+                                topk: int = 400,
+                                ransac_th: float = 4.0,
+                                min_inliers: int = 20,
+                                use_clahe: bool = False,
+                                sanity_margin: float = 4.0,
+                                grid_rows: int = 4,
+                                grid_cols: int = 4,
+                                mutual_check: bool = True,
+                                min_span: float = 0.25,
+                                min_quadrants: int = 3,
+                                cam_mask: Optional[np.ndarray] = None,
+                                map_mask: Optional[np.ndarray] = None):
+    cam_gray = preprocess_gray(cam_bgr, use_clahe)
+    map_gray = preprocess_gray(map_bgr, use_clahe)
+    if cam_mask is not None:
+        cam_gray = cv2.bitwise_and(cam_gray, cam_gray, mask=cam_mask)
+    if map_mask is not None:
+        map_gray = cv2.bitwise_and(map_gray, map_gray, mask=map_mask)
+
+    method_used, kp_cam, desc_cam = detect_features(cam_gray, method, max_kp, grid_rows=grid_rows, grid_cols=grid_cols)
+    method_used, kp_map, desc_map = detect_features(map_gray, method_used, max_kp, grid_rows=grid_rows, grid_cols=grid_cols)
+
+    matches = match_features(desc_cam, desc_map, method_used, ratio, topk, mutual_check=mutual_check)
+    if len(matches) < 4:
+        print(f"[WARN] Auto-match failed: not enough matches ({len(matches)}).")
+        return None
+
+    cam_pts = np.float64([kp_cam[m.queryIdx].pt for m in matches])
+    map_pts = np.float64([kp_map[m.trainIdx].pt for m in matches])
+
+    H, mask = cv2.findHomography(cam_pts, map_pts, cv2.RANSAC, ransacReprojThreshold=float(ransac_th))
+    if H is None or mask is None:
+        print("[WARN] Auto-match failed: findHomography returned None.")
+        return None
+    mask = mask.reshape(-1).astype(bool)
+    inliers = int(np.sum(mask))
+    weak = False
+    if inliers < min_inliers:
+        weak = True
+        print(f"[WARN] Auto-match weak: inliers {inliers} < min_inliers {min_inliers}. Will still use this H (check overlay).")
+
+    err_all = reprojection_errors(H, cam_pts, map_pts)
+    rmse_all = np.sqrt(np.mean(err_all ** 2)) if len(err_all) else float("nan")
+    err_in = err_all[mask] if np.any(mask) else err_all
+    rmse_in = np.sqrt(np.mean(err_in ** 2)) if len(err_in) else float("nan")
+    rmse = rmse_in if np.isfinite(rmse_in) else rmse_all
+
+    sane = check_h_sanity(H, cam_bgr.shape, map_bgr.shape, margin_ratio=float(sanity_margin))
+    cov = coverage_metrics(cam_pts, map_pts, map_bgr.shape, min_quadrants=min_quadrants)
+    coverage_ok = (cov["span_x"] >= min_span) and (cov["span_y"] >= min_span) and cov["ok"]
+
+    return {
+        "H": H,
+        "cam_pts": cam_pts,
+        "map_pts": map_pts,
+        "mask": mask,
+        "method": method_used,
+        "matches": len(matches),
+        "inliers": inliers,
+        "rmse": rmse,
+        "rmse_all": rmse_all,
+        "weak": weak,
+        "sane": sane,
+        "coverage": cov,
+        "params": {
+            "method": method_used,
+            "max_kp": max_kp,
+            "ratio": ratio,
+            "topk": topk,
+            "ransac_th": ransac_th,
+            "min_inliers": min_inliers,
+            "use_clahe": use_clahe,
+            "sanity_margin": sanity_margin,
+            "grid_rows": grid_rows,
+            "grid_cols": grid_cols,
+        "mutual_check": mutual_check,
+        "min_span": min_span,
+        "min_quadrants": min_quadrants
+    }
+    }
+
 POINT_RADIUS = 12
 POINT_THICKNESS = 3
 SELECT_TOL = 20
@@ -208,6 +498,28 @@ def main():
     ap.add_argument("--ransac-th", type=float, default=3.0, help="RANSAC reprojection threshold in pixels")
     ap.add_argument("--alpha", type=float, default=0.55, help="overlay alpha for warped cam on map")
     ap.add_argument("--overlay-margin", type=int, default=200, help="margin (pixels) added around map for overlay/preview")
+    ap.add_argument("--auto", action="store_true", help="enable auto feature matching to initialize H")
+    ap.add_argument("--auto-method", choices=["orb", "sift"], default="sift", help="feature type for auto matching")
+    ap.add_argument("--auto-max-kp", type=int, default=5000, help="max keypoints for auto matching")
+    ap.add_argument("--auto-ratio", type=float, default=0.7, help="Lowe ratio for match filtering")
+    ap.add_argument("--auto-topk", type=int, default=2400, help="keep top-k matches after ratio test (0=all)")
+    ap.add_argument("--auto-ransac-th", type=float, default=3.0, help="RANSAC threshold for auto findHomography")
+    ap.add_argument("--auto-min-inliers", type=int, default=10, help="minimum inliers to accept auto H")
+    ap.add_argument("--auto-clahe", action="store_true", default=True, help="apply CLAHE before auto feature extraction")
+    ap.add_argument("--auto-sweep", action="store_true", default=True, help="try multiple auto-match configs and pick best (inliers first, then RMSE)")
+    ap.add_argument("--auto-rmse-th", type=float, default=1e9, help="discard auto H if RMSE(all) exceeds this (pixels)")
+    ap.add_argument("--auto-sanity-margin", type=float, default=20.0, help="reject auto H if warped bbox exceeds map_size*margin")
+    ap.add_argument("--auto-grid-rows", type=int, default=4, help="grid rows for keypoint sampling balance")
+    ap.add_argument("--auto-grid-cols", type=int, default=4, help="grid cols for keypoint sampling balance")
+    ap.add_argument("--auto-no-mutual", action="store_true", help="disable mutual check for matches (default: enabled)")
+    ap.add_argument("--auto-min-span", type=float, default=0.25, help="min normalized span (x,y) of match distribution on map to accept (0~1)")
+    ap.add_argument("--auto-min-quadrants", type=int, default=3, help="min quadrants hit (2x2 grid) by map matches to accept")
+    ap.add_argument("--cam-mask", help="optional binary mask image for camera (0=ignore region)")
+    ap.add_argument("--map-mask", help="optional binary mask image for map (0=ignore region)")
+    ap.add_argument("--auto-road-mask", action="store_true", help="use simple HSV-based road-like mask to downweight colorful objects")
+    ap.add_argument("--auto-road-sat-th", type=int, default=80, help="sat threshold for road mask (lower keeps low saturation)")
+    ap.add_argument("--auto-road-val-min", type=int, default=40, help="min value for road mask")
+    ap.add_argument("--auto-road-val-max", type=int, default=255, help="max value for road mask")
     args = ap.parse_args()
 
     ensure_dir(args.outdir)
@@ -536,6 +848,172 @@ def main():
         print("[OK] Saved H_cam2world.json and overlay.png")
 
     # -----------------------------
+    # Auto-init homography (feature matching)
+    # -----------------------------
+    if args.auto:
+        cam_mask = load_mask(args.cam_mask, cam.shape)
+        map_mask = load_mask(args.map_mask, mp.shape)
+        if args.auto_road_mask:
+            cam_mask_auto = road_like_mask(cam, sat_th=int(args.auto_road_sat_th),
+                                           val_min=int(args.auto_road_val_min),
+                                           val_max=int(args.auto_road_val_max))
+            map_mask_auto = road_like_mask(mp, sat_th=int(args.auto_road_sat_th),
+                                           val_min=int(args.auto_road_val_min),
+                                           val_max=int(args.auto_road_val_max))
+            cam_mask = cam_mask_auto if cam_mask is None else cv2.bitwise_and(cam_mask, cam_mask_auto)
+            map_mask = map_mask_auto if map_mask is None else cv2.bitwise_and(map_mask, map_mask_auto)
+            try:
+                cv2.imwrite(os.path.join(args.outdir, "auto_mask_cam.png"), cam_mask)
+                cv2.imwrite(os.path.join(args.outdir, "auto_mask_map.png"), map_mask)
+            except Exception as e:
+                print(f"[WARN] Failed to save auto road masks: {e}")
+        def run_auto(cfg):
+            res = auto_homography_from_images(
+                cam, mp,
+                method=cfg["method"],
+                max_kp=int(cfg["max_kp"]),
+                ratio=float(cfg["ratio"]),
+                topk=int(cfg["topk"]),
+                ransac_th=float(cfg["ransac_th"]),
+                min_inliers=int(cfg["min_inliers"]),
+                use_clahe=bool(cfg["use_clahe"]),
+                sanity_margin=float(cfg.get("sanity_margin", args.auto_sanity_margin)),
+                grid_rows=int(cfg.get("grid_rows", args.auto_grid_rows)),
+                grid_cols=int(cfg.get("grid_cols", args.auto_grid_cols)),
+                mutual_check=not bool(cfg.get("no_mutual", False)),
+                min_span=float(cfg.get("min_span", args.auto_min_span)),
+                min_quadrants=int(cfg.get("min_quadrants", args.auto_min_quadrants)),
+                cam_mask=cam_mask,
+                map_mask=map_mask
+            )
+            if res is None:
+                print(f"[AUTO] method={cfg['method']} ratio={cfg['ratio']} topk={cfg['topk']} rth={cfg['ransac_th']} clahe={cfg['use_clahe']} -> FAIL")
+            else:
+                cov = res.get("coverage", {})
+                print(f"[AUTO] method={cfg['method']} ratio={cfg['ratio']} topk={cfg['topk']} rth={cfg['ransac_th']} clahe={cfg['use_clahe']} -> matches={res['matches']} inliers={res['inliers']} rmse={res['rmse']:.1f}px span=({cov.get('span_x',0):.2f},{cov.get('span_y',0):.2f}) q={cov.get('quadrants_hit',0)}")
+            return res
+
+        base_cfg = {
+            "method": args.auto_method,
+            "max_kp": int(args.auto_max_kp),
+            "ratio": float(args.auto_ratio),
+            "topk": int(args.auto_topk),
+            "ransac_th": float(args.auto_ransac_th),
+            "min_inliers": int(args.auto_min_inliers),
+            "use_clahe": bool(args.auto_clahe),
+            "sanity_margin": float(args.auto_sanity_margin),
+            "grid_rows": int(args.auto_grid_rows),
+            "grid_cols": int(args.auto_grid_cols),
+            "no_mutual": bool(args.auto_no_mutual),
+            "min_span": float(args.auto_min_span),
+            "min_quadrants": int(args.auto_min_quadrants)
+        }
+
+        cfg_list = []
+        cfg_set = set()
+
+        def add_cfg(cfg):
+            key = (cfg["method"], cfg["ratio"], cfg["topk"], cfg["ransac_th"], cfg["use_clahe"])
+            if key in cfg_set:
+                return
+            cfg_set.add(key)
+            cfg_list.append(cfg)
+
+        add_cfg(base_cfg)
+
+        if args.auto_sweep:
+            methods = []
+            for m in [base_cfg["method"], "orb", "sift"]:
+                if m == "sift" and not hasattr(cv2, "SIFT_create"):
+                    continue
+                if m not in methods:
+                    methods.append(m)
+
+            ratios = []
+            for r in [base_cfg["ratio"], 0.8, 0.75, 0.7]:
+                if r not in ratios and r > 0:
+                    ratios.append(r)
+
+            topks = []
+            for t in [base_cfg["topk"], max(400, base_cfg["topk"] * 2), max(400, base_cfg["topk"] // 2)]:
+                if t not in topks and t > 0:
+                    topks.append(t)
+
+            rths = []
+            for rt in [base_cfg["ransac_th"], 3.0, 4.0]:
+                if rt not in rths and rt > 0:
+                    rths.append(rt)
+
+            clahe_opts = [False, True]
+            grid_opts = [
+                (base_cfg["grid_rows"], base_cfg["grid_cols"]),
+                (6, 6),
+                (5, 5)
+            ]
+            mutual_opts = [False, True] if args.auto_no_mutual else [True]
+
+            for m in methods:
+                for r in ratios:
+                    for t in topks:
+                        for rt in rths:
+                            for c in clahe_opts:
+                                for gr, gc in grid_opts:
+                                    for mut in mutual_opts:
+                                        add_cfg({
+                                            "method": m,
+                                            "max_kp": base_cfg["max_kp"],
+                                            "ratio": r,
+                                            "topk": t,
+                                            "ransac_th": rt,
+                                            "min_inliers": base_cfg["min_inliers"],
+                                            "use_clahe": c,
+                                            "sanity_margin": base_cfg["sanity_margin"],
+                                            "grid_rows": gr,
+                                            "grid_cols": gc,
+                                            "no_mutual": not mut,
+                                            "min_span": base_cfg["min_span"],
+                                            "min_quadrants": base_cfg["min_quadrants"]
+                                        })
+
+        best = None
+        for idx, cfg in enumerate(cfg_list, 1):
+            if args.auto_sweep:
+                print(f"[AUTO] Sweep {idx}/{len(cfg_list)}")
+            res = run_auto(cfg)
+            if res is None:
+                continue
+            if not res.get("sane", True):
+                print("[AUTO] rejected: sanity check failed (exploding warp).")
+                continue
+            if args.auto_rmse_th is not None:
+                rmse_all = res.get("rmse_all", float("inf"))
+                if (not np.isfinite(rmse_all)) or rmse_all > float(args.auto_rmse_th):
+                    print(f"[AUTO] rejected: RMSE_all {rmse_all:.1f}px > threshold {args.auto_rmse_th}.")
+                    continue
+            rmse_score = res["rmse"] if np.isfinite(res["rmse"]) else float("inf")
+            score = (res["inliers"], -rmse_score)
+            res["score"] = score
+            if best is None or score > best["score"]:
+                best = res
+        auto_res = best
+
+        if auto_res is not None:
+            H_base = auto_res["H"].copy()
+            H_current = auto_res["H"].copy()
+            reset_adjust()
+            p = auto_res["params"]
+            weak_msg = " (WEAK inliers - please verify overlay)" if auto_res.get("weak", False) else ""
+            print(f"[OK] Auto H initialized | method={p['method']} ratio={p['ratio']} topk={p['topk']} rth={p['ransac_th']} clahe={p['use_clahe']} | matches={auto_res['matches']} inliers={auto_res['inliers']} RMSE={auto_res['rmse']:.3f}px{weak_msg}")
+            try:
+                save_inlier_visualization(os.path.join(args.outdir, "inlier_auto.png"),
+                                          base_canvas, auto_res["cam_pts"], auto_res["map_pts"], auto_res["mask"])
+                print(f"[OK] Saved auto inlier viz -> {os.path.join(args.outdir, 'inlier_auto.png')}")
+            except Exception as e:
+                print(f"[WARN] Failed to save auto inlier viz: {e}")
+        else:
+            print("[WARN] Auto initialization failed. Use manual point pairs to compute H.")
+
+    # -----------------------------
     # Main loop
     # -----------------------------
     while True:
@@ -710,9 +1188,7 @@ if __name__ == "__main__":
 
 
 """
-python ./utils/make_H/homography_tool_2.py \
+python ./utils/make_H/homography_tool_auto.py \
   --cam ./test_img.jpeg \
-  --map ./utils/make_H/ces_real_map.png \
-  --map2world ./utils/make_H/ces_real_img2world.json \
   --outdir ./out_h
 """

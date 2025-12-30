@@ -12,3 +12,16 @@ rubberCone_fixed_length = 1.6  # 라바콘 고정 길이
 rubberCone_fixed_width = 1.6   # 라바콘 고정 너비
 barricade_fixed_length = 1.0  # 바리케이드 고정 길이
 barricade_fixed_width = 0.5   # 바리케이드 고정 너비
+
+# path progress
+PATH_PROGRESS_DIST_M = 1.5  # 경로 진행으로 간주할 최대 거리 게이트(m)
+PATH_REID_DIST_M = 5   # 경로 기반 재ID 거리 게이트(m)
+PATH_REID_YAW_DEG = 45.0    # 경로 기반 재ID yaw 차이 게이트(도)
+
+# velocity smoothing (외부 전송용)
+VELOCITY_EWMA_ALPHA = 0.2  # 최근 속도 가중치(0~1, 클수록 민감)
+VELOCITY_DT_MIN = 0.05      # 속도 계산에 사용할 최소 시간 간격(초)
+VELOCITY_DT_MAX = 1.0       # 이보다 오래되면 리셋
+VELOCITY_SPEED_WINDOW = 5  # 속도 크기 중앙값 필터 윈도우 길이
+VELOCITY_MAX_MPS = 25.0       # 속도 크기 상한(스파이크 클램프)
+VELOCITY_ZERO_THRESH = 0.1  # 이 미만이면 0으로 취급

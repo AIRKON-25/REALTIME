@@ -6,18 +6,20 @@ type AppMode = "monitor" | "admin";
 interface HeaderProps {
   mode: AppMode;
   onModeChange: (mode: AppMode) => void;
+  adminEnabled?: boolean;
 }
 
-export const Header = ({ mode, onModeChange }: HeaderProps) => {
+export const Header = ({ mode, onModeChange, adminEnabled = false }: HeaderProps) => {
   const [now, setNow] = useState(() => new Date());
   const formatter = useMemo(
     () =>
-      new Intl.DateTimeFormat(undefined, {
+      new Intl.DateTimeFormat("en-US", {
         year: "numeric",
         month: "short",
         day: "2-digit",
         hour: "numeric",
         minute: "2-digit",
+        hour12: true,
       }),
     []
   );
@@ -32,9 +34,8 @@ export const Header = ({ mode, onModeChange }: HeaderProps) => {
   return (
     <header className="header">
       <div className="header__left">
-        <div className="header__logo-mark" />
+        <img src="/assets/autobrain-logo.svg" alt="AutoBrain logo" className="header__logo-img" />
         <div className="header__logo-text">
-          <span className="header__logo-title">AutoBrain</span>
           <span className="header__logo-subtitle">Vehicle Monitoring System</span>
         </div>
       </div>
@@ -47,22 +48,24 @@ export const Header = ({ mode, onModeChange }: HeaderProps) => {
         <span className="header__status-label">NETWORK</span>
       </div>
       <div className="header__right">
-        <div className="header__mode">
-          <button
-            type="button"
-            className={`header__mode-button${mode === "monitor" ? " header__mode-button--active" : ""}`}
-            onClick={() => onModeChange("monitor")}
-          >
-            Monitor
-          </button>
-          <button
-            type="button"
-            className={`header__mode-button${mode === "admin" ? " header__mode-button--active" : ""}`}
-            onClick={() => onModeChange("admin")}
-          >
-            Admin
-          </button>
-        </div>
+        {adminEnabled && (
+          <div className="header__mode">
+            <button
+              type="button"
+              className={`header__mode-button${mode === "monitor" ? " header__mode-button--active" : ""}`}
+              onClick={() => onModeChange("monitor")}
+            >
+              Monitor
+            </button>
+            <button
+              type="button"
+              className={`header__mode-button${mode === "admin" ? " header__mode-button--active" : ""}`}
+              onClick={() => onModeChange("admin")}
+            >
+              Admin
+            </button>
+          </div>
+        )}
         <span>{formattedTime}</span>
       </div>
     </header>
