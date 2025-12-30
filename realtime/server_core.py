@@ -157,12 +157,12 @@ class RealtimeServer:
             {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.02},
         ]
         self._ui_cameras_status = [
-            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.101:8080/stream"},
-            {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.103:8080/stream"},
-            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.104:8080/stream"},
-            {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream"},
-            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.102:8080/stream"},
-            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.105:8080/stream"},
+            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.107:8080/stream", "streamBEVUrl": "http://192.168.0.107:8081/stream"},
+            {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.105:8080/stream", "streamBEVUrl": "http://192.168.0.105:8081/stream"},
+            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.102:8080/stream", "streamBEVUrl": "http://192.168.0.102:8081/stream"},
+            {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream", "streamBEVUrl": "http://192.168.0.106:8081/stream"},
+            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
         ]
         _raw_traffic_lights = [
             {"id": "tl-1", "trafficLightId": 1, "x": -5.5, "y": -13.1, "yaw": 90.0},
