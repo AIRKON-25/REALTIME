@@ -1,3 +1,0 @@
-python -m  utils.selfupdate.set_track_color --track-id 44 --color purple
-
-python utils/selfupdate/flip_track.py --track-id 44
