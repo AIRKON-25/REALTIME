@@ -999,7 +999,7 @@ class RealtimeServer:
 
     @staticmethod
     def _normalize_car_color(label: Optional[str]) -> str:
-        allowed = {"red", "green", "blue", "yellow", "purple", "white"}
+        allowed = {"red", "green", "yellow", "purple", "white"}
         if label in allowed:
             return label
         return "red"

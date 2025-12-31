@@ -435,7 +435,7 @@ for item in TRAFFIC_LIGHTS_RAW:
 
 CAR_DEFS = [
     {"car_id": "car-1", "color": "red", "phase": 0.0, "cameraIds": ["cam-1", "cam-2"], "route": "main"},
-    {"car_id": "car-2", "color": "blue", "phase": 1.6, "cameraIds": ["cam-3"], "route": "alt"},
+    {"car_id": "car-2", "color": "purple", "phase": 1.6, "cameraIds": ["cam-3"], "route": "alt"},
 ]
 
 OBSTACLE_ID = "ob-1"

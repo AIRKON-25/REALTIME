@@ -3,7 +3,7 @@ export type CameraId = string;
 export type CarId = string;
 export type TrafficLightId = number;
 
-export type CarColor = "red" | "green" | "blue" | "yellow" | "purple" | "white";
+export type CarColor = "red" | "green" | "yellow" | "purple" | "white";
 export type TrafficLightSignal = "red" | "yellow" | "green";
 
 export type ViewMode =

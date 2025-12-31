@@ -3,12 +3,11 @@ import re
 from typing import Optional, Tuple
 
 # ----- 색상 관련 유틸 -----
-COLOR_LABELS = ("red", "green", "blue", "yellow", "purple", "white")
+COLOR_LABELS = ("red", "green", "yellow", "purple", "white")
 VALID_COLORS = {label: label for label in COLOR_LABELS}
 COLOR_HEX_MAP = {
     "red": "#f52629",
     "green": "#48ad0d",
-    "blue": "#1f6dff",
     "white": "#ffffff",
     "yellow": "#ffdd00",
     "purple": "#781de7",
@@ -60,17 +59,14 @@ def hex_to_color_label(value: Optional[str]) -> Optional[str]:
     hue = h * 360.0
 
     # Keep ranges simple; adjust as needed for your palette.
-    if s < 0.12 or v < 0.1:
-        return "white"  # default bucket for very low saturation or value
+    if s < 0.12:
+        return "white" if v > 0.5 else "purple"
 
-    if (0 <= hue < 20) or (340 <= hue < 360):
+    if (0 <= hue < 30) or (330 <= hue < 360):
         return "red"
-    if 40 <= hue < 75:
+    if 30 <= hue < 80:
         return "yellow"
-    if 75 <= hue < 170:
+    if 80 <= hue < 170:
         return "green"
-    if 170 <= hue < 250: # blue 안쓰니까 나중에 빼자
-        return "blue"
-    if 250 <= hue < 340:
-        return "purple"
-    return "red"
+    # remaining hues map to purple
+    return "purple"

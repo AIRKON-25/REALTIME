@@ -310,7 +310,7 @@ function App() {
   }, [selectedIncidentId, selectedIncident]);
 
   const carColorById = useMemo(() => {
-    const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
+    const allowed: readonly CarColor[] = ["red", "green", "yellow", "purple", "white"];
     const normalize = (color: string | undefined): CarColor | undefined => {
       const normalized = (color ?? "").toString().trim().toLowerCase();
       return allowed.includes(normalized as CarColor)
