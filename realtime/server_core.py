@@ -145,6 +145,7 @@ class RealtimeServer:
         self._debug_lock = threading.Lock()
         self._last_track_payload: dict = {}
         self._last_ui_snapshot: dict = {}
+        self._route_change_sig: Dict[int, str] = {}
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -1186,6 +1187,7 @@ class RealtimeServer:
                     category_val = ""
                     resolution_val = None
                     route_changed = False
+                    route_sig = None
                     if car_state:
                         try:
                             battery_raw = car_state.get("battery")
@@ -1196,7 +1198,22 @@ class RealtimeServer:
                         path_future_raw = car_state.get("path_future") or car_state.get("path") or []
                         category_val = car_state.get("category") or ""
                         resolution_val = car_state.get("resolution")
-                        route_changed = bool(car_state.get("s_start"))
+                        s_start = car_state.get("s_start")
+                        if s_start:
+                            try:
+                                route_sig = json.dumps(
+                                    {"s_start": s_start, "path": path_future_raw},
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                            except Exception:
+                                route_sig = str(s_start)
+                            prev_sig = self._route_change_sig.get(tid)
+                            if route_sig != prev_sig:
+                                route_changed = True
+                                self._route_change_sig[tid] = route_sig
+                        else:
+                            self._route_change_sig.pop(tid, None)
                     route_points = _normalize_route_points(path_future_raw)
                     map_status = "routeChanged" if route_changed else "normal"
                     cars_on_map.append({
