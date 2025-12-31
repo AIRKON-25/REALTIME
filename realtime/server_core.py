@@ -477,8 +477,7 @@ class RealtimeServer:
     ) -> Optional[int]:
         if not self._car_id_pool:
             return None
-        if now is None:
-            now = time.time()
+        wall_now = time.time()
         used = used_ext_ids or set()
         candidates = list(self._car_id_pool)
         best_id = None
@@ -489,7 +488,14 @@ class RealtimeServer:
             history = self._external_history.get(ext_id)
             if not history:
                 continue
-            cost, _ = self._compute_reid_cost(track_info, history, now)
+            try:
+                hist_ts = float(history.get("ts", 0.0))
+                hist_age = max(0.0, wall_now - hist_ts)
+            except Exception:
+                hist_age = 0.0
+            if hist_age > max(self._reid_keep_secs, 1.0):
+                continue  # 오래된 히스토리는 무시하고 풀 최솟값으로 돌아가기
+            cost, _ = self._compute_reid_cost(track_info, history, wall_now)
             if best_cost is None or cost < best_cost:
                 best_cost = cost
                 best_id = ext_id
@@ -615,12 +621,15 @@ class RealtimeServer:
             return
         self._external_to_internal.pop(ext_id, None)
         info = self._track_state_cache.pop(internal_id, None)
+        if info:
+            info = dict(info)
+            info["ts"] = float(now)
         is_car = bool(info) and int(info.get("cls", 1)) == 0
         if info:
             self._external_history[ext_id] = info
         if ext_id <= self.car_id_max and is_car:
             self._released_external[ext_id] = {
-                "ts": now,
+                "ts": float(now),
                 "cls": 0,
                 "cx": float(info.get("cx", 0.0)),
                 "cy": float(info.get("cy", 0.0)),
@@ -640,10 +649,59 @@ class RealtimeServer:
             self._released_external.clear()
             return
         for ext_id, info in list(self._released_external.items()):
-            if now - float(info.get("ts", 0.0)) <= self._reid_keep_secs:
+            try:
+                ts_val = float(info.get("ts", 0.0))
+            except (TypeError, ValueError):
+                ts_val = now
+            age = now - ts_val
+            if age < 0:
+                age = 0.0
+            if age <= self._reid_keep_secs:
                 continue
             self._released_external.pop(ext_id, None)
             self._recycle_external_id(ext_id)
+
+    def _force_detach_external_id(self, ext_id: int, keep_internal: Optional[int] = None) -> None:
+        """
+        강제로 외부 ID를 모든 상태에서 떼어낸다.
+        keep_internal로 지정된 내부 ID는 보호한다.
+        """
+        if ext_id is None:
+            return
+        # drop released/history caches
+        self._released_external.pop(ext_id, None)
+        self._external_history.pop(ext_id, None)
+        # drop mapping for other tracks
+        for tid, eid in list(self._track_id_map.items()):
+            if eid == ext_id and tid != keep_internal:
+                self._track_id_map.pop(tid, None)
+                self._track_state_cache.pop(tid, None)
+        mapped_internal = self._external_to_internal.get(ext_id)
+        if mapped_internal is not None and mapped_internal != keep_internal:
+            self._external_to_internal.pop(ext_id, None)
+        if keep_internal is None:
+            self._external_to_internal.pop(ext_id, None)
+        # also remove from pool; refresh will rebuild
+        if ext_id in self._car_id_pool:
+            try:
+                self._car_id_pool.remove(ext_id)
+                heapq.heapify(self._car_id_pool)
+            except ValueError:
+                pass
+
+    def _repair_car_id_pool(self) -> None:
+        """Ensure reserved car IDs are neither lost nor blocked forever."""
+        reserved = set(range(self.car_id_min, self.car_id_max + 1))
+        blocked = set(self._released_external.keys()) | set(self._track_id_map.values())
+        # Drop blocked IDs from the pool
+        if self._car_id_pool:
+            self._car_id_pool = [cid for cid in self._car_id_pool if cid not in blocked]
+            heapq.heapify(self._car_id_pool)
+        # Put back any unblocked reserved IDs that are missing from the pool
+        missing = reserved - blocked - set(self._car_id_pool)
+        if missing:
+            self._car_id_pool.extend(missing)
+            heapq.heapify(self._car_id_pool)
 
     def _enforce_car_id_cap(self, car_internal_ids: List[int], track_info_by_id: Dict[int, dict], now: float) -> None:
         if len(car_internal_ids) > self.car_id_max:
@@ -700,18 +758,20 @@ class RealtimeServer:
         heapq.heapify(self._car_id_pool)
 
     def _map_track_ids(self, tracks: np.ndarray, ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
-        now = float(ts) if ts is not None else time.time()
-        self._prune_released_ids(now)
+        wall_now = time.time()
+        now = wall_now  # ID 매핑/재식별용 기준 시간은 항상 벽시계로 맞춘다.
+        self._prune_released_ids(wall_now)
+        self._repair_car_id_pool()
         if tracks is None or len(tracks) == 0:
             for tid in list(self._track_id_map.keys()):
-                self._stash_released_id(tid, now)
+                self._stash_released_id(tid, wall_now)
             self._external_to_internal = {}
             return tracks, {}
 
         active_ids = {int(row[0]) for row in tracks}
         for tid in list(self._track_id_map.keys()):
             if tid not in active_ids:
-                self._stash_released_id(tid, now)
+                self._stash_released_id(tid, wall_now)
 
         # 조기 해제: LOST가 일정 프레임 이상이며 예약 ID 범위 밖을 쓰는 차량의 외부 ID를 미리 풀어준다.
         early_release_ids: set = set()
@@ -791,7 +851,7 @@ class RealtimeServer:
             ext_id_existing = self._track_id_map.get(internal_id)
             info = {
                 "internal_id": internal_id,
-                "ts": now,
+                "ts": wall_now,
                 "cls": cls,
                 "cx": float(row[2]),
                 "cy": float(row[3]),
@@ -1704,11 +1764,14 @@ class RealtimeServer:
         }
 
     def _resolve_external_track_id(self, external_id: int) -> Optional[int]:
+        # 우선 외부 ID -> 내부 ID 매핑 테이블을 신뢰한다.
         internal_id = self._external_to_internal.get(external_id)
         if internal_id is not None:
             return internal_id
-        if external_id in self._track_id_map:
-            return external_id
+        # 폴백: track_id_map 값을 스캔해 외부 ID와 매칭되는 내부 ID를 찾는다.
+        for iid, ext in self._track_id_map.items():
+            if ext == external_id:
+                return iid
         return None
 
 
@@ -1840,7 +1903,8 @@ class RealtimeServer:
                     return {"status": "error", "message": "track not found"}
                 if desired_ext == current_ext:
                     return {"status": "ok", "track_id": desired_ext, "previous": current_ext}
-                self._released_external.pop(desired_ext, None)
+                # 완전히 비워낸 뒤 재할당(특히 예약 ID 1이 다른 캐시에 붙잡혀 있을 때)
+                self._force_detach_external_id(desired_ext, keep_internal=internal_target)
                 self._external_to_internal.pop(current_ext, None)
                 self._track_id_map[internal_target] = desired_ext
                 self._external_to_internal[desired_ext] = internal_target
@@ -1853,8 +1917,8 @@ class RealtimeServer:
             ext_b = self._track_id_map.get(internal_b)
             if ext_a is None or ext_b is None:
                 return {"status": "error", "message": "track not found"}
-            self._released_external.pop(ext_a, None)
-            self._released_external.pop(ext_b, None)
+            self._force_detach_external_id(ext_a, keep_internal=internal_a)
+            self._force_detach_external_id(ext_b, keep_internal=internal_b)
             self._track_id_map[internal_a] = ext_b
             self._track_id_map[internal_b] = ext_a
             self._external_to_internal[ext_a] = internal_b
