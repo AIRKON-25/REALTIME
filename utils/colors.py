@@ -61,7 +61,7 @@ def hex_to_color_label(value: Optional[str]) -> Optional[str]:
 
     # Keep ranges simple; adjust as needed for your palette.
     if s < 0.12 or v < 0.1:
-        return "blue"  # default bucket for very low saturation or value
+        return "white"  # default bucket for very low saturation or value
 
     if (0 <= hue < 20) or (340 <= hue < 360):
         return "red"
@@ -69,7 +69,7 @@ def hex_to_color_label(value: Optional[str]) -> Optional[str]:
         return "yellow"
     if 75 <= hue < 170:
         return "green"
-    if 170 <= hue < 250:
+    if 170 <= hue < 250: # blue 안쓰니까 나중에 빼자
         return "blue"
     if 250 <= hue < 340:
         return "purple"
