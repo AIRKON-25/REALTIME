@@ -42,7 +42,8 @@ class TrackBroadcaster:
         except Exception:
             pass
 
-    def send(self, tracks: np.ndarray, extras: Dict[int, dict], ts: float) -> None:
+    @staticmethod
+    def build_payload(tracks: np.ndarray, extras: Dict[int, dict], ts: float) -> dict:
         payload = {
             "type": "global_tracks",
             "timestamp": ts,
@@ -53,7 +54,7 @@ class TrackBroadcaster:
                 tid = int(row[0])
                 cls = int(row[1])
                 cx, cy, L, W, yaw = map(float, row[2:7])
-                extra = extras.get(tid, {})
+                extra = extras.get(tid, {}) if extras else {}
                 vx, vy = 0.0, 0.0
                 velocity = extra.get("velocity")
                 if velocity and len(velocity) >= 2:
@@ -80,6 +81,9 @@ class TrackBroadcaster:
                     "color_hex": extra.get("color_hex"),
                     "color_confidence": float(extra.get("color_confidence", 0.0)),
                 })
+        return payload
+
+    def send_payload(self, payload: dict) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             if self.protocol == "udp":
@@ -89,3 +93,7 @@ class TrackBroadcaster:
                 self.sock.sendall(data + b"\n")
         except Exception as exc:
             print(f"[TrackBroadcaster] send error: {exc}")
+
+    def send(self, tracks: np.ndarray, extras: Dict[int, dict], ts: float) -> None:
+        payload = self.build_payload(tracks, extras, ts)
+        self.send_payload(payload)

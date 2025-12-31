@@ -8,7 +8,9 @@ import random
 import threading
 import time
 from collections import Counter, deque
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import numpy as np
 from comms.command_server import CommandServer
@@ -79,6 +81,8 @@ class RealtimeServer:
         log_udp_packets: bool = False,
         lane_map_path: Optional[str] = "utils/make_H/lanes.json",
         status_state: Optional[StatusState] = None,
+        debug_http_host: Optional[str] = "0.0.0.0",
+        debug_http_port: Optional[int] = 18110,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -133,6 +137,14 @@ class RealtimeServer:
         self.log_pipeline = log_pipeline
         self.status_state = status_state
         self._velocity_state: Dict[int, dict] = {}  # ext_id -> {cx, cy, ts, vx, vy, history}
+        self._debug_http_host = debug_http_host
+        self._debug_http_port = debug_http_port
+        self._debug_http_enabled = bool(debug_http_host and debug_http_port)
+        self._debug_httpd: Optional[ThreadingHTTPServer] = None
+        self._debug_http_thread: Optional[threading.Thread] = None
+        self._debug_lock = threading.Lock()
+        self._last_track_payload: dict = {}
+        self._last_ui_snapshot: dict = {}
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -1091,7 +1103,8 @@ class RealtimeServer:
 
     def _broadcast_cluster_stage(self, stage: str, dets: Optional[List[dict]], ts: float):
         message = self._build_cluster_stage_message(stage, dets or [], ts)
-        self._cluster_stage_snapshots[stage] = message
+        with self._debug_lock:
+            self._cluster_stage_snapshots[stage] = message
         if self.ws_hub:
             self.ws_hub.broadcast(message)
 
@@ -1797,14 +1810,101 @@ class RealtimeServer:
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
         mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
+        payload = TrackBroadcaster.build_payload(mapped_tracks, mapped_meta, ts)
+        self._set_last_track_payload(payload)
         if self.track_tx:
-            self.track_tx.send(mapped_tracks, mapped_meta, ts)
+            self.track_tx.send_payload(payload)
         if self.carla_tx:
-            self.carla_tx.send(mapped_tracks, mapped_meta, ts)
-        if self.ws_hub:
+            self.carla_tx.send_payload(payload)
+        if self.ws_hub or self._debug_http_enabled:
             messages = self._build_ui_messages(mapped_tracks, mapped_meta, ts)
-            for message in messages:
-                self.ws_hub.broadcast(message)
+            self._set_last_ui_snapshot(messages, ts)
+            if self.ws_hub:
+                for message in messages:
+                    self.ws_hub.broadcast(message)
+
+    def _set_last_track_payload(self, payload: dict) -> None:
+        if not isinstance(payload, dict):
+            return
+        with self._debug_lock:
+            self._last_track_payload = payload
+
+    def _set_last_ui_snapshot(self, messages: List[dict], ts: float) -> None:
+        snap = {
+            "ts": ts,
+            "messages": list(messages or []),
+        }
+        with self._debug_lock:
+            snap["clusterStages"] = list(self._cluster_stage_snapshots.values())
+            self._last_ui_snapshot = snap
+
+    def _get_last_track_payload(self) -> dict:
+        with self._debug_lock:
+            if self._last_track_payload:
+                return self._last_track_payload
+        return {"type": "global_tracks", "timestamp": None, "items": []}
+
+    def _get_last_ui_snapshot(self) -> dict:
+        with self._debug_lock:
+            if self._last_ui_snapshot:
+                return self._last_ui_snapshot
+            cluster = list(self._cluster_stage_snapshots.values())
+        return {"ts": None, "messages": [], "clusterStages": cluster}
+
+    def _get_cluster_snapshots(self) -> dict:
+        with self._debug_lock:
+            snapshots = list(self._cluster_stage_snapshots.values())
+        return {"snapshots": snapshots}
+
+    def _start_debug_http(self) -> None:
+        if self._debug_http_thread:
+            return
+        handler = self._make_debug_http_handler()
+        try:
+            self._debug_httpd = ThreadingHTTPServer(
+                (self._debug_http_host, int(self._debug_http_port)),
+                handler,
+            )
+        except Exception as exc:
+            print(f"[DebugHTTP] failed to start: {exc}")
+            self._debug_httpd = None
+            return
+        self._debug_http_thread = threading.Thread(
+            target=self._debug_httpd.serve_forever,
+            daemon=True,
+        )
+        self._debug_http_thread.start()
+        print(f"[DebugHTTP] listening on http://{self._debug_http_host}:{self._debug_http_port}")
+
+    def _make_debug_http_handler(self):
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def _send_json(self, obj: dict, status: int = 200) -> None:
+                data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):  # noqa: N802
+                parsed = urlparse(self.path)
+                parts = [p for p in parsed.path.split("/") if p]
+                if not parts:
+                    return self._send_json({"error": "not_found"}, status=404)
+                if parts[0] == "tracks":
+                    return self._send_json(outer._get_last_track_payload())
+                if parts[0] == "ui":
+                    return self._send_json(outer._get_last_ui_snapshot())
+                if parts[0] == "cluster":
+                    return self._send_json(outer._get_cluster_snapshots())
+                return self._send_json({"error": "not_found"}, status=404)
+
+            def log_message(self, _format: str, *args):  # noqa: N802
+                return
+
+        return Handler
 
     def _run_tracker_step(self, fused: List[dict]) -> np.ndarray:
         """
@@ -1923,5 +2023,7 @@ class RealtimeServer:
                 self.command_server.start()
             except Exception as exc:
                 print(f"[CommandServer] failed to start: {exc}")
+        if self._debug_http_enabled:
+            self._start_debug_http()
         threading.Thread(target=self.main_loop, daemon=True).start() # 메인 루프 시작
         print("[Fusion] server started")
