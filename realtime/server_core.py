@@ -140,6 +140,9 @@ class RealtimeServer:
         self.log_pipeline = log_pipeline
         self.status_state = status_state
         self._velocity_state: Dict[int, dict] = {}  # ext_id -> {cx, cy, ts, vx, vy, history}
+        self.obstacle_stop_speed_max = 0.3  # m/s 이하만 UI에 표시
+        self.obstacle_stop_window = 5  # 최근 n 프레임 평균 속도로 정지 판정
+        self._obstacle_stop_history: Dict[int, deque] = {}
         self._debug_http_host = debug_http_host
         self._debug_http_port = debug_http_port
         self._debug_http_enabled = bool(debug_http_host and debug_http_port)
@@ -1200,6 +1203,7 @@ class RealtimeServer:
         cars_status: List[dict] = []
         obstacles_on_map: List[dict] = []
         obstacles_status: List[dict] = []
+        active_obstacle_ids: set = set()
 
         def _normalize_route_points(raw_points) -> List[dict]:
             points: List[dict] = []
@@ -1306,6 +1310,17 @@ class RealtimeServer:
                     obstacle_id = f"ob-{tid}"
                     source_cams = meta.get("source_cams") or []
                     camera_ids = self._normalize_camera_ids(source_cams)
+                    speed_val = meta.get("speed", 0.0)
+                    try:
+                        speed_val = float(speed_val)
+                    except Exception:
+                        speed_val = 0.0
+                    history = self._obstacle_stop_history.setdefault(tid, deque(maxlen=self.obstacle_stop_window))
+                    history.append(speed_val)
+                    avg_speed = float(np.mean(history)) if history else speed_val
+                    active_obstacle_ids.add(tid)
+                    if avg_speed > self.obstacle_stop_speed_max:
+                        continue  # 움직임이 일정 이상이면 UI에 표시하지 않음
                     obstacles_on_map.append({
                         "id": obstacle_id,
                         "obstacleId": obstacle_id,
@@ -1318,6 +1333,11 @@ class RealtimeServer:
                         "class": cls,
                         "cameraIds": camera_ids,
                     })
+
+        if active_obstacle_ids:
+            for ext_id in list(self._obstacle_stop_history.keys()):
+                if ext_id not in active_obstacle_ids:
+                    self._obstacle_stop_history.pop(ext_id, None)
 
         messages.append({
             "type": "carStatus",
