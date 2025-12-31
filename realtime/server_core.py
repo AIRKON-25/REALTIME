@@ -153,6 +153,9 @@ class RealtimeServer:
         self._last_track_payload: dict = {}
         self._last_ui_snapshot: dict = {}
         self._route_change_sig: Dict[int, str] = {}
+        self._route_change_sent_sig: Dict[int, str] = {}
+        self._latest_route_versions: Dict[str, str] = {}
+        self._latest_routes: Dict[str, List[dict]] = {}
 
         self.ws_hub: Optional[WebSocketHub] = None
         if ws_host:
@@ -1185,6 +1188,8 @@ class RealtimeServer:
         ts: float,
     ) -> List[dict]:
         messages: List[dict] = []
+        route_change_msgs: List[dict] = []
+        active_car_ids: set = set()
 
         traffic_light_msg = self._build_traffic_light_status_message(ts)
 
@@ -1259,7 +1264,6 @@ class RealtimeServer:
                 cx = float(row[2])
                 cy = float(-row[3])
                 yaw = float(row[6])
-
                 meta = track_meta.get(tid, {})
                 color_label = meta.get("color") or hex_to_color_label(meta.get("color_hex"))
                 car_color = self._normalize_car_color(color_label)
@@ -1269,8 +1273,11 @@ class RealtimeServer:
                 if cls == 0:
                     source_cams = meta.get("source_cams") or []
                     camera_ids = self._normalize_camera_ids(source_cams)
-                    car_id = f"car-{tid}"
-                    map_id = f"mcar-{tid}"
+                    ext_id = self._track_id_map.get(tid)
+                    car_key = ext_id if ext_id is not None else tid
+                    car_id = f"car-{car_key}"
+                    map_id = f"mcar-{car_key}"
+                    active_car_ids.add(car_id)
                     car_state = None
                     if self.status_state:
                         try:
@@ -1283,6 +1290,10 @@ class RealtimeServer:
                     resolution_val = None
                     route_changed = False
                     route_sig = None
+                    path_full_raw = []
+                    s_start = None
+                    s_end = None
+                    allow_route = False
                     if car_state:
                         try:
                             battery_raw = car_state.get("battery")
@@ -1290,14 +1301,18 @@ class RealtimeServer:
                                 battery_val = float(battery_raw)
                         except Exception:
                             pass
-                        path_future_raw = car_state.get("path_future") or car_state.get("path") or []
+                        path_full_raw = car_state.get("path") or []
+                        path_future_raw = car_state.get("path_future") or path_full_raw or []
                         category_val = car_state.get("category") or ""
                         resolution_val = car_state.get("resolution")
                         s_start = car_state.get("s_start")
-                        if s_start:
+                        s_end = car_state.get("s_end")
+                        route_sig = car_state.get("route_version")
+                        allow_route = bool(s_start) or bool(s_end)
+                        if not route_sig and s_start:
                             try:
                                 route_sig = json.dumps(
-                                    {"s_start": s_start, "path": path_future_raw},
+                                    {"s_start": s_start, "path": path_full_raw or path_future_raw},
                                     ensure_ascii=False,
                                     sort_keys=True,
                                 )
@@ -1333,7 +1348,57 @@ class RealtimeServer:
                         else:
                             self._route_change_sig.pop(tid, None)
                     route_points = _normalize_route_points(path_future_raw)
+                    if route_sig is None and route_points and (s_start or s_end):
+                        try:
+                            route_sig = json.dumps(path_full_raw or route_points, ensure_ascii=False, sort_keys=True)
+                        except Exception:
+                            route_sig = None
                     map_status = "routeChanged" if route_changed else "normal"
+                    if route_points:
+                        last_sent_sig = self._route_change_sent_sig.get(car_id)
+                        should_emit_route_change = False
+                        if allow_route and route_changed:
+                            should_emit_route_change = True
+                        elif allow_route and route_sig and last_sent_sig != route_sig:
+                            should_emit_route_change = True
+                        elif not last_sent_sig and route_sig:
+                            # route 존재하지만 아직 캐시에 보낸 적 없으면 한 번 보내되 표시 플래그는 allow_route로 구분
+                            should_emit_route_change = True
+                        if should_emit_route_change:
+                            route_change_msgs.append({
+                                "carId": car_id,
+                                "newRoute": route_points,
+                                "routeVersion": route_sig,
+                                "visible": bool(allow_route),
+                            })
+                            if route_sig:
+                                self._route_change_sent_sig[car_id] = route_sig
+                        if route_sig and route_sig != self._route_change_sent_sig.get(car_id):
+                            self._route_change_sent_sig[car_id] = route_sig
+                        self._latest_routes[car_id] = route_points
+                        if route_sig:
+                            self._latest_route_versions[car_id] = route_sig
+                    else:
+                        self._latest_routes.pop(car_id, None)
+                        self._route_change_sent_sig.pop(car_id, None)
+                        self._latest_route_versions.pop(car_id, None)
+                        self._route_change_sig.pop(car_id, None)
+                    progress_idx = 0
+                    progress_total = 0
+                    progress_ratio = 0.0
+                    if car_state:
+                        try:
+                            progress_idx = int(car_state.get("route_progress_idx", 0) or 0)
+                        except Exception:
+                            progress_idx = 0
+                        try:
+                            progress_total = int(car_state.get("route_progress_total", 0) or 0)
+                        except Exception:
+                            progress_total = 0
+                        try:
+                            progress_ratio = float(car_state.get("route_progress_ratio", 0.0) or 0.0)
+                        except Exception:
+                            progress_ratio = 0.0
                     cars_on_map.append({
                         "id": map_id,
                         "carId": car_id,
@@ -1350,10 +1415,14 @@ class RealtimeServer:
                         "speed": meta.get("speed", 0.0),
                         "battery": battery_val,
                         "cameraIds": camera_ids,
-                        "path_future": route_points,
+                        "path_future": [],
                         "category": category_val,
                         "resolution": str(resolution_val) if resolution_val is not None else "",
                         "routeChanged": route_changed,
+                        "routeVersion": route_sig,
+                        "route_progress_idx": progress_idx,
+                        "route_progress_total": progress_total,
+                        "route_progress_ratio": progress_ratio,
                     })
                 else:
                     obstacle_id = f"ob-{tid}"
@@ -1383,11 +1452,6 @@ class RealtimeServer:
                         "cameraIds": camera_ids,
                     })
 
-        if active_obstacle_ids:
-            for ext_id in list(self._obstacle_stop_history.keys()):
-                if ext_id not in active_obstacle_ids:
-                    self._obstacle_stop_history.pop(ext_id, None)
-
         messages.append({
             "type": "carStatus",
             "ts": ts,
@@ -1397,6 +1461,15 @@ class RealtimeServer:
                 "carsStatus": cars_status,
             },
         })
+
+        if route_change_msgs:
+            messages.append({
+                "type": "carRouteChange",
+                "ts": ts,
+                "data": {
+                    "changes": route_change_msgs,
+                },
+            })
 
         obstacle_msg = self._build_obstacle_delta_message(
             obstacles_on_map,
@@ -1443,6 +1516,25 @@ class RealtimeServer:
                 },
             })
             initial_msgs.append(obstacle_snapshot)
+            if self._latest_routes:
+                try:
+                    route_snapshot = {
+                        "type": "carRouteChange",
+                        "ts": ts,
+                        "data": {
+                            "changes": [
+                                {
+                                    "carId": car_id,
+                                    "newRoute": route,
+                                    "routeVersion": self._latest_route_versions.get(car_id),
+                                }
+                                for car_id, route in sorted(self._latest_routes.items())
+                            ],
+                        },
+                    }
+                    initial_msgs.append(route_snapshot)
+                except Exception:
+                    pass
             if self._cluster_stage_snapshots:
                 for key in sorted(self._cluster_stage_snapshots.keys()):
                     initial_msgs.append(self._cluster_stage_snapshots[key])

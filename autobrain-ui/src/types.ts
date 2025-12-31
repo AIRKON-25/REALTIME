@@ -64,6 +64,10 @@ export interface CarStatus {
   resolution: string; // path의 해상도 각 점의 간격
   cameraIds?: CameraId[]; // cameras currently seeing this car
   routeChanged?: boolean;
+  routeVersion?: string | null;
+  route_progress_idx?: number;
+  route_progress_total?: number;
+  route_progress_ratio?: number;
 }
 
 export interface CameraStatus {
@@ -81,6 +85,8 @@ export interface RoutePoint {
 export interface CarRouteChange {
   carId: CarId;
   newRoute: RoutePoint[];
+  routeVersion?: string | null;
+  visible?: boolean;
 }
 
 export interface CamStatusPacket {

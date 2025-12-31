@@ -347,7 +347,25 @@ function App() {
 
   const carPaths = useMemo(() => {
     const map: Record<CarId, RoutePoint[]> = {};
+
+    // 1) 우선 routeChange 메시지에서 온 경로 사용
+    routeChanges.forEach((change) => {
+      const pts = (change.newRoute ?? [])
+        .map((pt) => {
+          const x = Number((pt as any).x);
+          const y = Number((pt as any).y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y };
+        })
+        .filter((p): p is RoutePoint => Boolean(p));
+      if (pts.length > 1) {
+        map[change.carId] = pts;
+      }
+    });
+
+    // 2) 경로 업데이트가 없을 때는 carStatus의 path_future를 보조로 사용
     carsStatus.forEach((status) => {
+      if (map[status.car_id]) return;
       const pts = (status.path_future ?? [])
         .map((pt) => {
           const x = Number((pt as any).x);
@@ -360,6 +378,22 @@ function App() {
         map[status.car_id] = pts;
       }
     });
+
+    return map;
+  }, [routeChanges, carsStatus]);
+
+  const routeProgressByCar = useMemo(() => {
+    const map: Record<CarId, { idx: number; total: number; ratio: number }> = {};
+    carsStatus.forEach((status) => {
+      const idx = Number(status.route_progress_idx ?? 0);
+      const total = Number(status.route_progress_total ?? 0);
+      const ratio = Number(status.route_progress_ratio ?? 0);
+      map[status.car_id] = {
+        idx: Number.isFinite(idx) ? idx : 0,
+        total: Number.isFinite(total) ? total : 0,
+        ratio: Number.isFinite(ratio) ? ratio : 0,
+      };
+    });
     return map;
   }, [carsStatus]);
 
@@ -369,7 +403,7 @@ function App() {
       if (!pts || pts.length < 2) return;
       const status = carsStatus.find((c) => c.car_id === carId);
       if (!status?.routeChanged) return;
-      changes.push({ carId, newRoute: pts });
+      changes.push({ carId, newRoute: pts, visible: true });
     });
     return changes;
   }, [carPaths, carsStatus]);
@@ -610,6 +644,7 @@ function App() {
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
+            routeProgressByCar={routeProgressByCar}
             carPaths={carPaths}
             carPathFlashKey={carPathFlashKey}
             onCameraClick={handleCameraClick}

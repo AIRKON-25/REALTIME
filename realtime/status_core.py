@@ -23,6 +23,10 @@ class CarStatus:
     s_start: List[Any] = field(default_factory=list)
     s_end: List[Any] = field(default_factory=list)
     end: Optional[str] = None # 웹에 안줌
+    route_version: Optional[str] = None
+    route_progress_idx: int = 0
+    route_progress_total: int = 0
+    route_progress_ratio: float = 0.0
     ts: float = field(default_factory=time.time)
 
 
@@ -41,6 +45,29 @@ class StatusState:
         self._lock = threading.Lock()
         self.cars: Dict[int, CarStatus] = {}
         self.traffic: Dict[int, TrafficStatus] = {}
+
+    @staticmethod
+    def _compute_progress(path_past: List[List[float]], path_future: List[List[float]]) -> Tuple[int, int, float]:
+        past_len = len(path_past) if isinstance(path_past, list) else 0
+        future_len = len(path_future) if isinstance(path_future, list) else 0
+        total = past_len + future_len
+        ratio = float(past_len) / float(total) if total > 0 else 0.0
+        return past_len, total, ratio
+
+    @staticmethod
+    def _compute_route_version(path: List[List[float]], s_start: Optional[List[Any]]) -> Optional[str]:
+        if not path and not s_start:
+            return None
+        try:
+            payload = {"path": path}
+            if s_start:
+                payload["s_start"] = s_start
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            try:
+                return str(s_start) if s_start else None
+            except Exception:
+                return None
 
     @staticmethod
     def _normalize_path(path) -> List[List[float]]:
@@ -121,6 +148,8 @@ class StatusState:
             s_start = list(existing.s_start) if existing else []
             s_end = list(existing.s_end) if existing else []
             end = existing.end if existing else None
+            route_version = existing.route_version if existing else None
+            prog_idx, prog_total, prog_ratio = self._compute_progress(path_past, path_future)
             self.cars[int(car_id)] = CarStatus(
                 int(car_id),
                 battery,
@@ -132,6 +161,10 @@ class StatusState:
                 s_start=s_start,
                 s_end=s_end,
                 end=end,
+                route_version=route_version,
+                route_progress_idx=prog_idx,
+                route_progress_total=prog_total,
+                route_progress_ratio=prog_ratio,
                 ts=now,
             )
 
@@ -153,6 +186,9 @@ class StatusState:
             existing = self.cars.get(int(car_id))
             battery = existing.battery if existing else None
             end = existing.end if existing else None
+            prev_route_version = existing.route_version if existing else None
+            route_version = self._compute_route_version(path_list, opt_start if opt_start else existing.s_start if existing else [])
+            prog_idx, prog_total, prog_ratio = self._compute_progress([], list(path_list))
             self.cars[int(car_id)] = CarStatus(
                 int(car_id),
                 battery,
@@ -164,6 +200,10 @@ class StatusState:
                 s_start=opt_start if opt_start else (list(existing.s_start) if existing else []),
                 s_end=opt_end if opt_end else (list(existing.s_end) if existing else []),
                 end=end,
+                route_version=route_version if route_version is not None else prev_route_version,
+                route_progress_idx=prog_idx,
+                route_progress_total=prog_total,
+                route_progress_ratio=prog_ratio,
                 ts=now,
             )
 
@@ -184,6 +224,8 @@ class StatusState:
             resolution = existing.resolution if existing else None
             s_start = list(existing.s_start) if existing else []
             s_end = list(existing.s_end) if existing else []
+            route_version = existing.route_version if existing else None
+            prog_idx, prog_total, prog_ratio = self._compute_progress(path_past, path_future)
             self.cars[int(car_id)] = CarStatus(
                 int(car_id),
                 battery,
@@ -195,6 +237,10 @@ class StatusState:
                 s_start=s_start,
                 s_end=s_end,
                 end=dest_name,
+                route_version=route_version,
+                route_progress_idx=prog_idx,
+                route_progress_total=prog_total,
+                route_progress_ratio=prog_ratio,
                 ts=now,
             )
 
@@ -226,6 +272,10 @@ class StatusState:
                 "resolution": car.resolution,
                 "s_start": car.s_start,
                 "s_end": car.s_end,
+                "route_version": car.route_version,
+                "route_progress_idx": car.route_progress_idx,
+                "route_progress_total": car.route_progress_total,
+                "route_progress_ratio": car.route_progress_ratio,
                 "ts": car.ts,
             }
 
@@ -265,6 +315,10 @@ class StatusState:
             car.path_past.extend(consumed)
             car.path_future = car.path_future[idx + 1 :]
             car.ts = time.time()
+            prog_idx, prog_total, prog_ratio = self._compute_progress(car.path_past, car.path_future)
+            car.route_progress_idx = prog_idx
+            car.route_progress_total = prog_total
+            car.route_progress_ratio = prog_ratio
             return self._asdict(car)
 
 

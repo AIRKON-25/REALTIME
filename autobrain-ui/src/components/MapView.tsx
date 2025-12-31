@@ -129,6 +129,7 @@ interface MapViewProps {
   activeCameraIds: CameraId[];
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
+  routeProgressByCar?: Record<CarId, { idx: number; total: number; ratio: number }>;
   carPaths?: Record<CarId, RoutePoint[]>;
   carPathFlashKey?: number;
   onCameraClick?: (cameraId: CameraId) => void;
@@ -145,6 +146,7 @@ export const MapView = ({
   activeCameraIds,
   activeCarId,
   routeChanges,
+  routeProgressByCar,
   carPaths,
   carPathFlashKey,
   onCameraClick,
@@ -253,10 +255,15 @@ export const MapView = ({
 
     const sprites: RouteSprite[] = [];
     routeChanges.forEach((change, changeIdx) => {
+      if (change.visible === false) return;
       if (!change.newRoute || change.newRoute.length < 2) return;
+      const progress = routeProgressByCar?.[change.carId];
+      const startIdx = Math.max(0, Math.floor(progress?.idx ?? 0));
+      const trimmed = change.newRoute.slice(startIdx);
+      if (trimmed.length < 2) return;
       const carPos = carsOnMapRef.current.find((c) => c.carId === change.carId);
       sprites.push(
-        ...buildRouteSprites(change.carId, change.newRoute, {
+        ...buildRouteSprites(change.carId, trimmed, {
           carPos: carPos ? { x: carPos.x, y: carPos.y } : undefined,
           idPrefix: `change-${changeIdx}-${Date.now()}`,
         })
@@ -345,7 +352,9 @@ export const MapView = ({
       return;
     }
 
-    const points = carPathsRef.current?.[activeCarId];
+    const progress = routeProgressByCar?.[activeCarId];
+    const startIdx = Math.max(0, Math.floor(progress?.idx ?? 0));
+    const points = (carPathsRef.current?.[activeCarId] || []).slice(startIdx);
     if (!points || points.length < 2) {
       setClickedRouteSprites([]);
       setVisibleClickedRouteCounts({});
