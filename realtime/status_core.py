@@ -333,16 +333,15 @@ class StatusServer:
                     path_list = self.state._normalize_path(path)
                     self.state.update_route(cid, path_list, ts=now)
             elif isinstance(pl, list):
-                # 신규 포맷: payload=[{vid, category, optional{s_start,s_end}, planning}, ...]
+                # 신규 포맷: payload=[{vid, category, s_start, s_end, planning}, ...]
                 for item in pl:
                     try:
                         cid = int(item.get("vid") or item.get("car_id"))
                     except Exception:
                         continue
                     category = item.get("category") or ""
-                    optional = item.get("optional") or {}
-                    s_start = optional.get("s_start") or []
-                    s_end = optional.get("s_end") or []
+                    s_start = item.get("s_start") or []
+                    s_end = item.get("s_end") or []
                     path_raw = item.get("planning")
                     path_list = self.state._extract_path_points(path_raw)
                     self.state.update_route(

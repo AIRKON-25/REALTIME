@@ -1446,6 +1446,30 @@ class SortTracker:
                 }
         return attrs
 
+    def get_tracks_snapshot(self) -> List[dict]:
+        """
+        현재 트랙들의 요약 상태를 반환한다.
+        CONFIRMED/LOST만 포함하며 외부 ID 매핑 로직에서 사용.
+        """
+        snapshots: List[dict] = []
+        for track in self.tracks:
+            if track.state not in (TrackState.CONFIRMED, TrackState.LOST):
+                continue
+            cx, cy = track.kf_pos.x[:2].flatten()
+            snapshots.append({
+                "id": int(track.id),
+                "cls": int(track.cls) if track.cls is not None else 0,
+                "state": self._state_name(track.state),
+                "time_since_update": int(track.time_since_update),
+                "cx": float(cx),
+                "cy": float(cy),
+                "yaw": float(track.car_yaw),
+                "color": track.get_color(),
+                "velocity": track.get_velocity(),
+                "speed": track.get_speed(),
+            })
+        return snapshots
+
     def get_last_metrics(self) -> Dict[str, int]:
         return dict(self.last_metrics)
 
