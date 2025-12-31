@@ -25,11 +25,14 @@ from utils.tracking.cluster import ClassMergePolicy, ClusterConfig, cluster_by_a
 from utils.tracking.fusion import fuse_cluster_weighted
 from utils.tracking.geometry import aabb_iou_axis_aligned
 from utils.tracking.lane_matcher import LaneMatcher
-from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle
+from utils.tracking.tracker import SortTracker, TrackerConfigCar, TrackerConfigObstacle, TrackState
 from utils.tracking._constants import ASSOC_CENTER_NORM, ASSOC_CENTER_WEIGHT, IOU_CLUSTER_THR
 from realtime.runtime_constants import (
     COLOR_BIAS_STRENGTH,
     COLOR_BIAS_MIN_VOTES,
+    EARLY_RELEASE_LOST_FRAMES,
+    EARLY_REID_DIST_M,
+    EARLY_REID_YAW_DEG,
     PATH_REID_DIST_M,
     PATH_REID_YAW_DEG,
     VELOCITY_DT_MAX,
@@ -690,6 +693,57 @@ class RealtimeServer:
             if tid not in active_ids:
                 self._stash_released_id(tid, now)
 
+        # 조기 해제: LOST가 일정 프레임 이상이며 예약 ID 범위 밖을 쓰는 차량의 외부 ID를 미리 풀어준다.
+        early_release_ids: set = set()
+        if EARLY_RELEASE_LOST_FRAMES > 0:
+            try:
+                snapshots = self.tracker.get_tracks_snapshot()
+            except Exception:
+                snapshots = []
+            for snap in snapshots:
+                if snap.get("state") != "lost":
+                    continue
+                if snap.get("time_since_update", 0) < EARLY_RELEASE_LOST_FRAMES:
+                    continue
+                internal_id = int(snap.get("id"))
+                cls_val = int(snap.get("cls", 0))
+                if cls_val != 0:
+                    continue
+                ext_id = self._track_id_map.get(internal_id)
+                if ext_id is None:
+                    continue
+                if ext_id <= self.car_id_max:
+                    continue  # 예약 ID는 조기 해제하지 않음
+                info = {
+                    "ts": now,
+                    "cls": 0,
+                    "cx": float(snap.get("cx", 0.0)),
+                    "cy": float(snap.get("cy", 0.0)),
+                    "color": snap.get("color"),
+                    "vx": None,
+                    "vy": None,
+                    "speed": snap.get("speed"),
+                    "yaw": snap.get("yaw"),
+                }
+                self._external_history[ext_id] = info
+                released = dict(info)
+                released["early"] = True
+                self._released_external[ext_id] = released
+                self._track_id_map.pop(internal_id, None)
+                self._external_to_internal.pop(ext_id, None)
+                self._track_state_cache.pop(internal_id, None)
+                try:
+                    for t in self.tracker.tracks:
+                        if int(t.id) == internal_id:
+                            t.state = TrackState.DELETED
+                            break
+                except Exception:
+                    pass
+                early_release_ids.add(internal_id)
+
+        if early_release_ids and tracks is not None and len(tracks) > 0:
+            tracks = np.array([row for row in tracks if int(row[0]) not in early_release_ids], dtype=float)
+
         track_info_by_id: Dict[int, dict] = {}
         new_track_rows: List[dict] = []
         for row in tracks:
@@ -749,13 +803,24 @@ class RealtimeServer:
                 for ext_id, released_info in self._released_external.items():
                     if released_info.get("cls") != 0:
                         continue
+                    early_flag = bool(released_info.get("early"))
                     path_cost = self._path_reid_cost(ext_id, track_info)
                     if path_cost is not None:
                         pairs.append((path_cost, track_info["internal_id"], ext_id))
                         continue
                     cost, dist = self._compute_reid_cost(track_info, released_info, now)
-                    if not relax_gate and dist > self._reid_dist_gate_m:
+                    gate_dist = EARLY_REID_DIST_M if early_flag else self._reid_dist_gate_m
+                    if dist is not None and not relax_gate and dist > gate_dist:
                         continue
+                    if early_flag:
+                        try:
+                            yaw_prev = released_info.get("yaw")
+                            yaw_new = track_info.get("yaw")
+                            if yaw_prev is not None and yaw_new is not None:
+                                if self._deg_diff(yaw_new, yaw_prev) > EARLY_REID_YAW_DEG:
+                                    continue
+                        except Exception:
+                            pass
                     pairs.append((cost, track_info["internal_id"], ext_id))
             pairs.sort(key=lambda v: v[0])
             used_internal = set()
