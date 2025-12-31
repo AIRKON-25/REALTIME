@@ -102,7 +102,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 40px;
+  min-height: 90px; /* 헤더 높이 고정 */
+  padding: 24px 40px;
 }
 
 .header__left {
