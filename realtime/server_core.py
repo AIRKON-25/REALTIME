@@ -1348,7 +1348,7 @@ class RealtimeServer:
                 dq.clear()
                 continue
             for det in entry["dets"]:
-                cls = int(det.get("cls", det.get("class", 1)))
+                cls = int(det.get("cls"))
                 if cls==0: 
                     det["length"] = vehicle_fixed_length
                     det["width"] = vehicle_fixed_width
@@ -1818,8 +1818,8 @@ class RealtimeServer:
                 det["cls"],
                 det["cx"],
                 det["cy"],
-                (self.tracker_fixed_length if self.tracker_fixed_length is not None else det["length"]),
-                (self.tracker_fixed_width if self.tracker_fixed_width is not None else det["width"]),
+                det["length"],
+                det["width"],
                 det["yaw"],
             ])
             det_colors.append(det.get("color"))
