@@ -13,7 +13,7 @@ interface AdminControlsPanelProps {
   selectedCarId: CarId | null;
 }
 
-const COLORS = ["red", "green", "blue", "yellow", "purple", "white"];
+const COLORS = ["red", "green", "yellow", "purple", "white"];
 
 const toNumber = (value: string) => {
   if (!value) return null;
