@@ -132,6 +132,14 @@ class RealtimeServer:
         self._reid_speed_weight = 0.5
         self._reid_yaw_weight = 0.5
         self._reid_min_speed_mps = 0.3
+        self._external_color_defaults: Dict[int, str] = {
+            1: "red",
+            2: "yellow",
+            3: "green",
+            4: "purple",
+            5: "white",
+        }
+        self._external_color_overrides: Dict[int, str] = {}
         self.active_cams = set()
         self.color_bias_strength = COLOR_BIAS_STRENGTH
         self.color_bias_min_votes = COLOR_BIAS_MIN_VOTES
@@ -290,6 +298,69 @@ class RealtimeServer:
         u = _norm(cx, x_min, x_max)
         v = 1.0 - _norm(cy, y_min, y_max)
         return u, v
+
+    def _get_external_color(self, ext_id: Optional[int]) -> Optional[str]:
+        if ext_id is None:
+            return None
+        if ext_id in self._external_color_overrides:
+            return self._external_color_overrides.get(ext_id)
+        return self._external_color_defaults.get(ext_id)
+
+    def _set_external_color(self, ext_id: int, color: Optional[str]) -> Optional[str]:
+        normalized = normalize_color_label(color)
+        if normalized is None:
+            self._external_color_overrides.pop(ext_id, None)
+        else:
+            self._external_color_overrides[ext_id] = normalized
+        return self._get_external_color(ext_id)
+
+    def _preferred_external_id_for_color(self, color: Optional[str], used_ext_ids: set) -> Optional[int]:
+        normalized = normalize_color_label(color)
+        if not normalized:
+            return None
+        for ext_id in range(self.car_id_min, self.car_id_max + 1):
+            if ext_id in used_ext_ids:
+                continue
+            if ext_id not in self._car_id_pool:
+                continue
+            if self._get_external_color(ext_id) == normalized:
+                return ext_id
+        return None
+
+    def _apply_external_color_to_meta(self, internal_id: int, ext_id: Optional[int], meta: dict) -> Optional[str]:
+        color = self._get_external_color(ext_id)
+        if not color:
+            return None
+        meta["color"] = color
+        hex_color = color_label_to_hex(color)
+        if hex_color:
+            meta["color_hex"] = hex_color
+        return color
+
+    def _propagate_external_color(self, internal_id: Optional[int], ext_id: Optional[int], color: Optional[str]) -> None:
+        if internal_id is None or ext_id is None:
+            return
+        meta = self.track_meta.setdefault(internal_id, {})
+        if color:
+            meta["color"] = color
+            hex_color = color_label_to_hex(color)
+            if hex_color:
+                meta["color_hex"] = hex_color
+        else:
+            meta.pop("color", None)
+            meta.pop("color_hex", None)
+        if internal_id in self._track_state_cache:
+            self._track_state_cache[internal_id]["color"] = color
+        history = None
+        if color is not None:
+            history = self._external_history.setdefault(ext_id, {})
+        else:
+            history = self._external_history.get(ext_id)
+        if history is not None:
+            if color is not None:
+                history["color"] = color
+            else:
+                history.pop("color", None)
 
     def _compute_reid_cost(self, track_info: dict, prev_info: dict, now: float) -> Tuple[float, float]:
         ts = prev_info.get("ts")
@@ -518,7 +589,20 @@ class RealtimeServer:
         used_ext_ids: Optional[set] = None,
     ) -> int:
         used = used_ext_ids or set()
-        if prefer_car and self._car_id_pool:
+        prefer_car_flag = prefer_car
+        color_hint = normalize_color_label(track_info.get("color")) if track_info else None
+        if prefer_car_flag and track_info:
+            preferred = self._preferred_external_id_for_color(color_hint, used)
+            if preferred is not None:
+                try:
+                    self._car_id_pool.remove(preferred)
+                    heapq.heapify(self._car_id_pool)
+                except ValueError:
+                    pass
+                return preferred
+            if color_hint == "yellow":
+                prefer_car_flag = False
+        if prefer_car_flag and self._car_id_pool:
             if track_info:
                 selected = self._select_car_id(track_info, now, used)
                 if selected is not None:
@@ -620,20 +704,24 @@ class RealtimeServer:
         if ext_id is None:
             return
         self._external_to_internal.pop(ext_id, None)
+        forced_color = self._get_external_color(ext_id)
         info = self._track_state_cache.pop(internal_id, None)
         if info:
             info = dict(info)
             info["ts"] = float(now)
+            if forced_color:
+                info["color"] = forced_color
         is_car = bool(info) and int(info.get("cls", 1)) == 0
         if info:
             self._external_history[ext_id] = info
         if ext_id <= self.car_id_max and is_car:
+            color_val = forced_color or (info.get("color") if info else None)
             self._released_external[ext_id] = {
                 "ts": float(now),
                 "cls": 0,
                 "cx": float(info.get("cx", 0.0)),
                 "cy": float(info.get("cy", 0.0)),
-                "color": info.get("color"),
+                "color": color_val,
                 "vx": info.get("vx"),
                 "vy": info.get("vy"),
                 "speed": info.get("speed"),
@@ -794,12 +882,13 @@ class RealtimeServer:
                     continue
                 if ext_id <= self.car_id_max:
                     continue  # 예약 ID는 조기 해제하지 않음
+                forced_color = self._get_external_color(ext_id)
                 info = {
                     "ts": now,
                     "cls": 0,
                     "cx": float(snap.get("cx", 0.0)),
                     "cy": float(snap.get("cy", 0.0)),
-                    "color": snap.get("color"),
+                    "color": forced_color or snap.get("color"),
                     "vx": None,
                     "vy": None,
                     "speed": snap.get("speed"),
@@ -833,6 +922,10 @@ class RealtimeServer:
             color = normalize_color_label(meta.get("color"))
             if not color:
                 color = hex_to_color_label(meta.get("color_hex"))
+            ext_id_existing = self._track_id_map.get(internal_id)
+            forced_color = self._apply_external_color_to_meta(internal_id, ext_id_existing, meta) if ext_id_existing is not None else None
+            if forced_color:
+                color = forced_color
             vel = meta.get("velocity")
             vx = vy = None
             if vel is not None and len(vel) == 2:
@@ -848,7 +941,6 @@ class RealtimeServer:
             except (TypeError, ValueError):
                 speed = None
             yaw = float(row[6]) if len(row) > 6 else None
-            ext_id_existing = self._track_id_map.get(internal_id)
             info = {
                 "internal_id": internal_id,
                 "ts": wall_now,
@@ -933,6 +1025,13 @@ class RealtimeServer:
                 self._release_external_id(internal_id)
                 ext_id = self._assign_external_id(True, track_info, now)
                 self._track_id_map[internal_id] = ext_id
+            forced_color = self._apply_external_color_to_meta(
+                internal_id,
+                ext_id,
+                self.track_meta.setdefault(internal_id, {}),
+            )
+            if forced_color and track_info is not None:
+                track_info["color"] = forced_color
             id_map[internal_id] = ext_id
 
         car_internal_ids = [
@@ -957,6 +1056,9 @@ class RealtimeServer:
             new_cache[internal_id] = info
             ext_id = id_map.get(internal_id)
             if ext_id is not None:
+                forced_color = self._get_external_color(ext_id)
+                if forced_color and info is not None:
+                    info["color"] = forced_color
                 self._external_history[ext_id] = info
         self._track_state_cache = new_cache
 
@@ -971,6 +1073,7 @@ class RealtimeServer:
             if ext_id is None:
                 continue
             meta = dict(self.track_meta.get(internal_id, {}))
+            self._apply_external_color_to_meta(internal_id, ext_id, meta)
             vel = self._update_velocity(ext_id, float(row[2]), float(row[3]), now)
             if vel:
                 meta["velocity"] = [float(vel["vx"]), float(vel["vy"])]
@@ -1822,8 +1925,10 @@ class RealtimeServer:
                 normalized_color = None
             updated = self.tracker.force_set_color(resolved_id, normalized_color)
             if updated:
-                print(f"[Command] set track {tid} color -> {normalized_color}")
-                return {"status": "ok", "track_id": tid, "color": normalized_color}
+                forced_color = self._set_external_color(tid, normalized_color)
+                self._propagate_external_color(resolved_id, tid, forced_color)
+                print(f"[Command] set track {tid} color -> {forced_color}")
+                return {"status": "ok", "track_id": tid, "color": forced_color}
             return {"status": "error", "message": f"track {tid} not found"}
         if cmd == "set_yaw":
             track_id = payload.get("track_id")
