@@ -15,6 +15,7 @@ barricade_fixed_width = 0.5   # 바리케이드 고정 너비
 
 # path progress
 PATH_PROGRESS_DIST_M = 1.5  # 경로 진행으로 간주할 최대 거리 게이트(m)
+PATH_PROGRESS_HEAD_WINDOW = 10  # 경로 진행 판단 시 path_future 앞쪽에서만 찾을 최대 점 개수
 PATH_REID_DIST_M = 5   # 경로 기반 재ID 거리 게이트(m)
 PATH_REID_YAW_DEG = 45.0    # 경로 기반 재ID yaw 차이 게이트(도)
 ROUTE_CHANGE_DISTANCE_M = 10.0  # routeChanged 판정을 위한 거리 게이트(m)

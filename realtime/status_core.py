@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from comms.status_receiver import StatusReceiver
-from realtime.runtime_constants import PATH_PROGRESS_DIST_M
+from realtime.runtime_constants import PATH_PROGRESS_DIST_M, PATH_PROGRESS_HEAD_WINDOW
 
 
 @dataclass
@@ -245,16 +245,20 @@ class StatusState:
         car_id: int,
         position: Tuple[float, float],
         gate_m: float = PATH_PROGRESS_DIST_M,
+        head_window: int = PATH_PROGRESS_HEAD_WINDOW,
     ) -> Optional[Dict[str, Any]]:
         """
         현재 위치가 경로의 앞 구간에 충분히 근접하면 path_past/path_future를 갱신.
         """
         gate = max(0.0, float(gate_m))
+        window = int(head_window) if head_window is not None else 0
         with self._lock:
             car = self.cars.get(int(car_id))
             if not car or not car.path_future:
                 return None
-            idx, dist = self._nearest_path_index(car.path_future, position)
+            search_len = len(car.path_future) if window <= 0 else min(window, len(car.path_future))
+            search_segment = car.path_future[:search_len]
+            idx, dist = self._nearest_path_index(search_segment, position)
             if idx is None or dist > gate:
                 return None
             consumed = car.path_future[: idx + 1]
