@@ -28,7 +28,7 @@ class ClusterConfig:
     iou_cluster_thr: float = IOU_CLUSTER_THR
     color_bonus: float = COLOR_BONUS
     color_penalty: float = COLOR_PENALTY
-    center_gate_car: float = 0.6
+    center_gate_car: float = 1.0
     center_gate_obstacle: float = 1.3
     iou_gate: Optional[float] = None
     iou_fallback_center_ratio: float = IOU_FALLBACK_CENTER_RATIO

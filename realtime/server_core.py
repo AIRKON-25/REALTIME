@@ -74,7 +74,7 @@ class RealtimeServer:
         ws_host: Optional[str] = "0.0.0.0",
         ws_port: int = 9001,
         cluster_config: Optional[ClusterConfig] = None,
-        class_merge_policy: ClassMergePolicy = ClassMergePolicy.STRICT, # 차-장애물 머지 허용하려면 ClassMergePolicy.ALLOW_CAR_OBSTACLE
+        class_merge_policy: ClassMergePolicy = ClassMergePolicy.ALLOW_CAR_OBSTACLE, # 차-장애물 머지 허용
         enable_cluster_split: bool = False, # 클러스터 분할 허용하려면 True
         tracker_config_car: Optional[TrackerConfigCar] = None,
         tracker_config_obstacle: Optional[TrackerConfigObstacle] = None,
@@ -96,6 +96,14 @@ class RealtimeServer:
             merge_policy=class_merge_policy,
             allow_split_multi_modal=enable_cluster_split,
         )
+        # 클래스가 다르게 찍힌 동일 물체(차/장애물)도 합쳐지도록 미스클래스 게이트를 완화
+        try:
+            self.cluster_config.merge_policy = ClassMergePolicy.ALLOW_CAR_OBSTACLE
+            self.cluster_config.misclass_min_iou = min(self.cluster_config.misclass_min_iou, 0.1)
+            self.cluster_config.misclass_max_shape_ratio = max(self.cluster_config.misclass_max_shape_ratio, 2.0)
+            self.cluster_config.misclass_max_yaw_diff = max(self.cluster_config.misclass_max_yaw_diff, 45.0)
+        except Exception:
+            pass
         if self.cluster_config.iou_gate is None:
             self.cluster_config.iou_gate = self.cluster_config.iou_cluster_thr
         self.iou_thr = self.cluster_config.iou_cluster_thr
@@ -2040,7 +2048,13 @@ class RealtimeServer:
             return {"score": 0.0, "source_cams": []}
         score = np.mean([float(d.get("score", 0.0)) for d in subset])
         cls_counts = Counter([int(d.get("cls", -1)) for d in subset if "cls" in d])
-        fused_cls = cls_counts.most_common(1)[0][0] if cls_counts else None
+        fused_cls = None
+        if cls_counts:
+            # 차량 관측이 한 번이라도 있으면 차량으로 확정(오검 상쇄)
+            if 0 in cls_counts:
+                fused_cls = 0
+            else:
+                fused_cls = cls_counts.most_common(1)[0][0]
         cams = [d.get("cam", "?") for d in subset]
         normalized_colors = [normalize_color_label(d.get("color")) for d in subset]
         valid_colors = [c for c in normalized_colors if c is not None]
@@ -2221,8 +2235,9 @@ class RealtimeServer:
         det_colors: List[Optional[str]] = []
         gt_yaws: List[Optional[float]] = []
         for det in fused:
+            cls_val = int(det.get("cls", 0)) if det.get("cls") is not None else 0
             det_rows.append([
-                det["cls"],
+                cls_val,
                 det["cx"],
                 det["cy"],
                 det["length"],
@@ -2243,11 +2258,54 @@ class RealtimeServer:
         dets_for_tracker = np.array(det_rows, dtype=float) if det_rows else np.zeros((0, 6), dtype=float)
         
         tracks = self.tracker.update(dets_for_tracker, det_colors, gt_yaws=gt_yaws if det_rows else None)
-        
 
         track_attrs = self.tracker.get_track_attributes()
         self._update_track_meta(self.tracker.get_latest_matches(), fused, track_attrs)
+        tracks = self._dedupe_close_car_tracks(tracks)
         return tracks
+
+    def _dedupe_close_car_tracks(self, tracks: np.ndarray, dist_gate: float = 1.0, iou_gate: float = 0.2) -> np.ndarray:
+        """
+        차량 트랙 간 거리가 매우 가까우면 하나로 정리한다.
+        dist_gate: 중심 거리 게이트(m)
+        iou_gate: AABB IoU 게이트
+        """
+        if tracks is None or len(tracks) <= 1:
+            return tracks
+        car_rows = [(idx, row) for idx, row in enumerate(tracks) if int(row[1]) == 0]
+        to_drop = set()
+        track_obj_by_id = {int(t.id): t for t in getattr(self.tracker, "tracks", [])}
+        for i in range(len(car_rows)):
+            idx_a, row_a = car_rows[i]
+            tid_a = int(row_a[0])
+            for j in range(i + 1, len(car_rows)):
+                idx_b, row_b = car_rows[j]
+                tid_b = int(row_b[0])
+                cx_a, cy_a, l_a, w_a, yaw_a = map(float, row_a[2:7])
+                cx_b, cy_b, l_b, w_b, yaw_b = map(float, row_b[2:7])
+                dist = math.hypot(cx_a - cx_b, cy_a - cy_b)
+                if dist > dist_gate:
+                    continue
+                iou_val = aabb_iou_axis_aligned(
+                    np.array([cx_a, cy_a, l_a, w_a, yaw_a]),
+                    np.array([cx_b, cy_b, l_b, w_b, yaw_b]),
+                )
+                if iou_val < iou_gate:
+                    continue
+                ta = track_obj_by_id.get(tid_a)
+                tb = track_obj_by_id.get(tid_b)
+                age_a = getattr(ta, "age", 0)
+                age_b = getattr(tb, "age", 0)
+                keep_tid = tid_a if age_a >= age_b else tid_b
+                drop_idx = idx_b if keep_tid == tid_a else idx_a
+                to_drop.add(drop_idx)
+                drop_obj = tb if keep_tid == tid_a else ta
+                if drop_obj:
+                    drop_obj.state = TrackState.DELETED
+        if not to_drop:
+            return tracks
+        kept = np.array([row for idx, row in enumerate(tracks) if idx not in to_drop], dtype=float)
+        return kept
 
     def main_loop(self):
         timings: Dict[str, float] = {} # 단계별 처리 시간 기록용(ms)
