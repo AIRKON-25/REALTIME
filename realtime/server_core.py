@@ -37,6 +37,7 @@ from realtime.runtime_constants import (
     EARLY_REID_YAW_DEG,
     PATH_REID_DIST_M,
     PATH_REID_YAW_DEG,
+    ROUTE_CHANGE_DISTANCE_M,
     VELOCITY_DT_MAX,
     VELOCITY_DT_MIN,
     VELOCITY_EWMA_ALPHA,
@@ -1205,6 +1206,31 @@ class RealtimeServer:
         obstacles_status: List[dict] = []
         active_obstacle_ids: set = set()
 
+        def _first_xy(obj) -> Optional[Tuple[float, float]]:
+            try:
+                if isinstance(obj, dict):
+                    return float(obj.get("x")), float(obj.get("y"))
+                if isinstance(obj, (list, tuple)) and len(obj) >= 2:
+                    return float(obj[0]), float(obj[1])
+            except Exception:
+                return None
+            return None
+
+        def _closest_index(target: Tuple[float, float], path_list) -> Optional[int]:
+            best_idx = None
+            best_dist = float("inf")
+            for idx, pt in enumerate(path_list):
+                xy = _first_xy(pt)
+                if xy is None:
+                    continue
+                dx = xy[0] - target[0]
+                dy = xy[1] - target[1]
+                dist = math.hypot(dx, dy)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = idx
+            return best_idx
+
         def _normalize_route_points(raw_points) -> List[dict]:
             points: List[dict] = []
             if not raw_points:
@@ -1281,6 +1307,29 @@ class RealtimeServer:
                             if route_sig != prev_sig:
                                 route_changed = True
                                 self._route_change_sig[tid] = route_sig
+                                try:
+                                    s_start_xy = _first_xy(s_start[0]) if s_start else None
+                                    path_first_xy = _first_xy(path_future_raw[0]) if path_future_raw else None
+                                    res_val = resolution_val
+                                    try:
+                                        res_val = float(res_val) if res_val is not None else 1.0
+                                    except Exception:
+                                        res_val = 1.0
+                                    res_val = max(res_val, 1e-3)
+                                    resolution_val = res_val
+                                    if s_start_xy and path_first_xy:
+                                        idx_in_path = _closest_index(s_start_xy, path_future_raw)
+                                        dist = math.hypot(s_start_xy[0] - path_first_xy[0], s_start_xy[1] - path_first_xy[1])
+                                        threshold_steps = dist / res_val
+                                        if idx_in_path is not None and idx_in_path >= threshold_steps:
+                                            route_changed = False
+                                    if route_changed and s_start_xy and path_future_raw:
+                                        idx_from_current = _closest_index(s_start_xy, path_future_raw)
+                                        step_gate = float(ROUTE_CHANGE_DISTANCE_M) / res_val
+                                        if idx_from_current is None or idx_from_current >= step_gate:
+                                            route_changed = False
+                                except Exception:
+                                    pass
                         else:
                             self._route_change_sig.pop(tid, None)
                     route_points = _normalize_route_points(path_future_raw)

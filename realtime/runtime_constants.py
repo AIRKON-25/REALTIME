@@ -18,6 +18,7 @@ PATH_PROGRESS_DIST_M = 1.5  # 경로 진행으로 간주할 최대 거리 게이
 PATH_PROGRESS_HEAD_WINDOW = 10  # 경로 진행 판단 시 path_future 앞쪽에서만 찾을 최대 점 개수
 PATH_REID_DIST_M = 5   # 경로 기반 재ID 거리 게이트(m)
 PATH_REID_YAW_DEG = 45.0    # 경로 기반 재ID yaw 차이 게이트(도)
+ROUTE_CHANGE_DISTANCE_M = 10.0  # routeChanged 판정을 위한 거리 게이트(m)
 
 # 조기 ID 해제/재매칭 (LOST 상태 핸드오프) 파라미터
 EARLY_RELEASE_LOST_FRAMES = 10  # LOST 경과 프레임이 이 이상이면 외부 ID 조기 해제 시도
