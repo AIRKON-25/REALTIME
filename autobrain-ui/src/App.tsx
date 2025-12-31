@@ -57,6 +57,21 @@ const emptyState: MonitorState = {
   trafficLightsStatus: [],
 };
 
+const ALLOWED_EXTERNAL_ID_MIN = 1;
+const ALLOWED_EXTERNAL_ID_MAX = 5; // car-1 ~ car-5
+
+const extractExternalCarId = (carId: CarId | null | undefined): number | null => {
+  const match = (carId ?? "").toString().match(/^car-(\d+)$/i);
+  if (!match) return null;
+  const num = Number(match[1]);
+  return Number.isFinite(num) ? num : null;
+};
+
+const isAllowedExternalCarId = (carId: CarId | null | undefined): boolean => {
+  const extId = extractExternalCarId(carId);
+  return extId !== null && extId >= ALLOWED_EXTERNAL_ID_MIN && extId <= ALLOWED_EXTERNAL_ID_MAX;
+};
+
 const mergeByKey = <T,>(
   prev: T[],
   upserts: T[] | undefined,
@@ -289,15 +304,38 @@ function App() {
     },
     [isClusterBefore, isClusterAfter, clusterBeforeState, clusterAfterState, serverState]
   );
-  const carsOnMap = activeState.carsOnMap;
-  const carsStatus = activeState.carsStatus;
+  const carsOnMapRaw = activeState.carsOnMap;
+  const carsStatusRaw = activeState.carsStatus;
+  const routeChangesRaw = activeState.routeChanges;
+  const trafficLightsOnMap = activeState.trafficLightsOnMap;
+  const trafficLightsStatus = activeState.trafficLightsStatus;
   const camerasOnMap = activeState.camerasOnMap;
   const camerasStatus = activeState.camerasStatus;
   const obstaclesOnMap = activeState.obstaclesOnMap;
   const obstaclesStatus = activeState.obstaclesStatus;
-  const routeChanges = activeState.routeChanges;
-  const trafficLightsOnMap = activeState.trafficLightsOnMap;
-  const trafficLightsStatus = activeState.trafficLightsStatus;
+  const carsOnMap = useMemo(
+    () => carsOnMapRaw.filter((car) => isAllowedExternalCarId(car.carId)),
+    [carsOnMapRaw]
+  );
+  const carsStatus = useMemo(
+    () => carsStatusRaw.filter((status) => isAllowedExternalCarId(status.car_id)),
+    [carsStatusRaw]
+  );
+  const allowedCarIds = useMemo(() => {
+    const ids = new Set<CarId>();
+    carsOnMap.forEach((car) => ids.add(car.carId));
+    carsStatus.forEach((car) => ids.add(car.car_id));
+    return ids;
+  }, [carsOnMap, carsStatus]);
+  const routeChanges = useMemo(
+    () =>
+      routeChangesRaw.filter(
+        (change) =>
+          Boolean(change?.carId) &&
+          isAllowedExternalCarId(change.carId)
+      ),
+    [routeChangesRaw]
+  );
   const selectedIncident = useMemo(
     () => obstaclesStatus.find((ob) => ob.id === selectedIncidentId) || null,
     [obstaclesStatus, selectedIncidentId]
@@ -308,6 +346,12 @@ function App() {
       setSelectedIncidentId(null);
     }
   }, [selectedIncidentId, selectedIncident]);
+
+  useEffect(() => {
+    if (selectedCarId && !allowedCarIds.has(selectedCarId)) {
+      setSelectedCarId(null);
+    }
+  }, [selectedCarId, allowedCarIds]);
 
   const carColorById = useMemo(() => {
     const allowed: readonly CarColor[] = ["red", "green", "yellow", "purple", "white"];
