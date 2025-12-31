@@ -1378,10 +1378,35 @@ class RealtimeServer:
                                 )
                             except Exception:
                                 route_sig = str(s_start)
-                        prev_sig = self._route_change_sig.get(car_id)
-                        if route_sig and allow_route and route_sig != prev_sig:
-                            route_changed = True
-                            self._route_change_sig[car_id] = route_sig
+                            prev_sig = self._route_change_sig.get(tid)
+                            if route_sig != prev_sig:
+                                route_changed = True
+                                self._route_change_sig[tid] = route_sig
+                                try:
+                                    s_start_xy = _first_xy(s_start[0]) if s_start else None
+                                    path_first_xy = _first_xy(path_future_raw[0]) if path_future_raw else None
+                                    res_val = resolution_val
+                                    try:
+                                        res_val = float(res_val) if res_val is not None else 1.0
+                                    except Exception:
+                                        res_val = 1.0
+                                    res_val = max(res_val, 1e-3)
+                                    resolution_val = res_val
+                                    if s_start_xy and path_first_xy:
+                                        idx_in_path = _closest_index(s_start_xy, path_future_raw)
+                                        dist = math.hypot(s_start_xy[0] - path_first_xy[0], s_start_xy[1] - path_first_xy[1])
+                                        threshold_steps = dist / res_val
+                                        if idx_in_path is not None and idx_in_path >= threshold_steps:
+                                            route_changed = False
+                                    if route_changed and s_start_xy and path_future_raw:
+                                        idx_from_current = _closest_index(s_start_xy, path_future_raw)
+                                        step_gate = float(ROUTE_CHANGE_DISTANCE_M) / res_val
+                                        if idx_from_current is None or idx_from_current >= step_gate:
+                                            route_changed = False
+                                except Exception:
+                                    pass
+                        else:
+                            self._route_change_sig.pop(tid, None)
                     route_points = _normalize_route_points(path_future_raw)
                     if route_sig is None and route_points and (s_start or s_end):
                         try:
@@ -1486,20 +1511,6 @@ class RealtimeServer:
                         "class": cls,
                         "cameraIds": camera_ids,
                     })
-
-        if active_obstacle_ids:
-            for ext_id in list(self._obstacle_stop_history.keys()):
-                if ext_id not in active_obstacle_ids:
-                    self._obstacle_stop_history.pop(ext_id, None)
-
-        if active_car_ids:
-            for car_id in list(self._route_change_sent_sig.keys()):
-                if car_id not in active_car_ids:
-                    self._route_change_sent_sig.pop(car_id, None)
-            for car_id in list(self._latest_routes.keys()):
-                if car_id not in active_car_ids:
-                    self._latest_routes.pop(car_id, None)
-                    self._latest_route_versions.pop(car_id, None)
 
         messages.append({
             "type": "carStatus",
