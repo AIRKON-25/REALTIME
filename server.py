@@ -25,7 +25,7 @@ def main():
     # ap.add_argument("--fixed-length", type=float, default=4.4) # 인지에서 사용하는 기본값
     # ap.add_argument("--fixed-width", type=float, default=2.7)
     ap.add_argument("--udp-port", type=int, default=50050, help="단일 UDP 포트로 모든 카메라 데이터 수신")
-    ap.add_argument("--tx-host", default=None, help="트래킹 결과 전송 호스트(제어컴)")
+    ap.add_argument("--tx-host", default="192.168.0.100", help="트래킹 결과 전송 호스트(제어컴)")
     ap.add_argument("--tx-port", type=int, default=60050)
     ap.add_argument("--tx-protocol", choices=["udp", "tcp"], default="udp")
     ap.add_argument("--carla-host", default=None, help="CARLA 서버 전송 호스트(우리 이제 안쓰지않나)")
@@ -56,6 +56,9 @@ def main():
     ap.add_argument("--status-http-host", default="0.0.0.0", help="status HTTP host (omit to disable HTTP)")
     ap.add_argument("--status-http-port", type=int, default=18080, help="status HTTP port (omit to disable HTTP)")
     ap.add_argument("--status-log-udp", action="store_true", help="log status UDP payloads")
+    ap.add_argument("--dashboard", dest="dashboard", action="store_true", default=True, help="enable rich dashboard output")
+    ap.add_argument("--no-dashboard", dest="dashboard", action="store_false", help="disable rich dashboard output")
+    ap.add_argument("--dashboard-refresh-hz", type=float, default=4.0, help="dashboard refresh rate")
     ap.set_defaults(log_pipeline=True, log_udp_packets=False)
     args = ap.parse_args()
     if args.car_count < 1 or args.car_count > 5:
@@ -110,6 +113,8 @@ def main():
         status_state=status_server.state,
         debug_http_host=debug_http_host,
         debug_http_port=debug_http_port,
+        dashboard=args.dashboard,
+        dashboard_refresh_hz=args.dashboard_refresh_hz,
     )
     status_server.start()
     server.start()

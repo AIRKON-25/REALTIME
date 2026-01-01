@@ -53,6 +53,223 @@ from realtime.runtime_constants import (
 )
 from realtime.status_core import StatusState
 
+
+class FusionDashboard:
+    """
+    간단한 리치 기반 대시보드. 최신 스냅샷만 덮어쓰며 stdout을 깔끔하게 유지한다.
+    """
+
+    def __init__(self, refresh_hz: float = 4.0) -> None:
+        self.refresh_hz = max(1.0, float(refresh_hz) if refresh_hz else 4.0)
+        self._latest: dict = {}
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._available = True
+
+    def start(self) -> bool:
+        try:
+            # 지연 import로 rich 미설치 시도 실패를 런타임에만 노출
+            import rich  # noqa: F401
+        except Exception as exc:
+            print(f"[Dashboard] rich not available: {exc}")
+            self._available = False
+            return False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=0.5)
+
+    def update(self, snapshot: dict) -> None:
+        if not self._available:
+            return
+        with self._lock:
+            self._latest = snapshot or {}
+
+    @staticmethod
+    def _fmt_float(val: Optional[float], digits: int = 2) -> str:
+        try:
+            return f"{float(val):.{digits}f}"
+        except Exception:
+            return "-"
+
+    def _color_str(self, meta: dict) -> str:
+        if not meta:
+            return "-"
+        label = meta.get("color")
+        if label:
+            return str(label)
+        hex_val = meta.get("color_hex")
+        if hex_val:
+            try:
+                from utils.colors import hex_to_color_label
+                lbl = hex_to_color_label(hex_val)
+                return lbl or str(hex_val)
+            except Exception:
+                return str(hex_val)
+        return "-"
+
+    @staticmethod
+    def _color_text(label: Optional[str], hex_val: Optional[str], prefer_hex: bool = False):
+        from rich.text import Text
+
+        disp = None
+        style = hex_val or label or ""
+
+        if prefer_hex and hex_val:
+            disp = hex_val
+        if disp is None:
+            disp = label
+        if disp is None and hex_val:
+            try:
+                from utils.colors import hex_to_color_label
+                disp = hex_to_color_label(hex_val) or hex_val
+            except Exception:
+                disp = hex_val
+        disp = disp or "-"
+        return Text(str(disp), style=str(style))
+
+    @staticmethod
+    def _fmt_cams(cams: List[str]) -> str:
+        ids = []
+        for c in cams:
+            s = str(c)
+            if s.startswith("cam-"):
+                s = s[4:]
+            elif s.startswith("cam"):
+                s = s[3:]
+            ids.append(s)
+        return ", ".join(ids)
+
+    def _render(self, snap: dict):
+        from rich import box
+        from rich.console import Group
+        from rich.layout import Layout
+        from rich.panel import Panel
+        from rich.table import Table
+        from rich.text import Text
+
+        ts = snap.get("ts")
+        raw_total = snap.get("raw_total", 0)
+        raw_cls = snap.get("raw_per_cls") or {}
+        raw_cam = snap.get("raw_per_cam") or {}
+        clusters = snap.get("clusters") or []
+        tracks = snap.get("tracks") or []
+        track_meta = snap.get("track_meta") or {}
+        ext_to_int = snap.get("ext_to_int") or {}
+        timings = snap.get("timings") or {}
+        metrics = snap.get("tracker_metrics") or {}
+
+        summary_lines = [
+            f"ts={self._fmt_float(ts, 3)}  raw={raw_total} (c0:{raw_cls.get(0,0)} c1:{raw_cls.get(1,0)} c2:{raw_cls.get(2,0)})",
+            "cams=" + (", ".join([f"{k}:{v}" for k, v in sorted(raw_cam.items())]) or "-"),
+            f"clusters={len(clusters)} tracks={len(tracks)} timings(ms) "
+            f"g={self._fmt_float(timings.get('gather'))} f={self._fmt_float(timings.get('fuse'))} t={self._fmt_float(timings.get('track'))}",
+        ]
+        summary = Panel(Text("\n".join(summary_lines)), title="Fusion", border_style="cyan")
+
+        fused_table = Table(title="Fused", box=box.SIMPLE, expand=True, show_lines=False)
+        for col in ["#", "cls", "cx", "cy", "yaw", "score", "cams", "color"]:
+            fused_table.add_column(col)
+        for idx, det in enumerate(clusters):
+            cams = det.get("source_cams") or []
+            color_label = det.get("color")
+            color_hex = det.get("color_hex")
+            fused_table.add_row(
+                str(idx),
+                str(det.get("cls", "-")),
+                self._fmt_float(det.get("cx")),
+                self._fmt_float(det.get("cy")),
+                self._fmt_float(det.get("yaw")),
+                self._fmt_float(det.get("score")),
+                self._fmt_cams(cams),
+                self._color_text(color_label, color_hex, prefer_hex=True),
+            )
+        if not clusters:
+            fused_table.add_row("-", "-", "-", "-", "-", "-", "-", "-")
+
+        cls_groups: Dict[object, List[list]] = {}
+        for row in tracks:
+            try:
+                cls_key = int(row[1])
+            except Exception:
+                cls_key = "?"
+            cls_groups.setdefault(cls_key, []).append(row)
+
+        def build_track_table(cls_key, rows):
+            table = Table(title=f"Tracks cls={cls_key} ({len(rows)})", box=box.SIMPLE, expand=True, show_lines=False)
+            for col in ["ext_id", "int_id", "cx", "cy", "yaw", "speed", "color"]:
+                table.add_column(col)
+            for row in rows:
+                try:
+                    ext_id = int(row[0])
+                except Exception:
+                    ext_id = "-"
+                int_id = ext_to_int.get(ext_id, "-")
+                meta = track_meta.get(ext_id) or {}
+                color_label = meta.get("color")
+                color_hex = meta.get("color_hex")
+                table.add_row(
+                    str(ext_id),
+                    str(int_id),
+                    self._fmt_float(row[2] if len(row) > 2 else None),
+                    self._fmt_float(row[3] if len(row) > 3 else None),
+                    self._fmt_float(row[6] if len(row) > 6 else None),
+                    self._fmt_float(meta.get("speed")),
+                    self._color_text(color_label, color_hex),
+                )
+            if not rows:
+                table.add_row("-", "-", "-", "-", "-", "-", "-")
+            return table
+
+        track_tables: List[Table] = []
+        for cls_key in sorted(cls_groups.keys(), key=lambda v: (v == "?", v)):
+            track_tables.append(build_track_table(cls_key, cls_groups.get(cls_key, [])))
+        if not track_tables:
+            track_tables.append(build_track_table("all", []))
+        track_panel = Panel(Group(*track_tables), title="Tracks", border_style="magenta")
+
+        metrics_table = Table(title="TrackerMetrics", box=box.SIMPLE, expand=True, show_lines=False)
+        metrics_table.add_column("metric")
+        metrics_table.add_column("value", justify="right")
+        for key in [
+            "num_tracks",
+            "num_measurements",
+            "num_matched",
+            "num_matched_stage1",
+            "num_matched_stage2",
+            "num_matched_last_chance",
+            "num_unmatched_tracks",
+            "num_unmatched_measurements",
+        ]:
+            if key in metrics:
+                metrics_table.add_row(key, str(metrics.get(key)))
+        if not metrics:
+            metrics_table.add_row("-", "-")
+
+        layout = Layout()
+        layout.split_column(
+            Layout(summary, name="summary", size=5),
+            Layout(fused_table, name="fused", ratio=3),
+            Layout(track_panel, name="tracks", ratio=4),
+            Layout(metrics_table, name="metrics", size=10),
+        )
+        return layout
+
+    def _run(self) -> None:
+        from rich.live import Live
+        refresh = self.refresh_hz
+        with Live(self._render({}), refresh_per_second=refresh, screen=False) as live:
+            while not self._stop.is_set():
+                with self._lock:
+                    snap = dict(self._latest)
+                live.update(self._render(snap))
+                self._stop.wait(1.0 / refresh)
+
 class RealtimeServer:
     def __init__(
         self,
@@ -87,6 +304,8 @@ class RealtimeServer:
         status_state: Optional[StatusState] = None,
         debug_http_host: Optional[str] = "0.0.0.0",
         debug_http_port: Optional[int] = 18110,
+        dashboard: bool = True,
+        dashboard_refresh_hz: float = 4.0,
     ):
         self.fps = fps
         self.dt = 1.0 / max(1e-3, fps) # 루프 주기 초
@@ -147,6 +366,9 @@ class RealtimeServer:
         self.last_cluster_debug: Dict[str, int] = {}
         self.debug_assoc_logging = debug_assoc_logging
         self.log_pipeline = log_pipeline
+        self.dashboard_enabled = bool(dashboard)
+        self.dashboard_refresh_hz = dashboard_refresh_hz
+        self.dashboard: Optional[FusionDashboard] = FusionDashboard(dashboard_refresh_hz) if self.dashboard_enabled else None
         self.status_state = status_state
         self._velocity_state: Dict[int, dict] = {}  # ext_id -> {cx, cy, ts, vx, vy, history}
         self.obstacle_stop_speed_max = 0.3  # m/s 이하만 UI에 표시
@@ -2126,7 +2348,15 @@ class RealtimeServer:
             if votes:
                 meta["color_votes"] = dict(votes)
 
-    def _broadcast_tracks(self, tracks: np.ndarray, ts: float):
+    def _broadcast_tracks(
+        self,
+        tracks: np.ndarray,
+        ts: float,
+        raw_stats: Optional[Dict[str, int]] = None,
+        cls_counts: Optional[Dict[int, int]] = None,
+        fused: Optional[List[dict]] = None,
+        timings: Optional[Dict[str, float]] = None,
+    ):
         """
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
@@ -2143,6 +2373,16 @@ class RealtimeServer:
             if self.ws_hub:
                 for message in messages:
                     self.ws_hub.broadcast(message)
+        if self.dashboard:
+            self._update_dashboard_snapshot(
+                raw_stats,
+                cls_counts,
+                fused,
+                mapped_tracks,
+                mapped_meta,
+                timings,
+                ts,
+            )
 
     def _set_last_track_payload(self, payload: dict) -> None:
         if not isinstance(payload, dict):
@@ -2158,6 +2398,36 @@ class RealtimeServer:
         with self._debug_lock:
             snap["clusterStages"] = list(self._cluster_stage_snapshots.values())
             self._last_ui_snapshot = snap
+
+    def _update_dashboard_snapshot(
+        self,
+        raw_stats: Optional[Dict[str, int]],
+        cls_counts: Optional[Dict[int, int]],
+        fused: Optional[List[dict]],
+        mapped_tracks: Optional[np.ndarray],
+        mapped_meta: Optional[Dict[int, dict]],
+        timings: Optional[Dict[str, float]],
+        ts: float,
+    ) -> None:
+        if not self.dashboard:
+            return
+        try:
+            track_rows = mapped_tracks.tolist() if mapped_tracks is not None else []
+        except Exception:
+            track_rows = []
+        snap = {
+            "ts": ts,
+            "raw_total": sum(raw_stats.values()) if raw_stats else 0,
+            "raw_per_cam": dict(raw_stats) if raw_stats else {},
+            "raw_per_cls": dict(cls_counts) if cls_counts else {},
+            "clusters": list(fused) if fused else [],
+            "tracks": track_rows,
+            "track_meta": dict(mapped_meta) if mapped_meta else {},
+            "timings": dict(timings) if timings else {},
+            "tracker_metrics": self.tracker.get_last_metrics() if self.tracker else {},
+            "ext_to_int": dict(self._external_to_internal),
+        }
+        self.dashboard.update(snap)
 
     def _get_last_track_payload(self) -> dict:
         with self._debug_lock:
@@ -2333,6 +2603,16 @@ class RealtimeServer:
 
             t0 = time.perf_counter()
             raw_dets = self._gather_current() # 인지 결과 수집 [{"cls":...,"cx","cy","length","width","yaw","score","color_hex","cam","ts"}, ...]
+            raw_cam_counts: Dict[str, int] = {}
+            raw_cls_counts: Dict[int, int] = {0: 0, 1: 0, 2: 0}
+            for det in raw_dets:
+                cam = det.get("cam", "?")
+                raw_cam_counts[cam] = raw_cam_counts.get(cam, 0) + 1
+                try:
+                    cls_val = int(det.get("cls", 1))
+                    raw_cls_counts[cls_val] = raw_cls_counts.get(cls_val, 0) + 1
+                except Exception:
+                    raw_cls_counts[1] = raw_cls_counts.get(1, 0) + 1
             frame_ts = now
             if raw_dets:
                 ts_vals = []
@@ -2352,15 +2632,11 @@ class RealtimeServer:
             t2 = time.perf_counter()
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
-            self._broadcast_tracks(tracks, frame_ts)
+            self._broadcast_tracks(tracks, frame_ts, raw_cam_counts, raw_cls_counts, fused, timings)
             self._prev_tracks_for_cluster = tracks.copy() if tracks is not None and len(tracks) else None
 
-            if self.log_pipeline and self._should_log(): # 1초에 한번 로그
-                stats = {}
-                for det in raw_dets:
-                    cam = det.get("cam", "?")
-                    stats[cam] = stats.get(cam, 0) + 1 # 카메라별 원시 검출 개수 집계
-                self._log_pipeline(stats, fused, tracks, frame_ts, timings)
+            if self.log_pipeline and not self.dashboard and self._should_log(): # 1초에 한번 로그
+                self._log_pipeline(raw_cam_counts, fused, tracks, frame_ts, timings)
                 if self.last_cluster_debug:
                     print(f"[ClusterDebug] {json.dumps(self.last_cluster_debug, ensure_ascii=False)}")
                 tracker_metrics = self.tracker.get_last_metrics()
@@ -2390,5 +2666,7 @@ class RealtimeServer:
                 print(f"[CommandServer] failed to start: {exc}")
         if self._debug_http_enabled:
             self._start_debug_http()
+        if self.dashboard:
+            self.dashboard.start()
         threading.Thread(target=self.main_loop, daemon=True).start() # 메인 루프 시작
         print("[Fusion] server started")
