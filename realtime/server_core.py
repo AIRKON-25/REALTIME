@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 
 import numpy as np
 from comms.command_server import CommandServer
-from comms.track_broadcaster import TrackBroadcaster
 from comms.udp_receiver import UDPReceiverSingle
 from comms.ws_hub import WebSocketHub
 from utils.colors import (
@@ -116,13 +115,13 @@ class FusionDashboard:
     @staticmethod
     def _color_text(label: Optional[str], hex_val: Optional[str], prefer_hex: bool = False):
         from rich.text import Text
+        import re
 
+        # 표시할 텍스트 우선순위: (1) hex 표시 요청 시 hex, (2) 라벨, (3) hex를 라벨로 변환, (4) hex 원문, (5) "-"
         disp = None
-        style = hex_val or label or ""
-
         if prefer_hex and hex_val:
             disp = hex_val
-        if disp is None:
+        if disp is None and label:
             disp = label
         if disp is None and hex_val:
             try:
@@ -131,7 +130,24 @@ class FusionDashboard:
             except Exception:
                 disp = hex_val
         disp = disp or "-"
-        return Text(str(disp), style=str(style))
+
+        # 색상 스타일은 유효한 hex(#RRGGBB)나 안전한 라벨만 적용하고, 그 외엔 평문으로 둔다.
+        safe_labels = {"red", "green", "yellow", "blue", "cyan", "magenta", "white", "black", "purple", "orange"}
+        style = ""
+        hex_str = None
+        if isinstance(hex_val, str):
+            m = re.match(r"^#(?:[0-9a-fA-F]{6})$", hex_val.strip())
+            if m:
+                hex_str = m.group(0)
+        lbl_lower = str(label).lower() if label else None
+        if hex_str and (prefer_hex or not label):
+            style = hex_str
+        elif lbl_lower in safe_labels:
+            style = lbl_lower
+        elif hex_str:
+            style = hex_str
+
+        return Text(str(disp), style=style)
 
     @staticmethod
     def _fmt_cams(cams: List[str]) -> str:
@@ -386,20 +402,8 @@ class RealtimeServer:
         self._route_change_sent_sig: Dict[int, str] = {}
         self._latest_route_versions: Dict[str, str] = {}
         self._latest_routes: Dict[str, List[dict]] = {}
-
-        self.ws_hub: Optional[WebSocketHub] = None
-        if ws_host:
-            try:
-                self.ws_hub = WebSocketHub(
-                    ws_host,
-                    ws_port,
-                    path="/monitor",
-                    on_message=self._handle_ws_message,
-                )
-                self.ws_hub.start()
-            except Exception as exc:
-                print(f"[WebSocketHub] init failed: {exc}")
-                self.ws_hub = None
+        self._ws_heartbeat_stop = threading.Event()
+        self._ws_heartbeat_thread: Optional[threading.Thread] = None
 
         self._ui_cameras_on_map = [
             {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.015, "y": 0.51},
@@ -417,6 +421,31 @@ class RealtimeServer:
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
         ]
+        self._ui_cam_status = {
+            "type": "camStatus",
+            "ts": time.time(),
+            "data": {
+                "camerasOnMap": list(self._ui_cameras_on_map),
+                "camerasStatus": list(self._ui_cameras_status),
+            },
+        }
+
+        self.ws_hub: Optional[WebSocketHub] = None
+        if ws_host:
+            try:
+                self.ws_hub = WebSocketHub(
+                    ws_host,
+                    ws_port,
+                    path="/monitor",
+                    on_message=self._handle_ws_message,
+                )
+                self.ws_hub.start()
+                # 초기 빈 스냅샷을 등록해 클라이언트 로딩을 빠르게 끝낸다.
+                self._initialize_ui_snapshots()
+                self._start_ws_heartbeat()
+            except Exception as exc:
+                print(f"[WebSocketHub] init failed: {exc}")
+                self.ws_hub = None
         _raw_traffic_lights = [
             {"id": "tl-1", "trafficLightId": 1, "x": -5.5, "y": -13.1, "yaw": 90.0},
             {"id": "tl-2", "trafficLightId": 2, "x": 5.6, "y": -17.1, "yaw": -90.0},
@@ -480,8 +509,9 @@ class RealtimeServer:
         elif lane_map_path:
             print(f"[LaneMatcher] path not found: {lane_map_path}")
 
-        self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol) if tx_host else None
-        self.carla_tx = TrackBroadcaster(carla_host, carla_port) if carla_host else None
+        # 외부 전송(UDP/TCP)은 비활성화; 필요 시 TrackBroadcaster로 교체 가능
+        self.track_tx = None
+        self.carla_tx = None
 
         car_cfg = tracker_config_car or TrackerConfigCar()
         obs_cfg = tracker_config_obstacle or TrackerConfigObstacle()
@@ -1549,12 +1579,12 @@ class RealtimeServer:
 
         if tracks is not None and len(tracks):
             for row in tracks:
-                tid = int(row[0])
+                ext_id = int(row[0])  # mapped_tracks에서 이미 외부 ID가 들어있음
                 cls = int(row[1])
                 cx = float(row[2])
                 cy = float(-row[3])
                 yaw = float(row[6])
-                meta = track_meta.get(tid, {})
+                meta = track_meta.get(ext_id, {})
                 color_label = meta.get("color") or hex_to_color_label(meta.get("color_hex"))
                 car_color = self._normalize_car_color(color_label)
 
@@ -1563,15 +1593,14 @@ class RealtimeServer:
                 if cls == 0:
                     source_cams = meta.get("source_cams") or []
                     camera_ids = self._normalize_camera_ids(source_cams)
-                    ext_id = self._track_id_map.get(tid)
-                    car_key = ext_id if ext_id is not None else tid
+                    car_key = ext_id
                     car_id = f"car-{car_key}"
                     map_id = f"mcar-{car_key}"
                     active_car_ids.add(car_id)
                     car_state = None
                     if self.status_state:
                         try:
-                            car_state = self.status_state.get_car(tid)
+                            car_state = self.status_state.get_car(ext_id)
                         except Exception:
                             car_state = None
                     battery_val: float = 100
@@ -1608,10 +1637,10 @@ class RealtimeServer:
                                 )
                             except Exception:
                                 route_sig = str(s_start)
-                            prev_sig = self._route_change_sig.get(tid)
+                            prev_sig = self._route_change_sig.get(car_key)
                             if route_sig != prev_sig:
                                 route_changed = True
-                                self._route_change_sig[tid] = route_sig
+                                self._route_change_sig[car_key] = route_sig
                                 try:
                                     s_start_xy = _first_xy(s_start[0]) if s_start else None
                                     path_first_xy = _first_xy(path_future_raw[0]) if path_future_raw else None
@@ -1636,7 +1665,7 @@ class RealtimeServer:
                                 except Exception:
                                     pass
                         else:
-                            self._route_change_sig.pop(tid, None)
+                            self._route_change_sig.pop(car_key, None)
                     route_points = _normalize_route_points(path_future_raw)
                     if route_sig is None and route_points and (s_start or s_end):
                         try:
@@ -1715,7 +1744,7 @@ class RealtimeServer:
                         "route_progress_ratio": progress_ratio,
                     })
                 else:
-                    obstacle_id = f"ob-{tid}"
+                    obstacle_id = f"ob-{ext_id}"
                     source_cams = meta.get("source_cams") or []
                     camera_ids = self._normalize_camera_ids(source_cams)
                     speed_val = meta.get("speed", 0.0)
@@ -1723,10 +1752,10 @@ class RealtimeServer:
                         speed_val = float(speed_val)
                     except Exception:
                         speed_val = 0.0
-                    history = self._obstacle_stop_history.setdefault(tid, deque(maxlen=self.obstacle_stop_window))
+                    history = self._obstacle_stop_history.setdefault(ext_id, deque(maxlen=self.obstacle_stop_window))
                     history.append(speed_val)
                     avg_speed = float(np.mean(history)) if history else speed_val
-                    active_obstacle_ids.add(tid)
+                    active_obstacle_ids.add(ext_id)
                     if avg_speed > self.obstacle_stop_speed_max:
                         continue  # 움직임이 일정 이상이면 UI에 표시하지 않음
                     obstacles_on_map.append({
@@ -2106,6 +2135,7 @@ class RealtimeServer:
                         used_ext_ids.add(new_ext)
             self._refresh_id_pools(used_ext_ids)
             print(f"[Command] set car_count -> {self.car_id_max}")
+            self._broadcast_snapshot_now("set_car_count")
             return {"status": "ok", "car_count": self.car_id_max}
         if cmd == "swap_ids":
             track_id_a = payload.get("track_id_a", payload.get("id_a"))
@@ -2124,6 +2154,7 @@ class RealtimeServer:
             if internal_a is None and internal_b is None:
                 return {"status": "error", "message": "track not found"}
             if internal_a is None or internal_b is None:
+                return {"status": "error", "message": "both track IDs must exist to swap"}
                 internal_target = internal_b if internal_a is None else internal_a
                 desired_ext = tid_a if internal_a is None else tid_b
                 if desired_ext <= 0:
@@ -2154,6 +2185,7 @@ class RealtimeServer:
             self._external_to_internal[ext_a] = internal_b
             self._external_to_internal[ext_b] = internal_a
             print(f"[Command] swapped external IDs {ext_a} <-> {ext_b}")
+            self._broadcast_snapshot_now("swap_ids")
             return {"status": "ok", "swapped": [ext_a, ext_b]}
         if cmd == "list_tracks":
             tracks = self.tracker.list_tracks()
@@ -2361,14 +2393,14 @@ class RealtimeServer:
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
         mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
-        payload = TrackBroadcaster.build_payload(mapped_tracks, mapped_meta, ts)
+        payload = self._build_track_payload(mapped_tracks, mapped_meta, ts)
         self._set_last_track_payload(payload)
-        if self.track_tx:
-            self.track_tx.send_payload(payload)
-        if self.carla_tx:
-            self.carla_tx.send_payload(payload)
         if self.ws_hub or self._debug_http_enabled:
-            messages = self._build_ui_messages(mapped_tracks, mapped_meta, ts)
+            messages = []
+            try:
+                messages = self._build_ui_messages(mapped_tracks, mapped_meta, ts)
+            except Exception as exc:
+                print(f"[UI] build message failed: {exc}")
             self._set_last_ui_snapshot(messages, ts)
             if self.ws_hub:
                 for message in messages:
@@ -2389,6 +2421,7 @@ class RealtimeServer:
             return
         with self._debug_lock:
             self._last_track_payload = payload
+        self._refresh_ws_initial_messages()
 
     def _set_last_ui_snapshot(self, messages: List[dict], ts: float) -> None:
         snap = {
@@ -2397,7 +2430,85 @@ class RealtimeServer:
         }
         with self._debug_lock:
             snap["clusterStages"] = list(self._cluster_stage_snapshots.values())
-            self._last_ui_snapshot = snap
+        self._last_ui_snapshot = snap
+        self._refresh_ws_initial_messages()
+
+    def _refresh_ws_initial_messages(self) -> None:
+        if not self.ws_hub:
+            return
+        ts = time.time()
+        initial: List[dict] = [
+            {"type": "carStatus", "ts": ts, "data": {"mode": "snapshot", "carsOnMap": [], "carsStatus": []}},
+        ]
+        if self._ui_cam_status:
+            initial.append(self._ui_cam_status)
+        with self._debug_lock:
+            ui_snap = self._last_ui_snapshot if isinstance(self._last_ui_snapshot, dict) else None
+            cluster = list(self._cluster_stage_snapshots.values())
+        if ui_snap and ui_snap.get("messages"):
+            initial.extend(ui_snap.get("messages"))
+        if cluster:
+            initial.extend(cluster)
+        try:
+            self.ws_hub.set_initial_messages(initial)
+        except Exception:
+            pass
+
+    def _initialize_ui_snapshots(self) -> None:
+        """
+        클라이언트가 아무 트랙이 없어도 로딩을 끝낼 수 있도록
+        최소한의 빈 스냅샷을 초기 메시지에 채워둔다.
+        """
+        ts = time.time()
+        init_msgs = [
+            {"type": "carStatus", "ts": ts, "data": {"mode": "snapshot", "carsOnMap": [], "carsStatus": []}},
+        ]
+        if self._ui_cam_status:
+            init_msgs.append(self._ui_cam_status)
+        try:
+            self.ws_hub.set_initial_messages(init_msgs)
+        except Exception:
+            pass
+
+    def _start_ws_heartbeat(self, interval: float = 1.0) -> None:
+        """
+        주기적으로 빈 스냅샷을 브로드캐스트해 클라이언트 로딩을 깨운다.
+        """
+        if not self.ws_hub or self._ws_heartbeat_thread:
+            return
+
+        def _loop():
+            while not self._ws_heartbeat_stop.is_set():
+                # 최신 스냅샷을 재전송하여 초기 로딩/재연결을 돕는다.
+                with self._debug_lock:
+                    track_payload = dict(self._last_track_payload) if isinstance(self._last_track_payload, dict) else None
+                    ui_snap = dict(self._last_ui_snapshot) if isinstance(self._last_ui_snapshot, dict) else None
+                    cluster_msgs = list(self._cluster_stage_snapshots.values())
+                # 트랙 스냅샷은 WS로 보내지 않는다.
+                # UI 메시지 스냅샷
+                if ui_snap and ui_snap.get("messages"):
+                    for msg in ui_snap.get("messages"):
+                        try:
+                            self.ws_hub.broadcast(msg)
+                        except Exception:
+                            pass
+                # 카메라 상태가 없으면 기본값을 한 번 보내준다.
+                if not ui_snap or not ui_snap.get("messages"):
+                    if self._ui_cam_status:
+                        try:
+                            self.ws_hub.broadcast(self._ui_cam_status)
+                        except Exception:
+                            pass
+                # 클러스터 스냅샷
+                for msg in cluster_msgs:
+                    try:
+                        self.ws_hub.broadcast(msg)
+                    except Exception:
+                        pass
+                self._ws_heartbeat_stop.wait(interval)
+
+        self._ws_heartbeat_thread = threading.Thread(target=_loop, daemon=True)
+        self._ws_heartbeat_thread.start()
 
     def _update_dashboard_snapshot(
         self,
@@ -2429,11 +2540,83 @@ class RealtimeServer:
         }
         self.dashboard.update(snap)
 
+    def _broadcast_snapshot_now(self, reason: Optional[str] = None) -> None:
+        """
+        현재 트랙 상태를 즉시 재전송해 UI/UI 캐시와 싱크를 맞춘다.
+        프레임 입력을 기다리지 않고 list_tracks 기반으로 만든다.
+        """
+        if not self.tracker:
+            return
+        try:
+            items = self.tracker.list_tracks()
+        except Exception as exc:
+            print(f"[Command] snapshot broadcast failed: {exc}")
+            return
+        rows: List[List[float]] = []
+        for it in items:
+            try:
+                cls_val = int(it.get("class", it.get("cls", 1)))
+                rows.append([
+                    float(it.get("id")),
+                    cls_val,
+                    float(it.get("cx")),
+                    float(it.get("cy")),
+                    float(it.get("length")),
+                    float(it.get("width")),
+                    float(it.get("yaw")),
+                ])
+            except Exception:
+                continue
+        tracks_arr = np.array(rows, dtype=float) if rows else np.zeros((0, 7), dtype=float)
+        ts_now = time.time()
+        self._broadcast_tracks(tracks_arr, ts_now)
+        if reason:
+            print(f"[Command] broadcast snapshot ({reason})")
+
     def _get_last_track_payload(self) -> dict:
         with self._debug_lock:
             if self._last_track_payload:
                 return self._last_track_payload
         return {"type": "global_tracks", "timestamp": None, "items": []}
+
+    def _build_track_payload(self, tracks: np.ndarray, meta: Dict[int, dict], ts: float) -> dict:
+        items: List[dict] = []
+        if tracks is not None and len(tracks):
+            for row in tracks:
+                try:
+                    tid = int(row[0])
+                    cls = int(row[1])
+                    cx, cy, L, W, yaw = map(float, row[2:7])
+                except Exception:
+                    continue
+                extra = meta.get(tid, {}) if meta else {}
+                vx = vy = 0.0
+                velocity = extra.get("velocity")
+                if velocity and len(velocity) >= 2:
+                    try:
+                        vx = float(velocity[0])
+                        vy = float(velocity[1])
+                    except Exception:
+                        vx = vy = 0.0
+                speed_val = extra.get("speed")
+                if speed_val is None:
+                    speed_val = float(np.hypot(vx, vy))
+                items.append({
+                    "id": tid,
+                    "class": cls,
+                    "center": [cx, cy, float(extra.get("cz", 0.0))],
+                    "length": L,
+                    "width": W,
+                    "yaw": yaw,
+                    "velocity": [vx, vy],
+                    "speed": float(speed_val),
+                    "score": float(extra.get("score", 0.0)),
+                    "sources": list(extra.get("source_cams", [])),
+                    "color": extra.get("color"),
+                    "color_hex": extra.get("color_hex"),
+                    "color_confidence": float(extra.get("color_confidence", 0.0)),
+                })
+        return {"type": "global_tracks", "timestamp": ts, "items": items}
 
     def _get_last_ui_snapshot(self) -> dict:
         with self._debug_lock:

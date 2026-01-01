@@ -38,13 +38,19 @@ class WebSocketHub:
         print(f"[WebSocketHub] client connected ({len(self._clients)} total)")
         with self._initial_lock:
             initial_messages = list(self._initial_messages)
-        if initial_messages:
-            for message in initial_messages:
-                try:
-                    await websocket.send(json.dumps(message, ensure_ascii=False))
-                except Exception as exc:
-                    print(f"[WebSocketHub] initial send failed: {exc}")
-                    break
+        if not initial_messages:
+            # 안전한 최소 메시지라도 보낸다.
+            initial_messages = [
+                {"type": "global_tracks", "timestamp": None, "items": []},
+                {"type": "carStatus", "ts": None, "data": {"mode": "snapshot", "carsOnMap": [], "carsStatus": []}},
+            ]
+        for message in initial_messages:
+            try:
+                await websocket.send(json.dumps(message, ensure_ascii=False))
+            except Exception as exc:
+                print(f"[WebSocketHub] initial send failed: {exc}")
+                # 초기 전송 실패 시에도 연결은 유지한다.
+                continue
 
         try:
             async for raw in websocket:
@@ -61,7 +67,7 @@ class WebSocketHub:
                     await websocket.send(json.dumps(response, ensure_ascii=False))
                 except Exception as exc:
                     print(f"[WebSocketHub] response send failed: {exc}")
-                    break
+                    continue
         except Exception as exc:
             print(f"[WebSocketHub] client error: {exc}")
         finally:
