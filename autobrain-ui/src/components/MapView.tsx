@@ -428,6 +428,7 @@ export const MapView = ({
 
   const mapStyle = {
     ...paddingStyle,
+    "--map-scale": mapScale,
   } as CSSProperties;
 
   const overlayStyle: CSSProperties = {
