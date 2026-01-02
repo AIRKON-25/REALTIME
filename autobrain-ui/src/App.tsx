@@ -649,7 +649,7 @@ function App() {
         ];
       }
       return monitoringCameras.slice(0, 2).map((cam, idx) => ({
-        label: `${cam.name || cam.id} (Cam ${idx})`,
+        label: `${cam.name || cam.id}`,
         url: cam.streamUrl,
       }));
     }
