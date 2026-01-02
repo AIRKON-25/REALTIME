@@ -1672,7 +1672,7 @@ class RealtimeServer:
                 cy = float(-row[3])
                 yaw = float(row[6])
                 meta = track_meta.get(ext_id, {})
-                color_label = meta.get("color") or hex_to_color_label(meta.get("color_hex"))
+                color_label = meta.get("color")# or hex_to_color_label(meta.get("color_hex"))
                 car_color = self._normalize_car_color(color_label)
 
                 x_norm, y_norm = self._world_to_map_xy(cx, cy)
@@ -2505,6 +2505,28 @@ class RealtimeServer:
             if votes:
                 meta["color_votes"] = dict(votes)
 
+    def _mapping_color_id_cut(self, tracks: np.ndarray, meta: Dict[int, dict], ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
+        if tracks is not None and len(tracks):
+            for row in tracks:
+                try:
+                    tid = int(row[0])
+                    cls = int(row[1])
+                    if tid > 5 and cls == 0: # 외부 ID가 5보다 크고 클래스가 차량인 경우 보내지 말자
+                        continue
+                except Exception:
+                    continue
+                extra = meta.get(tid, {}) if meta else {}
+                    
+                if cls == 0 and tid in EXT_COLOR_ID: # 차량 클래스이고 외부 ID에 색상 매핑이 있으면 우선 사용
+                    color = EXT_COLOR_ID[tid]
+                else: 
+                    color = extra.get("color")
+                
+                meta[tid]["color"] = color
+            mapped = tracks.copy()  
+            return mapped, meta
+        return tracks, meta
+    
     def _broadcast_tracks(
         self,
         tracks: np.ndarray,
@@ -2518,7 +2540,7 @@ class RealtimeServer:
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
         mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
-        # mapped_tracks, mapped_meta = self._mapping_color_id_cut(mapped_tracks, mapped_meta, ts)
+        mapped_tracks, mapped_meta = self._mapping_color_id_cut(mapped_tracks, mapped_meta, ts)
         payload = self._build_track_payload(mapped_tracks, mapped_meta, ts)
         self._set_last_track_payload(payload)
         payload_bytes = None
@@ -2822,8 +2844,6 @@ class RealtimeServer:
                 try:
                     tid = int(row[0])
                     cls = int(row[1])
-                    if tid > 5 and cls == 0: # 외부 ID가 5보다 크고 클래스가 차량인 경우 보내지 말자
-                        continue
                     cx, cy, L, W, yaw = map(float, row[2:7])
                 except Exception:
                     continue
@@ -2839,11 +2859,7 @@ class RealtimeServer:
                 speed_val = extra.get("speed")
                 if speed_val is None:
                     speed_val = float(np.hypot(vx, vy))
-                    
-                if cls == 0 and tid in EXT_COLOR_ID: # 차량 클래스이고 외부 ID에 색상 매핑이 있으면 우선 사용
-                    color = EXT_COLOR_ID[tid]
-                else: 
-                    color = extra.get("color")
+               
                 items.append({
                     "id": tid,
                     "class": cls,
@@ -2855,7 +2871,7 @@ class RealtimeServer:
                     "speed": float(speed_val),
                     "score": float(extra.get("score", 0.0)),
                     "sources": list(extra.get("source_cams", [])),
-                    "color": color,
+                    "color": extra.get("color"),
                     "color_hex": extra.get("color_hex"),
                     "color_confidence": float(extra.get("color_confidence", 0.0)),
                 })
