@@ -125,7 +125,10 @@ def main():
         pass
     finally:
         status_server.stop()
-        server.receiver.stop()
+        try:
+            server.inference_receiver.stop()
+        except Exception:
+            pass
         if server.track_tx:
             server.track_tx.close()
         if server.carla_tx:

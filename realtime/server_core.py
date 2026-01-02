@@ -404,6 +404,8 @@ class RealtimeServer:
         self._latest_routes: Dict[str, List[dict]] = {}
         self._ws_heartbeat_stop = threading.Event()
         self._ws_heartbeat_thread: Optional[threading.Thread] = None
+        # 클러스터 단계별 스냅샷(WS/대시보드 공유)에 사용
+        self._cluster_stage_snapshots: Dict[str, dict] = {}
 
         self._ui_cameras_on_map = [
             {"id": "camMarker-1", "cameraId": "cam-1", "x": -0.015, "y": 0.51},
@@ -485,7 +487,6 @@ class RealtimeServer:
         self._ui_cam_status: Optional[dict] = None
         self._ui_obstacle_map: Dict[str, dict] = {}
         self._ui_obstacle_status_map: Dict[str, dict] = {}
-        self._cluster_stage_snapshots: Dict[str, dict] = {}
 
         self.inference_receiver = UDPReceiverSingle(single_port, log_packets=log_udp_packets)
 
@@ -509,9 +510,17 @@ class RealtimeServer:
         elif lane_map_path:
             print(f"[LaneMatcher] path not found: {lane_map_path}")
 
-        # 외부 전송(UDP/TCP)은 비활성화; 필요 시 TrackBroadcaster로 교체 가능
+        # 외부 전송(UDP/TCP) 설정
         self.track_tx = None
         self.carla_tx = None
+        if tx_host:
+            try:
+                from comms.track_broadcaster import TrackBroadcaster
+                self.track_tx = TrackBroadcaster(tx_host, tx_port, tx_protocol)
+                print(f"[TrackBroadcaster] sending to {tx_host}:{tx_port} ({tx_protocol})")
+            except Exception as exc:
+                print(f"[TrackBroadcaster] init failed: {exc}")
+                self.track_tx = None
 
         car_cfg = tracker_config_car or TrackerConfigCar()
         obs_cfg = tracker_config_obstacle or TrackerConfigObstacle()
@@ -2395,6 +2404,11 @@ class RealtimeServer:
         mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
         payload = self._build_track_payload(mapped_tracks, mapped_meta, ts)
         self._set_last_track_payload(payload)
+        if self.track_tx:
+            try:
+                self.track_tx.send(mapped_tracks, mapped_meta, ts)
+            except Exception as exc:
+                print(f"[TrackBroadcaster] send error: {exc}")
         if self.ws_hub or self._debug_http_enabled:
             messages = []
             try:
