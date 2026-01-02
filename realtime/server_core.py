@@ -179,6 +179,62 @@ class FusionDashboard:
         ext_to_int = snap.get("ext_to_int") or {}
         timings = snap.get("timings") or {}
         metrics = snap.get("tracker_metrics") or {}
+        car_status = snap.get("car_status") or {}
+
+        def _fmt_progress(info: dict) -> str:
+            if not info:
+                return "-"
+            out = "-"
+            try:
+                ratio = info.get("route_progress_ratio")
+                if ratio is not None:
+                    out = f"{float(ratio) * 100.0:.0f}%"
+            except Exception:
+                out = "-"
+            try:
+                idx = info.get("route_progress_idx")
+                total = info.get("route_progress_total")
+                if total:
+                    idx_val = int(idx or 0)
+                    total_val = int(total)
+                    suffix = f" ({out})" if out != "-" else ""
+                    out = f"{idx_val}/{total_val}{suffix}"
+            except Exception:
+                pass
+            return out
+
+        def _fmt_s_start(info: dict) -> str:
+            if not info:
+                return "-"
+            s_start = info.get("s_start")
+            if not s_start:
+                return "-"
+            try:
+                first = s_start[0]
+                if isinstance(first, (list, tuple)) and len(first) >= 2:
+                    return f"{float(first[0]):.1f},{float(first[1]):.1f}"
+                if isinstance(first, dict) and "x" in first and "y" in first:
+                    return f"{float(first['x']):.1f},{float(first['y']):.1f}"
+            except Exception:
+                pass
+            try:
+                return str(s_start)[:24]
+            except Exception:
+                return "-"
+
+        def _fmt_path(info: dict) -> str:
+            if not info:
+                return "-"
+            try:
+                future_len = int(info.get("path_future_len") or 0)
+                total_len = int(info.get("path_len") or future_len)
+                if future_len == 0 and total_len == 0:
+                    return "-"
+                if total_len:
+                    return f"{future_len}/{total_len}"
+                return str(future_len)
+            except Exception:
+                return "-"
 
         summary_lines = [
             f"ts={self._fmt_float(ts, 3)}  raw={raw_total} (c0:{raw_cls.get(0,0)} c1:{raw_cls.get(1,0)} c2:{raw_cls.get(2,0)})",
@@ -218,28 +274,41 @@ class FusionDashboard:
 
         def build_track_table(cls_key, rows):
             table = Table(title=f"Tracks cls={cls_key} ({len(rows)})", box=box.SIMPLE, expand=True, show_lines=False)
-            for col in ["ext_id", "int_id", "cx", "cy", "yaw", "speed", "color"]:
+            for col in ["ext_id", "int_id", "cx", "cy", "yaw", "speed", "color", "batt", "path", "prog", "s_start", "route_chg"]:
                 table.add_column(col)
             for row in rows:
                 try:
                     ext_id = int(row[0])
                 except Exception:
-                    ext_id = "-"
-                int_id = ext_to_int.get(ext_id, "-")
-                meta = track_meta.get(ext_id) or {}
+                    ext_id = None
+                ext_disp = "-" if ext_id is None else ext_id
+                int_id = ext_to_int.get(ext_id, "-") if ext_id is not None else "-"
+                meta = track_meta.get(ext_id, {}) if ext_id is not None else {}
                 color_label = meta.get("color")
                 color_hex = meta.get("color_hex")
+                car_info = car_status.get(ext_id) if ext_id is not None else None
+                battery_str = self._fmt_float(car_info.get("battery"), 0) if car_info and car_info.get("battery") is not None else "-"
+                path_str = _fmt_path(car_info) if car_info else "-"
+                progress_str = _fmt_progress(car_info) if car_info else "-"
+                s_start_str = _fmt_s_start(car_info) if car_info else "-"
+                route_chg = car_info.get("route_change_count") if car_info else None
+                route_chg_str = str(route_chg) if route_chg is not None else "-"
                 table.add_row(
-                    str(ext_id),
+                    str(ext_disp),
                     str(int_id),
                     self._fmt_float(row[2] if len(row) > 2 else None),
                     self._fmt_float(row[3] if len(row) > 3 else None),
                     self._fmt_float(row[6] if len(row) > 6 else None),
                     self._fmt_float(meta.get("speed")),
                     self._color_text(color_label, color_hex),
+                    battery_str,
+                    path_str,
+                    progress_str,
+                    s_start_str,
+                    route_chg_str,
                 )
             if not rows:
-                table.add_row("-", "-", "-", "-", "-", "-", "-")
+                table.add_row("-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-", "-")
             return table
 
         track_tables: List[Table] = []
@@ -400,6 +469,7 @@ class RealtimeServer:
         self._last_ui_snapshot: dict = {}
         self._route_change_sig: Dict[int, str] = {}
         self._route_change_sent_sig: Dict[int, str] = {}
+        self._last_s_start_sig: Dict[str, str] = {}
         self._latest_route_versions: Dict[str, str] = {}
         self._latest_routes: Dict[str, List[dict]] = {}
         self._ws_heartbeat_stop = threading.Event()
@@ -423,31 +493,7 @@ class RealtimeServer:
             {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
             {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
         ]
-        self._ui_cam_status = {
-            "type": "camStatus",
-            "ts": time.time(),
-            "data": {
-                "camerasOnMap": list(self._ui_cameras_on_map),
-                "camerasStatus": list(self._ui_cameras_status),
-            },
-        }
-
-        self.ws_hub: Optional[WebSocketHub] = None
-        if ws_host:
-            try:
-                self.ws_hub = WebSocketHub(
-                    ws_host,
-                    ws_port,
-                    path="/monitor",
-                    on_message=self._handle_ws_message,
-                )
-                self.ws_hub.start()
-                # 초기 빈 스냅샷을 등록해 클라이언트 로딩을 빠르게 끝낸다.
-                self._initialize_ui_snapshots()
-                self._start_ws_heartbeat()
-            except Exception as exc:
-                print(f"[WebSocketHub] init failed: {exc}")
-                self.ws_hub = None
+        self._ui_cam_status: Optional[dict] = None
         _raw_traffic_lights = [
             {"id": "tl-1", "trafficLightId": 1, "x": -5.5, "y": -13.1, "yaw": 90.0},
             {"id": "tl-2", "trafficLightId": 2, "x": 5.6, "y": -17.1, "yaw": -90.0},
@@ -484,7 +530,23 @@ class RealtimeServer:
         }
         self._ui_traffic_light_map: Dict[str, dict] = {}
         self._ui_traffic_light_status_cache: Dict[int, dict] = {}
-        self._ui_cam_status: Optional[dict] = None
+        self._last_traffic_light_msg: Optional[dict] = None
+        self.ws_hub: Optional[WebSocketHub] = None
+        if ws_host:
+            try:
+                self.ws_hub = WebSocketHub(
+                    ws_host,
+                    ws_port,
+                    path="/monitor",
+                    on_message=self._handle_ws_message,
+                )
+                self.ws_hub.start()
+                # 초기 빈 스냅샷을 등록해 클라이언트 로딩을 빠르게 끝낸다.
+                self._initialize_ui_snapshots()
+                self._start_ws_heartbeat()
+            except Exception as exc:
+                print(f"[WebSocketHub] init failed: {exc}")
+                self.ws_hub = None
         self._ui_obstacle_map: Dict[str, dict] = {}
         self._ui_obstacle_status_map: Dict[str, dict] = {}
 
@@ -509,6 +571,16 @@ class RealtimeServer:
                 print(f"[LaneMatcher] load failed: {exc}")
         elif lane_map_path:
             print(f"[LaneMatcher] path not found: {lane_map_path}")
+
+        # 디버깅용 최근 지표
+        self._last_rx_qsize: int = 0
+        self._last_input_latency_ms: Optional[float] = None
+        self._last_tx_send_ms: Optional[float] = None
+        self._last_tx_item_count: int = 0
+        self._last_tx_payload_bytes: Optional[int] = None
+        self._tx_warn_ms = 20.0  # 송신이 이보다 길면 경고 출력
+        self._last_tx_ts: Optional[float] = None
+        self._last_tx_interval_ms: Optional[float] = None
 
         # 외부 전송(UDP/TCP) 설정
         self.track_tx = None
@@ -1289,7 +1361,7 @@ class RealtimeServer:
         if not self._ui_traffic_light_map and not self._ui_traffic_light_status_cache:
             self._ui_traffic_light_map = current_map
             self._ui_traffic_light_status_cache = current_status
-            return {
+            message = {
                 "type": "trafficLightStatus",
                 "ts": ts,
                 "data": {
@@ -1298,6 +1370,8 @@ class RealtimeServer:
                     "trafficLightsStatus": list(current_status.values()),
                 },
             }
+            self._last_traffic_light_msg = message
+            return message
 
         upserts = [
             item
@@ -1331,7 +1405,9 @@ class RealtimeServer:
         if status_deletes:
             data["trafficLightsStatusDeletes"] = [int(tid) for tid in status_deletes]
 
-        return {"type": "trafficLightStatus", "ts": ts, "data": data}
+        message = {"type": "trafficLightStatus", "ts": ts, "data": data}
+        self._last_traffic_light_msg = message
+        return message
 
     @staticmethod
     def _normalize_car_color(label: Optional[str]) -> str:
@@ -1618,6 +1694,8 @@ class RealtimeServer:
                     resolution_val = None
                     route_changed = False
                     route_sig = None
+                    s_start_sig = None
+                    s_start_changed = False
                     path_full_raw = []
                     s_start = None
                     s_end = None
@@ -1630,13 +1708,26 @@ class RealtimeServer:
                         except Exception:
                             pass
                         path_full_raw = car_state.get("path") or []
-                        path_future_raw = car_state.get("path_future") or path_full_raw or []
+                        path_future_raw = car_state.get("path_future")
+                        if path_future_raw is None:
+                            path_future_raw = path_full_raw or []
                         category_val = car_state.get("category") or ""
                         resolution_val = car_state.get("resolution")
                         s_start = car_state.get("s_start")
                         s_end = car_state.get("s_end")
                         route_sig = car_state.get("route_version")
                         allow_route = bool(s_start) or bool(s_end)
+                        if s_start:
+                            try:
+                                s_start_sig = json.dumps(s_start, ensure_ascii=False, sort_keys=True)
+                            except Exception:
+                                try:
+                                    s_start_sig = str(s_start)
+                                except Exception:
+                                    s_start_sig = None
+                            prev_s_start_sig = self._last_s_start_sig.get(car_id)
+                            if s_start_sig and s_start_sig != prev_s_start_sig:
+                                s_start_changed = True
                         if not route_sig and s_start:
                             try:
                                 route_sig = json.dumps(
@@ -1681,26 +1772,30 @@ class RealtimeServer:
                             route_sig = json.dumps(path_full_raw or route_points, ensure_ascii=False, sort_keys=True)
                         except Exception:
                             route_sig = None
+                    if route_sig is None and route_points:
+                        try:
+                            route_sig = json.dumps(route_points, ensure_ascii=False, sort_keys=True)
+                        except Exception:
+                            route_sig = None
                     map_status = "routeChanged" if route_changed else "normal"
                     if route_points:
                         last_sent_sig = self._route_change_sent_sig.get(car_id)
                         should_emit_route_change = False
-                        if allow_route and route_changed:
-                            should_emit_route_change = True
-                        elif allow_route and route_sig and last_sent_sig != route_sig:
+                        if route_sig and last_sent_sig != route_sig:
                             should_emit_route_change = True
                         elif not last_sent_sig and route_sig:
-                            # route 존재하지만 아직 캐시에 보낸 적 없으면 한 번 보내되 표시 플래그는 allow_route로 구분
                             should_emit_route_change = True
                         if should_emit_route_change:
                             route_change_msgs.append({
                                 "carId": car_id,
                                 "newRoute": route_points,
                                 "routeVersion": route_sig,
-                                "visible": bool(allow_route),
+                                "visible": bool(s_start_changed),
                             })
                             if route_sig:
                                 self._route_change_sent_sig[car_id] = route_sig
+                        if s_start_sig and s_start_changed:
+                            self._last_s_start_sig[car_id] = s_start_sig
                         if route_sig and route_sig != self._route_change_sent_sig.get(car_id):
                             self._route_change_sent_sig[car_id] = route_sig
                         self._latest_routes[car_id] = route_points
@@ -1711,6 +1806,7 @@ class RealtimeServer:
                         self._route_change_sent_sig.pop(car_id, None)
                         self._latest_route_versions.pop(car_id, None)
                         self._route_change_sig.pop(car_id, None)
+                        self._last_s_start_sig.pop(car_id, None)
                     progress_idx = 0
                     progress_total = 0
                     progress_ratio = 0.0
@@ -1901,6 +1997,22 @@ class RealtimeServer:
             f"[Fusion] ts={timestamp:.3f} total_raw={total_raw} cams=({cams_str}) "
             f"clusters={fused_count} tracks={track_count}"
         )
+        debug_parts = []
+        rx_qsize = getattr(self, "_last_rx_qsize", None)
+        if rx_qsize is not None:
+            debug_parts.append(f"rx_q={rx_qsize}")
+        if self._last_input_latency_ms is not None:
+            debug_parts.append(f"in_delay_ms={self._last_input_latency_ms:.1f}")
+        if self._last_tx_send_ms is not None:
+            debug_parts.append(f"tx_ms={self._last_tx_send_ms:.1f}")
+        if self._last_tx_item_count is not None:
+            debug_parts.append(f"tx_items={self._last_tx_item_count}")
+        if self._last_tx_payload_bytes is not None:
+            debug_parts.append(f"tx_bytes={self._last_tx_payload_bytes}")
+        if self._last_tx_interval_ms is not None:
+            debug_parts.append(f"tx_interval_ms={self._last_tx_interval_ms:.1f}")
+        if debug_parts:
+            print(f"  debug {' '.join(debug_parts)}")
         if fused_count:
             sample_keys = ["cx", "cy", "length", "width", "yaw", "score", "source_cams", "color"]
             sample_fused = {k: fused[0][k] for k in sample_keys if k in fused[0]}
@@ -2404,9 +2516,29 @@ class RealtimeServer:
         mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
         payload = self._build_track_payload(mapped_tracks, mapped_meta, ts)
         self._set_last_track_payload(payload)
+        payload_bytes = None
+        try:
+            payload_bytes = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        except Exception:
+            pass
         if self.track_tx:
             try:
+                t_send = time.perf_counter()
                 self.track_tx.send(mapped_tracks, mapped_meta, ts)
+                send_ms = (time.perf_counter() - t_send) * 1000.0
+                self._last_tx_send_ms = send_ms
+                self._last_tx_item_count = int(len(mapped_tracks)) if mapped_tracks is not None else 0
+                self._last_tx_payload_bytes = payload_bytes
+                if self._last_tx_ts is not None:
+                    self._last_tx_interval_ms = max(0.0, (time.time() - self._last_tx_ts) * 1000.0)
+                self._last_tx_ts = time.time()
+                if timings is not None:
+                    timings["tx_send"] = send_ms
+                    if self._last_tx_interval_ms is not None:
+                        timings["tx_interval"] = self._last_tx_interval_ms
+                if send_ms > self._tx_warn_ms:
+                    proto = getattr(self.track_tx, "protocol", "?")
+                    print(f"[TrackBroadcaster] slow send {send_ms:.1f} ms items={self._last_tx_item_count} bytes={payload_bytes} proto={proto}")
             except Exception as exc:
                 print(f"[TrackBroadcaster] send error: {exc}")
         if self.ws_hub or self._debug_http_enabled:
@@ -2459,10 +2591,44 @@ class RealtimeServer:
         with self._debug_lock:
             ui_snap = self._last_ui_snapshot if isinstance(self._last_ui_snapshot, dict) else None
             cluster = list(self._cluster_stage_snapshots.values())
+            latest_routes = dict(self._latest_routes)
+            latest_route_versions = dict(self._latest_route_versions)
         if ui_snap and ui_snap.get("messages"):
             initial.extend(ui_snap.get("messages"))
+        if latest_routes:
+            try:
+                initial.append({
+                    "type": "carRouteChange",
+                    "ts": ts,
+                    "data": {
+                        "changes": [
+                            {
+                                "carId": car_id,
+                                "newRoute": route,
+                                "routeVersion": latest_route_versions.get(car_id),
+                            }
+                            for car_id, route in sorted(latest_routes.items())
+                        ],
+                    },
+                })
+            except Exception:
+                pass
         if cluster:
             initial.extend(cluster)
+        # 트래픽 라이트 스냅샷은 항상 포함시켜 신규 연결에서도 지도가 보이도록 한다.
+        has_traffic = any(msg.get("type") == "trafficLightStatus" for msg in initial)
+        if not has_traffic:
+            traffic_snapshot = {
+                "type": "trafficLightStatus",
+                "ts": ts,
+                "data": {
+                    "mode": "snapshot",
+                    "trafficLightsOnMap": list(self._ui_traffic_lights_on_map),
+                    "trafficLightsStatus": list(self._ui_traffic_light_status.values()),
+                },
+            }
+            self._last_traffic_light_msg = traffic_snapshot
+            initial.append(traffic_snapshot)
         try:
             self.ws_hub.set_initial_messages(initial)
         except Exception:
@@ -2477,8 +2643,21 @@ class RealtimeServer:
         init_msgs = [
             {"type": "carStatus", "ts": ts, "data": {"mode": "snapshot", "carsOnMap": [], "carsStatus": []}},
         ]
+        if self._ui_cam_status is None:
+            self._ui_cam_status = self._build_cam_status_message(ts)
         if self._ui_cam_status:
             init_msgs.append(self._ui_cam_status)
+        traffic_snapshot = {
+            "type": "trafficLightStatus",
+            "ts": ts,
+            "data": {
+                "mode": "snapshot",
+                "trafficLightsOnMap": list(self._ui_traffic_lights_on_map),
+                "trafficLightsStatus": list(self._ui_traffic_light_status.values()),
+            },
+        }
+        self._last_traffic_light_msg = traffic_snapshot
+        init_msgs.append(traffic_snapshot)
         try:
             self.ws_hub.set_initial_messages(init_msgs)
         except Exception:
@@ -2540,6 +2719,41 @@ class RealtimeServer:
             track_rows = mapped_tracks.tolist() if mapped_tracks is not None else []
         except Exception:
             track_rows = []
+        car_status: Dict[int, dict] = {}
+        if self.status_state and mapped_tracks is not None:
+            for row in mapped_tracks:
+                try:
+                    ext_id = int(row[0])
+                    cls = int(row[1])
+                except Exception:
+                    continue
+                if cls != 0:
+                    continue
+                try:
+                    st = self.status_state.get_car(ext_id)
+                except Exception:
+                    st = None
+                if not st:
+                    continue
+                try:
+                    path_list = st.get("path") or []
+                    future_list = st.get("path_future") or []
+                    status_entry = {
+                        "battery": st.get("battery"),
+                        "has_path": bool(path_list),
+                        "has_future": bool(future_list),
+                        "path_len": len(path_list),
+                        "path_future_len": len(future_list),
+                        "route_progress_idx": st.get("route_progress_idx"),
+                        "route_progress_total": st.get("route_progress_total"),
+                        "route_progress_ratio": st.get("route_progress_ratio"),
+                        "s_start": st.get("s_start"),
+                        "route_version": st.get("route_version"),
+                        "route_change_count": st.get("route_change_count", 0),
+                    }
+                except Exception:
+                    continue
+                car_status[ext_id] = status_entry
         snap = {
             "ts": ts,
             "raw_total": sum(raw_stats.values()) if raw_stats else 0,
@@ -2551,6 +2765,7 @@ class RealtimeServer:
             "timings": dict(timings) if timings else {},
             "tracker_metrics": self.tracker.get_last_metrics() if self.tracker else {},
             "ext_to_int": dict(self._external_to_internal),
+            "car_status": car_status,
         }
         self.dashboard.update(snap)
 
@@ -2780,14 +2995,17 @@ class RealtimeServer:
         while True:
             self._process_command_queue()
             try:
+                self._last_rx_qsize = self.inference_receiver.q.qsize()
                 # 인지 결과 수신
                 item = self.inference_receiver.q.get_nowait()
                 cam = item["cam"]
-                ts = float(item.get("ts", 0.0) or time.time())
+                source_ts = float(item.get("ts", 0.0) or 0.0)
+                ts = time.time()  # 서버 시계로 수신 시각을 강제 사용
                 dets = item["dets"]
                 self._register_cam_if_needed(cam)
                 self.buffer[cam].clear()
-                self.buffer[cam].append({"ts": ts, "dets": dets})
+                self.buffer[cam].append({"ts": ts, "dets": dets, "source_ts": source_ts})
+                self._last_rx_qsize = self.inference_receiver.q.qsize()
             except queue.Empty:
                 pass
             
@@ -2810,16 +3028,11 @@ class RealtimeServer:
                     raw_cls_counts[cls_val] = raw_cls_counts.get(cls_val, 0) + 1
                 except Exception:
                     raw_cls_counts[1] = raw_cls_counts.get(1, 0) + 1
-            frame_ts = now
-            if raw_dets:
-                ts_vals = []
-                for det in raw_dets:
-                    try:
-                        ts_vals.append(float(det.get("ts", now)))
-                    except Exception:
-                        continue
-                if ts_vals:
-                    frame_ts = float(sum(ts_vals) / len(ts_vals))
+            frame_ts = time.time()  # 출력/송신 타임스탬프는 항상 서버 시계 기준
+            try:
+                self._last_input_latency_ms = max(0.0, (time.time() - frame_ts) * 1000.0)
+            except Exception:
+                self._last_input_latency_ms = None
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
             self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
             t1 = time.perf_counter()

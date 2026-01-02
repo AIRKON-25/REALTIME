@@ -424,7 +424,7 @@ export const MapView = ({
   // Camera icon size (px) to ensure padding accounts for its radius.
   const cameraSizePx = 60 * mapScale;
   const cameraRadiusPx = cameraSizePx / 2;
-  const trafficLightSizePx = 58 * mapScale;
+  const trafficLightSizePx = 23 * mapScale;
 
   const paddingStyle = {
     paddingLeft: `calc(${Math.max(0, -minX) * 100}% + ${cameraRadiusPx}px)`,
@@ -586,7 +586,7 @@ export const MapView = ({
                   if (shownSoFar >= visibleCount) return null;
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
-                  const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                  const size = isArrow ? 17 * mapScale : 13 * mapScale;
                   const imgSrc = isArrow ? ArrowHead : ArrowRect;
                   return (
                     <img
@@ -619,7 +619,7 @@ export const MapView = ({
                   if (shownSoFar >= visibleCount) return null;
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
-                  const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                  const size = isArrow ? 17 * mapScale : 13 * mapScale;
                   const imgSrc = isArrow ? ArrowHead : ArrowRect;
                   return (
                     <img
