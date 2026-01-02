@@ -100,9 +100,9 @@ body {
 
 .header {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
-  min-height: 90px; /* 헤더 높이 고정 */
+  min-height: 100px; /* 헤더 높이 고정 */
   padding: 24px 40px;
 }
 
@@ -113,7 +113,7 @@ body {
 }
 
 .header__logo-img {
-  height: 32px;
+  height: 40px;
   width: auto;
   display: block;
   align-self: flex-end;
@@ -123,27 +123,29 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  line-height: 1.1;
+  line-height: 1.5;
 }
 
-.header__logo-title {
+/* .header__logo-title {
   font-family: var(--font-accent);
   font-weight: 700;
-  font-size: 24px;
-}
+  font-size: 30px;
+} */
 
-.header__logo-subtitle {
+/* .header__logo-subtitle {
   display: block;
   font-size: 14px;
   color: var(--text-muted);
-}
+} */
 
 .header__center {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 12px;
+  align-self: flex-end;
+  gap: 10px;
+  font-size: 14px;
   color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .header__status-dot {
@@ -162,10 +164,12 @@ body {
 }
 
 .header__right {
-  font-size: 14px;
+  font-size: 15px;
   display: flex;
   align-items: center;
+  align-self: flex-end;
   gap: 12px;
+  line-height: 1.5;
 }
 
 .header__mode {
