@@ -239,13 +239,20 @@ export const MapView = ({
     carPathsRef.current = carPaths ?? {};
   }, [carPaths]);
 
+  const cssScaleBase = useMemo(() => {
+    if (typeof window === "undefined") return 1;
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--map-scale-base");
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  }, []);
+
   const mapScale = useMemo(() => {
     const basisWidth = mapLayout.mapWidth || mapLayout.contentWidth;
     if (!basisWidth) return 1;
     const normalizedSizeScale = sizeScale > 0 ? sizeScale : 1;
-    const scale = (basisWidth / 1000) * normalizedSizeScale;
-    return Math.min(1.4, Math.max(0.4, scale));
-  }, [mapLayout, sizeScale]);
+    const scale = (basisWidth / 1000) * normalizedSizeScale * cssScaleBase;
+    return Math.min(3, Math.max(0.2, scale));
+  }, [mapLayout, sizeScale, cssScaleBase]);
 
   useEffect(() => {
     if (!routeChanges.length) return;

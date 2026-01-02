@@ -49,8 +49,9 @@
   --text-muted: #6b7280;
   --accent: #2563eb;
   --danger: #ef4444;
-  --map-bottom-space: 90px;
-  --map-aspect: 1.88; /* 가로/세로 비율 */
+  /* --map-bottom-space: 90px; */
+  /* --map-aspect: 1; 가로/세로 비율 1.88 */
+  --map-scale-base: 2.5; /* 맵 내부 아이콘/경로 스케일 베이스 (MapView에서 읽음) */
 
   --radius-lg: 18px;
   --radius-md: 12px;
@@ -328,9 +329,9 @@ body {
   --map-car-height: calc(25px * var(--map-scale)); */
   --map-car-width: calc(25px * var(--map-scale));
   --map-car-height: calc(14px * var(--map-scale));
-  --map-obstacle-cone: calc(12px * var(--map-scale));
-  --map-obstacle-barricade-width: calc(14px * var(--map-scale));
-  --map-obstacle-barricade-height: calc(10px * var(--map-scale));
+  --map-obstacle-cone: calc(20px * var(--map-scale));
+  --map-obstacle-barricade-width: calc(21px * var(--map-scale));
+  --map-obstacle-barricade-height: calc(15px * var(--map-scale));
   --map-route-width: calc(4px * var(--map-scale));
   /* background: var(--map-bg); */
   border-radius: var(--radius-lg);
