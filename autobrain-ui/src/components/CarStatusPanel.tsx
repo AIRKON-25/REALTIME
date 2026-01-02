@@ -138,6 +138,15 @@ const CarStatusCard = ({
     : isRouteChanged
       ? `/assets/carS-${safeColor}.svg`
       : "/assets/carS-red.svg";
+  const batteryIconSrc = (() => {
+    if (isBatteryCategory) return "/assets/batteryOut.png";
+    const level = Number(car.battery);
+    if (!Number.isFinite(level)) return "/assets/battery30.png";
+    if (level >= 81) return "/assets/battery100.png";
+    if (level >= 51) return "/assets/battery80.png";
+    if (level >= 31) return "/assets/battery50.png";
+    return "/assets/battery30.png";
+  })();
 
   return (
     <button
@@ -171,7 +180,7 @@ const CarStatusCard = ({
             </div>
             <div className="car-card__metric">
               <img
-                src={isBatteryCategory ? "/assets/batteryOut.png" : "/assets/battery.png"}
+                src={batteryIconSrc}
                 alt="battery"
                 className={`car-card__metric-icon ${isBatteryCategory ? "car-card__metric-icon--battery-out" : ""}`}
               />
