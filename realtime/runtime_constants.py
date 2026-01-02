@@ -32,3 +32,5 @@ VELOCITY_DT_MAX = 1.0       # 이보다 오래되면 리셋
 VELOCITY_SPEED_WINDOW = 5  # 속도 크기 중앙값 필터 윈도우 길이
 VELOCITY_MAX_MPS = 25.0       # 속도 크기 상한(스파이크 클램프)
 VELOCITY_ZERO_THRESH = 0.1  # 이 미만이면 0으로 취급
+
+EXT_COLOR_ID = {1: "red", 2: "yellow", 3: "green", 4: "purple", 5: "white"}

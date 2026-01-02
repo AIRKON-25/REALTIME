@@ -49,6 +49,7 @@ from realtime.runtime_constants import (
     rubberCone_fixed_width,
     barricade_fixed_length,
     barricade_fixed_width,
+    EXT_COLOR_ID
 )
 from realtime.status_core import StatusState
 
@@ -2517,6 +2518,7 @@ class RealtimeServer:
         제어컴, CARLA, WebSocket 허브로 트랙 전송
         """
         mapped_tracks, mapped_meta = self._map_track_ids(tracks, ts)
+        # mapped_tracks, mapped_meta = self._mapping_color_id_cut(mapped_tracks, mapped_meta, ts)
         payload = self._build_track_payload(mapped_tracks, mapped_meta, ts)
         self._set_last_track_payload(payload)
         payload_bytes = None
@@ -2820,6 +2822,8 @@ class RealtimeServer:
                 try:
                     tid = int(row[0])
                     cls = int(row[1])
+                    if tid > 5 and cls == 0: # 외부 ID가 5보다 크고 클래스가 차량인 경우 보내지 말자
+                        continue
                     cx, cy, L, W, yaw = map(float, row[2:7])
                 except Exception:
                     continue
@@ -2835,6 +2839,11 @@ class RealtimeServer:
                 speed_val = extra.get("speed")
                 if speed_val is None:
                     speed_val = float(np.hypot(vx, vy))
+                    
+                if cls == 0 and tid in EXT_COLOR_ID: # 차량 클래스이고 외부 ID에 색상 매핑이 있으면 우선 사용
+                    color = EXT_COLOR_ID[tid]
+                else: 
+                    color = extra.get("color")
                 items.append({
                     "id": tid,
                     "class": cls,
@@ -2846,7 +2855,7 @@ class RealtimeServer:
                     "speed": float(speed_val),
                     "score": float(extra.get("score", 0.0)),
                     "sources": list(extra.get("source_cams", [])),
-                    "color": extra.get("color"),
+                    "color": color,
                     "color_hex": extra.get("color_hex"),
                     "color_confidence": float(extra.get("color_confidence", 0.0)),
                 })
