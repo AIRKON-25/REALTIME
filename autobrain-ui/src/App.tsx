@@ -117,8 +117,8 @@ const applyObstacleStatus = (
     );
     return { ...prev, obstaclesOnMap, obstaclesStatus };
   }
-  const obstaclesOnMap = data.obstaclesOnMap;
-  const obstaclesStatus = data.obstaclesStatus ?? prev.obstaclesStatus;
+  const obstaclesOnMap = data.obstaclesOnMap ?? [];
+  const obstaclesStatus = data.obstaclesStatus ?? [];
   return { ...prev, obstaclesOnMap, obstaclesStatus };
 };
 
@@ -192,6 +192,13 @@ function App() {
     let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
 
+    const resetMonitorState = () => {
+      setHasCamStatus(false);
+      setServerState(emptyState);
+      setClusterBeforeState(emptyState);
+      setClusterAfterState(emptyState);
+    };
+
     const connect = () => {
       ws = new WebSocket(WS_URL);
 
@@ -258,6 +265,7 @@ function App() {
 
       ws.onclose = () => {
         console.warn("WebSocket closed, retry in 2s");
+        resetMonitorState();
         if (!reconnectTimer) {
           reconnectTimer = window.setTimeout(() => {
             reconnectTimer = null;
