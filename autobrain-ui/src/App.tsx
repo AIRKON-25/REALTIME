@@ -504,8 +504,8 @@ function App() {
     return [];
   }, [mergedRouteChanges, routeFlashPhase]);
 
-// Monitoring에 실제로 띄울 카메라 선택 로직
-  const monitoringCameraIds: CameraId[] = useMemo(() => {
+// Monitoring에 실제로 띄울 카메라 선택 로직 가장 가까운 애로
+  const rawMonitoringCameraIds: CameraId[] = useMemo(() => {
     const uniq = (ids?: CameraId[]) =>
       Array.from(new Set((ids ?? []).filter((id): id is CameraId => Boolean(id))));
 
@@ -578,6 +578,37 @@ function App() {
     cameraPosById,
     camerasOnMap,
   ]);
+
+  const [monitoringCameraIds, setMonitoringCameraIds] = useState<CameraId[]>(rawMonitoringCameraIds);
+  const lastMonitoringUpdateRef = useRef<number>(0);
+  const monitoringUpdateTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const now = Date.now();
+    const elapsed = now - lastMonitoringUpdateRef.current;
+
+    const applyUpdate = () => {
+      lastMonitoringUpdateRef.current = Date.now();
+      setMonitoringCameraIds(rawMonitoringCameraIds);
+      monitoringUpdateTimerRef.current = null;
+    };
+
+    if (elapsed >= 1000) {
+      applyUpdate();
+    } else {
+      if (monitoringUpdateTimerRef.current !== null) {
+        window.clearTimeout(monitoringUpdateTimerRef.current);
+      }
+      monitoringUpdateTimerRef.current = window.setTimeout(applyUpdate, 1000 - elapsed);
+    }
+
+    return () => {
+      if (monitoringUpdateTimerRef.current !== null) {
+        window.clearTimeout(monitoringUpdateTimerRef.current);
+        monitoringUpdateTimerRef.current = null;
+      }
+    };
+  }, [rawMonitoringCameraIds]);
 
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
