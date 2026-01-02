@@ -128,7 +128,7 @@ const CarStatusCard = ({
   const isRouteChanged = !!car.routeChanged;
   const labelId = carKey || "car";
   const primarySrc = isRouteChanged
-    ? `/assets/carS-${safeColor}-warning.svg`
+    ? `/assets/carR-${safeColor}.svg`
     : `/assets/carS-${safeColor}.svg`;
   const fallbackSrc = isRouteChanged
     ? `/assets/carS-${safeColor}.svg`
