@@ -123,21 +123,26 @@ const CarStatusCard = ({
   const carKey = car.car_id;
   const mappedColor = carColorById?.[carKey];
   const safeColor = normalizeCarColor(statusColor ?? mappedColor, "red")!;
+  const isBatteryCategory = (car.category ?? "").toString().trim().toLowerCase().startsWith("battery");
   const speedValue = speedById?.[carKey] ?? car.speed;
   const speedText = speedValue.toFixed(2);
-  const isRouteChanged = !!car.routeChanged;
+  const isRouteChanged = !!car.routeChanged && !isBatteryCategory;
   const labelId = carKey || "car";
-  const primarySrc = isRouteChanged
-    ? `/assets/carR-${safeColor}.svg`
-    : `/assets/carS-${safeColor}.svg`;
-  const fallbackSrc = isRouteChanged
-    ? `/assets/carS-${safeColor}.svg`
-    : "/assets/carS-red.svg";
+  const primarySrc = isBatteryCategory
+    ? `/assets/carB-${safeColor}.svg`
+    : isRouteChanged
+      ? `/assets/carR-${safeColor}.svg`
+      : `/assets/carS-${safeColor}.svg`;
+  const fallbackSrc = isBatteryCategory
+    ? "/assets/carB-red.svg"
+    : isRouteChanged
+      ? `/assets/carS-${safeColor}.svg`
+      : "/assets/carS-red.svg";
 
   return (
     <button
       className={`car-card ${selected ? "car-card--active" : ""} ${
-        car.routeChanged ? "car-card--alert" : ""
+        isRouteChanged ? "car-card--alert" : ""
       }`}
       onClick={() => onClick?.(carKey)}
     >
@@ -156,7 +161,7 @@ const CarStatusCard = ({
             ID : {(car.car_id ?? "car-").toString().replace("car-", "")}
           </span>
         </div>
-        {car.routeChanged ? (
+        {isRouteChanged ? (
           <div className="car-card__route-changed">Route Changed!</div>
         ) : (
           <div className="car-card__metrics">
@@ -165,8 +170,18 @@ const CarStatusCard = ({
               <span className="car-card__metric-text">{speedText} m/s</span>
             </div>
             <div className="car-card__metric">
-              <img src="/assets/battery.png" alt="battery" className="car-card__metric-icon" />
-              <span className="car-card__metric-text">{car.battery}%</span>
+              <img
+                src={isBatteryCategory ? "/assets/batteryOut.png" : "/assets/battery.png"}
+                alt="battery"
+                className={`car-card__metric-icon ${isBatteryCategory ? "car-card__metric-icon--battery-out" : ""}`}
+              />
+              <span
+                className={`car-card__metric-text ${
+                  isBatteryCategory ? "car-card__metric-text--to-charger" : ""
+                }`}
+              >
+                {isBatteryCategory ? "To Charger" : `${car.battery}%`}
+              </span>
             </div>
           </div>
         )}

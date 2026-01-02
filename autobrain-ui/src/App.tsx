@@ -410,7 +410,9 @@ function App() {
     Object.entries(carPaths).forEach(([carId, pts]) => {
       if (!pts || pts.length < 2) return;
       const status = carsStatus.find((c) => c.car_id === carId);
-      if (!status?.routeChanged) return;
+      const category = (status?.category ?? "").toString().trim().toLowerCase();
+      const isBatteryCategory = category.startsWith("battery");
+      if (!status?.routeChanged && !isBatteryCategory) return;
       changes.push({ carId, newRoute: pts, visible: true });
     });
     return changes;

@@ -633,8 +633,24 @@ body {
   opacity: 0.85;
 }
 
+.car-card__metric-icon--battery-out {
+  opacity: 1;
+}
+
 .car-card__metric-text {
   font-weight: 600;
+}
+
+.car-card__metric-text--to-charger {
+  background: var(--danger);
+  color: white;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.1;
+  display: inline-flex;
+  align-items: center;
 }
 
 .car-card__route-changed {
