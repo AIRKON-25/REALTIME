@@ -586,7 +586,7 @@ export const MapView = ({
                   if (shownSoFar >= visibleCount) return null;
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
-                  const size = isArrow ? 17 * mapScale : 13 * mapScale;
+                  const size = isArrow ? 28 * mapScale : 13 * mapScale;
                   const imgSrc = isArrow ? ArrowHead : ArrowRect;
                   return (
                     <img
@@ -598,7 +598,7 @@ export const MapView = ({
                         left: `${sprite.x * 100}%`,
                         top: `${sprite.y * 100}%`,
                         width: `${size}px`,
-                        height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                        height: "auto",
                         transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
                       }}
                     />
@@ -619,7 +619,7 @@ export const MapView = ({
                   if (shownSoFar >= visibleCount) return null;
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
-                  const size = isArrow ? 17 * mapScale : 13 * mapScale;
+                  const size = isArrow ? 36 * mapScale : 13 * mapScale;
                   const imgSrc = isArrow ? ArrowHead : ArrowRect;
                   return (
                     <img
@@ -631,7 +631,7 @@ export const MapView = ({
                         left: `${sprite.x * 100}%`,
                         top: `${sprite.y * 100}%`,
                         width: `${size}px`,
-                        height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                        height: "auto",
                         transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
                       }}
                     />
