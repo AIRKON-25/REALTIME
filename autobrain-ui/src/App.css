@@ -61,6 +61,7 @@
   --font-main: "Pretendard", system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif;
   --font-accent: "Sofia Pro", var(--font-main);
+  --car-card-height: 64px;
 }
 
 *,
@@ -564,7 +565,7 @@ body {
 }
 
 .car-list--scrollable {
-  max-height: 360px;
+  max-height: calc(5 * var(--car-card-height) + 4 * 10px);
   overflow-y: auto;
 }
 
@@ -573,6 +574,7 @@ body {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
+  min-height: var(--car-card-height);
   border-radius: var(--radius-md);
   border: 1px solid var(--border-soft);
   background: #f9fafb;
