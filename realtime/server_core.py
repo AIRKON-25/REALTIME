@@ -472,6 +472,7 @@ class RealtimeServer:
         self._last_s_start_sig: Dict[str, str] = {}
         self._latest_route_versions: Dict[str, str] = {}
         self._latest_routes: Dict[str, List[dict]] = {}
+        self._latest_route_visibility: Dict[str, bool] = {}
         self._ws_heartbeat_stop = threading.Event()
         self._ws_heartbeat_thread: Optional[threading.Thread] = None
         # 클러스터 단계별 스냅샷(WS/대시보드 공유)에 사용
@@ -1779,21 +1780,21 @@ class RealtimeServer:
                             route_sig = None
                     map_status = "routeChanged" if route_changed else "normal"
                     if route_points:
+                        self._latest_route_visibility[car_id] = bool(allow_route)
                         last_sent_sig = self._route_change_sent_sig.get(car_id)
                         should_emit_route_change = False
                         if route_sig and last_sent_sig != route_sig:
                             should_emit_route_change = True
                         elif not last_sent_sig and route_sig:
                             should_emit_route_change = True
-                        if should_emit_route_change:
+                        if should_emit_route_change and route_sig:
                             route_change_msgs.append({
                                 "carId": car_id,
                                 "newRoute": route_points,
                                 "routeVersion": route_sig,
-                                "visible": bool(s_start_changed),
+                                "visible": bool(s_start_changed) if allow_route else False,
                             })
-                            if route_sig:
-                                self._route_change_sent_sig[car_id] = route_sig
+                            self._route_change_sent_sig[car_id] = route_sig
                         if s_start_sig and s_start_changed:
                             self._last_s_start_sig[car_id] = s_start_sig
                         if route_sig and route_sig != self._route_change_sent_sig.get(car_id):
@@ -1803,6 +1804,7 @@ class RealtimeServer:
                             self._latest_route_versions[car_id] = route_sig
                     else:
                         self._latest_routes.pop(car_id, None)
+                        self._latest_route_visibility.pop(car_id, None)
                         self._route_change_sent_sig.pop(car_id, None)
                         self._latest_route_versions.pop(car_id, None)
                         self._route_change_sig.pop(car_id, None)
@@ -1951,6 +1953,7 @@ class RealtimeServer:
                                     "carId": car_id,
                                     "newRoute": route,
                                     "routeVersion": self._latest_route_versions.get(car_id),
+                                    "visible": bool(self._latest_route_visibility.get(car_id, True)),
                                 }
                                 for car_id, route in sorted(self._latest_routes.items())
                             ],
@@ -2593,6 +2596,7 @@ class RealtimeServer:
             cluster = list(self._cluster_stage_snapshots.values())
             latest_routes = dict(self._latest_routes)
             latest_route_versions = dict(self._latest_route_versions)
+            latest_route_visibility = dict(self._latest_route_visibility)
         if ui_snap and ui_snap.get("messages"):
             initial.extend(ui_snap.get("messages"))
         if latest_routes:
@@ -2606,6 +2610,7 @@ class RealtimeServer:
                                 "carId": car_id,
                                 "newRoute": route,
                                 "routeVersion": latest_route_versions.get(car_id),
+                                "visible": bool(latest_route_visibility.get(car_id, True)),
                             }
                             for car_id, route in sorted(latest_routes.items())
                         ],
