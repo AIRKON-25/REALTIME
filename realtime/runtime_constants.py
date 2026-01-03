@@ -18,8 +18,8 @@ PATH_PROGRESS_DIST_M = 1.5  # 경로 진행으로 간주할 최대 거리 게이
 PATH_PROGRESS_HEAD_WINDOW = 10  # 경로 진행 판단 시 path_future 앞쪽에서만 찾을 최대 점 개수
 PATH_REID_DIST_M = 5   # 경로 기반 재ID 거리 게이트(m)
 PATH_REID_YAW_DEG = 45.0    # 경로 기반 재ID yaw 차이 게이트(도)
-ROUTE_CHANGE_DISTANCE_M = 10.0  # routeChanged 판정을 위한 거리 게이트(m)
-ROUTE_CHANGE_DRAW_POINTS_PER_SEC = 20.0  # 경로를 웹에서 초당 그리는 점 개수 추정치
+ROUTE_CHANGE_DISTANCE_M = 15.0  # routeChanged 판정을 위한 거리 게이트(m)
+ROUTE_CHANGE_DRAW_POINTS_PER_SEC = 5.0  # 경로를 웹에서 초당 그리는 점 개수 추정치
 ROUTE_CHANGE_EXTRA_SECONDS = 2.0  # 경로 표시 버퍼 시간(초)
 ROUTE_CHANGE_MIN_SECONDS = 1.0  # 최소 표시 시간(초)
 
@@ -37,4 +37,4 @@ VELOCITY_MAX_MPS = 25.0       # 속도 크기 상한(스파이크 클램프)
 VELOCITY_ZERO_THRESH = 0.1  # 이 미만이면 0으로 취급
 
 #EXT_COLOR_ID = {1: "red", 2: "yellow", 3: "green", 4: "purple", 5: "white"}
-EXT_COLOR_ID = {1: "green", 2: "purple", 3: "white", 4: "yellow", 5: "red"}
+EXT_COLOR_ID = {1: "yellow", 2: "green", 3: "purple", 4: "white", 5: "red"}

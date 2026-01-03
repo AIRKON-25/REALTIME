@@ -316,14 +316,25 @@ class StatusState:
             car = self.cars.get(int(car_id))
             if not car or not car.path_future:
                 return None
-            search_len = len(car.path_future) if window <= 0 else min(window, len(car.path_future))
-            search_segment = car.path_future[:search_len]
-            idx, dist = self._nearest_path_index(search_segment, position)
-            if idx is None or dist > gate:
+            px, py = float(position[0]), float(position[1])
+            max_checks = len(car.path_future) if window <= 0 else min(window, len(car.path_future))
+            consumed_any = False
+            checks = 0
+            while car.path_future and checks < max_checks:
+                checks += 1
+                try:
+                    fx, fy = float(car.path_future[0][0]), float(car.path_future[0][1])
+                except Exception:
+                    # 문제가 있는 포인트는 건너뛴다
+                    car.path_future.pop(0)
+                    continue
+                dist = math.hypot(px - fx, py - fy)
+                if dist > gate:
+                    break
+                car.path_past.append(car.path_future.pop(0))
+                consumed_any = True
+            if not consumed_any:
                 return None
-            consumed = car.path_future[: idx + 1]
-            car.path_past.extend(consumed)
-            car.path_future = car.path_future[idx + 1 :]
             car.ts = time.time()
             prog_idx, prog_total, prog_ratio = self._compute_progress(car.path_past, car.path_future)
             car.route_progress_idx = prog_idx
