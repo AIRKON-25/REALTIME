@@ -77,6 +77,7 @@ interface RouteSprite {
 }
 
 const ROUTE_STEP = 0.035; // normalized distance per sprite (~3.5% of map width/height)
+const ROUTE_TAIL_GAP = ROUTE_STEP * 1.5; // leave extra space before the final arrow
 const RECT_BASE_ANGLE = -90; // adjust if your PNG default orientation differs
 const ARROW_BASE_ANGLE = 180; // arrow.png points left by default
 const CLICK_PATH_DURATION_MS = 2000;
@@ -101,12 +102,19 @@ const buildRouteSprites = (
     const steps = Math.max(1, Math.floor(dist / ROUTE_STEP));
     const stepSize = dist / steps;
     const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const isTailSegment = i === points.length - 2;
     for (let s = 0; s < steps; s++) {
       const t = ((s + 0.5) * stepSize) / dist;
+      const sampleX = a.x + dx * t;
+      const sampleY = a.y + dy * t;
+      if (isTailSegment) {
+        const distToTail = Math.hypot(sampleX - b.x, sampleY - b.y);
+        if (distToTail < ROUTE_TAIL_GAP) continue;
+      }
       samples.push({
         id: `${prefix}-${carId}-seg-${i}-${s}-${counter++}`,
-        x: a.x + dx * t,
-        y: a.y + dy * t,
+        x: sampleX,
+        y: sampleY,
         angleDeg: angleDeg + RECT_BASE_ANGLE,
         kind: "rect",
         carId,
