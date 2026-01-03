@@ -25,7 +25,7 @@ def main():
     # ap.add_argument("--fixed-length", type=float, default=4.4) # 인지에서 사용하는 기본값
     # ap.add_argument("--fixed-width", type=float, default=2.7)
     ap.add_argument("--udp-port", type=int, default=50050, help="단일 UDP 포트로 모든 카메라 데이터 수신")
-    ap.add_argument("--tx-host", default=None, help="트래킹 결과 전송 호스트(제어컴)")
+    ap.add_argument("--tx-host", default="192.168.0.100", help="트래킹 결과 전송 호스트(제어컴)")
     ap.add_argument("--tx-port", type=int, default=60050)
     ap.add_argument("--tx-protocol", choices=["udp", "tcp"], default="udp")
     ap.add_argument("--carla-host", default=None, help="CARLA 서버 전송 호스트(우리 이제 안쓰지않나)")
@@ -33,6 +33,9 @@ def main():
     ap.add_argument("--web-host", default="0.0.0.0", help="웹소켓 서버 바인드 호스트")
     ap.add_argument("--web-port", type=int, default=18000)
     ap.add_argument("--no-web", action="store_true")
+    ap.add_argument("--debug-http-host", default="0.0.0.0", help="브로드캐스트 스냅샷용 디버그 HTTP 호스트")
+    ap.add_argument("--debug-http-port", type=int, default=18110, help="브로드캐스트 스냅샷용 디버그 HTTP 포트")
+    ap.add_argument("--no-debug-http", action="store_true", help="디버그 HTTP 엔드포인트 비활성화")
     ap.add_argument("--car-count", type=int, default=5, help="number of cars to lock into IDs 1..N (1-5)")
     ap.add_argument("--cmd-host", default="0.0.0.0", help="yaw/색상 명령 서버 바인드 호스트(미입력시 비활성)")
     ap.add_argument("--cmd-port", type=int, default=18100, help="yaw/색상 명령 서버 포트")
@@ -53,10 +56,16 @@ def main():
     ap.add_argument("--status-http-host", default="0.0.0.0", help="status HTTP host (omit to disable HTTP)")
     ap.add_argument("--status-http-port", type=int, default=18080, help="status HTTP port (omit to disable HTTP)")
     ap.add_argument("--status-log-udp", action="store_true", help="log status UDP payloads")
+    ap.add_argument("--dashboard", dest="dashboard", action="store_true", default=True, help="enable rich dashboard output")
+    ap.add_argument("--no-dashboard", dest="dashboard", action="store_false", help="disable rich dashboard output")
+    ap.add_argument("--dashboard-refresh-hz", type=float, default=4.0, help="dashboard refresh rate")
     ap.set_defaults(log_pipeline=True, log_udp_packets=False)
     args = ap.parse_args()
     if args.car_count < 1 or args.car_count > 5:
         ap.error("--car-count must be between 1 and 5")
+
+    debug_http_host = None if args.no_debug_http else args.debug_http_host
+    debug_http_port = None if args.no_debug_http else args.debug_http_port
 
     cam_ports = {
         "cam1": 101,
@@ -102,6 +111,10 @@ def main():
         log_udp_packets=args.log_udp_packets,
         lane_map_path=args.lane_map_path,
         status_state=status_server.state,
+        debug_http_host=debug_http_host,
+        debug_http_port=debug_http_port,
+        dashboard=args.dashboard,
+        dashboard_refresh_hz=args.dashboard_refresh_hz,
     )
     status_server.start()
     server.start()
@@ -112,7 +125,10 @@ def main():
         pass
     finally:
         status_server.stop()
-        server.receiver.stop()
+        try:
+            server.inference_receiver.stop()
+        except Exception:
+            pass
         if server.track_tx:
             server.track_tx.close()
         if server.carla_tx:

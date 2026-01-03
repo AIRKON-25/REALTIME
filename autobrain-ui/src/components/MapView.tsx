@@ -22,7 +22,7 @@ import ArrowHead from "../assets/arrow.png";
 
 const normalizeCarColor = (color: string | undefined) => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
-  const allowed = ["red", "green", "blue", "yellow", "purple", "white"] as const;
+  const allowed = ["red", "green", "yellow", "purple", "white"] as const;
   return (allowed as readonly string[]).includes(normalized) ? normalized : "red";
 };
 
@@ -129,6 +129,7 @@ interface MapViewProps {
   activeCameraIds: CameraId[];
   activeCarId: CarId | null;
   routeChanges: CarRouteChange[];
+  routeProgressByCar?: Record<CarId, { idx: number; total: number; ratio: number }>;
   carPaths?: Record<CarId, RoutePoint[]>;
   carPathFlashKey?: number;
   onCameraClick?: (cameraId: CameraId) => void;
@@ -145,6 +146,7 @@ export const MapView = ({
   activeCameraIds,
   activeCarId,
   routeChanges,
+  routeProgressByCar,
   carPaths,
   carPathFlashKey,
   onCameraClick,
@@ -237,13 +239,20 @@ export const MapView = ({
     carPathsRef.current = carPaths ?? {};
   }, [carPaths]);
 
+  const cssScaleBase = useMemo(() => {
+    if (typeof window === "undefined") return 1;
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--map-scale-base");
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+  }, []);
+
   const mapScale = useMemo(() => {
     const basisWidth = mapLayout.mapWidth || mapLayout.contentWidth;
     if (!basisWidth) return 1;
     const normalizedSizeScale = sizeScale > 0 ? sizeScale : 1;
-    const scale = (basisWidth / 1000) * normalizedSizeScale;
-    return Math.min(1.4, Math.max(0.4, scale));
-  }, [mapLayout, sizeScale]);
+    const scale = (basisWidth / 1000) * normalizedSizeScale * cssScaleBase;
+    return Math.min(3, Math.max(0.2, scale));
+  }, [mapLayout, sizeScale, cssScaleBase]);
 
   useEffect(() => {
     if (!routeChanges.length) return;
@@ -253,10 +262,15 @@ export const MapView = ({
 
     const sprites: RouteSprite[] = [];
     routeChanges.forEach((change, changeIdx) => {
+      if (change.visible === false) return;
       if (!change.newRoute || change.newRoute.length < 2) return;
+      const progress = routeProgressByCar?.[change.carId];
+      const startIdx = Math.max(0, Math.floor(progress?.idx ?? 0));
+      const trimmed = change.newRoute.slice(startIdx);
+      if (trimmed.length < 2) return;
       const carPos = carsOnMapRef.current.find((c) => c.carId === change.carId);
       sprites.push(
-        ...buildRouteSprites(change.carId, change.newRoute, {
+        ...buildRouteSprites(change.carId, trimmed, {
           carPos: carPos ? { x: carPos.x, y: carPos.y } : undefined,
           idPrefix: `change-${changeIdx}-${Date.now()}`,
         })
@@ -345,7 +359,9 @@ export const MapView = ({
       return;
     }
 
-    const points = carPathsRef.current?.[activeCarId];
+    const progress = routeProgressByCar?.[activeCarId];
+    const startIdx = Math.max(0, Math.floor(progress?.idx ?? 0));
+    const points = (carPathsRef.current?.[activeCarId] || []).slice(startIdx);
     if (!points || points.length < 2) {
       setClickedRouteSprites([]);
       setVisibleClickedRouteCounts({});
@@ -408,7 +424,7 @@ export const MapView = ({
   // Camera icon size (px) to ensure padding accounts for its radius.
   const cameraSizePx = 60 * mapScale;
   const cameraRadiusPx = cameraSizePx / 2;
-  const trafficLightSizePx = 58 * mapScale;
+  const trafficLightSizePx = 23 * mapScale;
 
   const paddingStyle = {
     paddingLeft: `calc(${Math.max(0, -minX) * 100}% + ${cameraRadiusPx}px)`,
@@ -419,6 +435,7 @@ export const MapView = ({
 
   const mapStyle = {
     ...paddingStyle,
+    "--map-scale": mapScale,
   } as CSSProperties;
 
   const overlayStyle: CSSProperties = {
@@ -569,7 +586,7 @@ export const MapView = ({
                   if (shownSoFar >= visibleCount) return null;
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
-                  const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                  const size = isArrow ? 28 * mapScale : 13 * mapScale;
                   const imgSrc = isArrow ? ArrowHead : ArrowRect;
                   return (
                     <img
@@ -581,7 +598,7 @@ export const MapView = ({
                         left: `${sprite.x * 100}%`,
                         top: `${sprite.y * 100}%`,
                         width: `${size}px`,
-                        height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                        height: "auto",
                         transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
                       }}
                     />
@@ -602,7 +619,7 @@ export const MapView = ({
                   if (shownSoFar >= visibleCount) return null;
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
-                  const size = isArrow ? 34 * mapScale : 26 * mapScale;
+                  const size = isArrow ? 36 * mapScale : 13 * mapScale;
                   const imgSrc = isArrow ? ArrowHead : ArrowRect;
                   return (
                     <img
@@ -614,7 +631,7 @@ export const MapView = ({
                         left: `${sprite.x * 100}%`,
                         top: `${sprite.y * 100}%`,
                         width: `${size}px`,
-                        height: isArrow ? `${size}px` : `${size * 0.45}px`,
+                        height: "auto",
                         transform: `translate(-50%, -50%) rotate(${sprite.angleDeg}deg)`,
                       }}
                     />

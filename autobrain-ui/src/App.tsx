@@ -13,6 +13,7 @@ import type {
   ObstacleStatusPacket,
   RouteChangePacket,
   TrafficLightStatusPacket,
+  CarRouteChange,
   RoutePoint,
   ClusterStage,
 } from "./types";
@@ -116,8 +117,8 @@ const applyObstacleStatus = (
     );
     return { ...prev, obstaclesOnMap, obstaclesStatus };
   }
-  const obstaclesOnMap = data.obstaclesOnMap;
-  const obstaclesStatus = data.obstaclesStatus ?? prev.obstaclesStatus;
+  const obstaclesOnMap = data.obstaclesOnMap ?? [];
+  const obstaclesStatus = data.obstaclesStatus ?? [];
   return { ...prev, obstaclesOnMap, obstaclesStatus };
 };
 
@@ -125,8 +126,14 @@ const applyRouteChange = (
   prev: MonitorState,
   data: RouteChangePacket
 ): MonitorState => {
-  const changes = data.changes ?? [];
-  return { ...prev, routeChanges: changes };
+  const next = new Map<CarId, CarRouteChange>();
+  prev.routeChanges.forEach((c) => {
+    if (c?.carId) next.set(c.carId, c);
+  });
+  (data.changes ?? []).forEach((c) => {
+    if (c?.carId) next.set(c.carId, c);
+  });
+  return { ...prev, routeChanges: Array.from(next.values()) };
 };
 
 const applyTrafficLightStatus = (
@@ -190,6 +197,13 @@ function App() {
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+
+    const resetMonitorState = () => {
+      setHasCamStatus(false);
+      setServerState(emptyState);
+      setClusterBeforeState(emptyState);
+      setClusterAfterState(emptyState);
+    };
 
     const connect = () => {
       ws = new WebSocket(WS_URL);
@@ -257,6 +271,7 @@ function App() {
 
       ws.onclose = () => {
         console.warn("WebSocket closed, retry in 2s");
+        resetMonitorState();
         if (!reconnectTimer) {
           reconnectTimer = window.setTimeout(() => {
             reconnectTimer = null;
@@ -309,7 +324,7 @@ function App() {
   }, [selectedIncidentId, selectedIncident]);
 
   const carColorById = useMemo(() => {
-    const allowed: readonly CarColor[] = ["red", "green", "blue", "yellow", "purple", "white"];
+    const allowed: readonly CarColor[] = ["red", "green", "yellow", "purple", "white"];
     const normalize = (color: string | undefined): CarColor | undefined => {
       const normalized = (color ?? "").toString().trim().toLowerCase();
       return allowed.includes(normalized as CarColor)
@@ -346,7 +361,25 @@ function App() {
 
   const carPaths = useMemo(() => {
     const map: Record<CarId, RoutePoint[]> = {};
+
+    // 1) 우선 routeChange 메시지에서 온 경로 사용
+    routeChanges.forEach((change) => {
+      const pts = (change.newRoute ?? [])
+        .map((pt) => {
+          const x = Number((pt as any).x);
+          const y = Number((pt as any).y);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+          return { x, y };
+        })
+        .filter((p): p is RoutePoint => Boolean(p));
+      if (pts.length > 1) {
+        map[change.carId] = pts;
+      }
+    });
+
+    // 2) 경로 업데이트가 없을 때는 carStatus의 path_future를 보조로 사용
     carsStatus.forEach((status) => {
+      if (map[status.car_id]) return;
       const pts = (status.path_future ?? [])
         .map((pt) => {
           const x = Number((pt as any).x);
@@ -359,13 +392,55 @@ function App() {
         map[status.car_id] = pts;
       }
     });
+
+    return map;
+  }, [routeChanges, carsStatus]);
+
+  const routeProgressByCar = useMemo(() => {
+    const map: Record<CarId, { idx: number; total: number; ratio: number }> = {};
+    carsStatus.forEach((status) => {
+      const idx = Number(status.route_progress_idx ?? 0);
+      const total = Number(status.route_progress_total ?? 0);
+      const ratio = Number(status.route_progress_ratio ?? 0);
+      map[status.car_id] = {
+        idx: Number.isFinite(idx) ? idx : 0,
+        total: Number.isFinite(total) ? total : 0,
+        ratio: Number.isFinite(ratio) ? ratio : 0,
+      };
+    });
     return map;
   }, [carsStatus]);
+
+  const routeChangesFromStatus = useMemo(() => {
+    const changes: CarRouteChange[] = [];
+    Object.entries(carPaths).forEach(([carId, pts]) => {
+      if (!pts || pts.length < 2) return;
+      const status = carsStatus.find((c) => c.car_id === carId);
+      const category = (status?.category ?? "").toString().trim().toLowerCase();
+      const isBatteryCategory = category.startsWith("battery");
+      if (!status?.routeChanged && !isBatteryCategory) return;
+      changes.push({ carId, newRoute: pts, visible: true });
+    });
+    return changes;
+  }, [carPaths, carsStatus]);
+
+  const mergedRouteChanges = useMemo(() => {
+    const byCar = new Map<CarId, CarRouteChange>();
+    routeChanges.forEach((change) => {
+      if (!change?.carId || !change.newRoute || change.newRoute.length < 2) return;
+      byCar.set(change.carId, change);
+    });
+    routeChangesFromStatus.forEach((change) => {
+      if (byCar.has(change.carId)) return;
+      byCar.set(change.carId, change);
+    });
+    return Array.from(byCar.values());
+  }, [routeChanges, routeChangesFromStatus]);
 
   useEffect(() => {
     routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     routeFlashTimersRef.current = [];
-    if (routeChanges.length === 0) {
+    if (mergedRouteChanges.length === 0) {
       setRouteFlashPhase("none");
       return;
     }
@@ -379,7 +454,7 @@ function App() {
       routeFlashTimersRef.current.forEach((timer) => window.clearTimeout(timer));
       routeFlashTimersRef.current = [];
     };
-  }, [routeChanges]);
+  }, [mergedRouteChanges]);
 
   // ===========================
   //  2) 뷰 모드 계산
@@ -440,13 +515,13 @@ function App() {
 
   const visibleRouteChanges = useMemo(() => {
     if (routeFlashPhase === "new") {
-      return routeChanges;
+      return mergedRouteChanges;
     }
     return [];
-  }, [routeChanges, routeFlashPhase]);
+  }, [mergedRouteChanges, routeFlashPhase]);
 
-// Monitoring에 실제로 띄울 카메라 선택 로직
-  const monitoringCameraIds: CameraId[] = useMemo(() => {
+// Monitoring에 실제로 띄울 카메라 선택 로직 가장 가까운 애로
+  const rawMonitoringCameraIds: CameraId[] = useMemo(() => {
     const uniq = (ids?: CameraId[]) =>
       Array.from(new Set((ids ?? []).filter((id): id is CameraId => Boolean(id))));
 
@@ -520,6 +595,37 @@ function App() {
     camerasOnMap,
   ]);
 
+  const [monitoringCameraIds, setMonitoringCameraIds] = useState<CameraId[]>(rawMonitoringCameraIds);
+  const lastMonitoringUpdateRef = useRef<number>(0);
+  const monitoringUpdateTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const now = Date.now();
+    const elapsed = now - lastMonitoringUpdateRef.current;
+
+    const applyUpdate = () => {
+      lastMonitoringUpdateRef.current = Date.now();
+      setMonitoringCameraIds(rawMonitoringCameraIds);
+      monitoringUpdateTimerRef.current = null;
+    };
+
+    if (elapsed >= 1000) {
+      applyUpdate();
+    } else {
+      if (monitoringUpdateTimerRef.current !== null) {
+        window.clearTimeout(monitoringUpdateTimerRef.current);
+      }
+      monitoringUpdateTimerRef.current = window.setTimeout(applyUpdate, 1000 - elapsed);
+    }
+
+    return () => {
+      if (monitoringUpdateTimerRef.current !== null) {
+        window.clearTimeout(monitoringUpdateTimerRef.current);
+        monitoringUpdateTimerRef.current = null;
+      }
+    };
+  }, [rawMonitoringCameraIds]);
+
   const monitoringCameras: CameraStatus[] = useMemo(() => {
     if (monitoringCameraIds.length === 0) return [];
     const byId = new Map(camerasStatus.map((cam) => [cam.id, cam]));
@@ -549,7 +655,7 @@ function App() {
         ];
       }
       return monitoringCameras.slice(0, 2).map((cam, idx) => ({
-        label: `${cam.name || cam.id} (Cam ${idx})`,
+        label: `${cam.name || cam.id}`,
         url: cam.streamUrl,
       }));
     }
@@ -585,6 +691,7 @@ function App() {
             activeCameraIds={monitoringCameraIds}
             activeCarId={selectedCarId}
             routeChanges={visibleRouteChanges}
+            routeProgressByCar={routeProgressByCar}
             carPaths={carPaths}
             carPathFlashKey={carPathFlashKey}
             onCameraClick={handleCameraClick}

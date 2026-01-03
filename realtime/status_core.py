@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from comms.status_receiver import StatusReceiver
-from realtime.runtime_constants import PATH_PROGRESS_DIST_M
+from realtime.runtime_constants import PATH_PROGRESS_DIST_M, PATH_PROGRESS_HEAD_WINDOW
 
 
 @dataclass
@@ -23,6 +23,11 @@ class CarStatus:
     s_start: List[Any] = field(default_factory=list)
     s_end: List[Any] = field(default_factory=list)
     end: Optional[str] = None # 웹에 안줌
+    route_version: Optional[str] = None
+    route_change_count: int = 0
+    route_progress_idx: int = 0
+    route_progress_total: int = 0
+    route_progress_ratio: float = 0.0
     ts: float = field(default_factory=time.time)
 
 
@@ -41,6 +46,29 @@ class StatusState:
         self._lock = threading.Lock()
         self.cars: Dict[int, CarStatus] = {}
         self.traffic: Dict[int, TrafficStatus] = {}
+
+    @staticmethod
+    def _compute_progress(path_past: List[List[float]], path_future: List[List[float]]) -> Tuple[int, int, float]:
+        past_len = len(path_past) if isinstance(path_past, list) else 0
+        future_len = len(path_future) if isinstance(path_future, list) else 0
+        total = past_len + future_len
+        ratio = float(past_len) / float(total) if total > 0 else 0.0
+        return past_len, total, ratio
+
+    @staticmethod
+    def _compute_route_version(path: List[List[float]], s_start: Optional[List[Any]]) -> Optional[str]:
+        if not path and not s_start:
+            return None
+        try:
+            payload = {"path": path}
+            if s_start:
+                payload["s_start"] = s_start
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            try:
+                return str(s_start) if s_start else None
+            except Exception:
+                return None
 
     @staticmethod
     def _normalize_path(path) -> List[List[float]]:
@@ -121,6 +149,9 @@ class StatusState:
             s_start = list(existing.s_start) if existing else []
             s_end = list(existing.s_end) if existing else []
             end = existing.end if existing else None
+            route_version = existing.route_version if existing else None
+            route_change_count = existing.route_change_count if existing else 0
+            prog_idx, prog_total, prog_ratio = self._compute_progress(path_past, path_future)
             self.cars[int(car_id)] = CarStatus(
                 int(car_id),
                 battery,
@@ -132,6 +163,11 @@ class StatusState:
                 s_start=s_start,
                 s_end=s_end,
                 end=end,
+                route_version=route_version,
+                route_change_count=route_change_count,
+                route_progress_idx=prog_idx,
+                route_progress_total=prog_total,
+                route_progress_ratio=prog_ratio,
                 ts=now,
             )
 
@@ -153,6 +189,13 @@ class StatusState:
             existing = self.cars.get(int(car_id))
             battery = existing.battery if existing else None
             end = existing.end if existing else None
+            prev_route_version = existing.route_version if existing else None
+            route_change_count = existing.route_change_count if existing else 0
+            route_version = self._compute_route_version(path_list, opt_start if opt_start else existing.s_start if existing else [])
+            new_route_version = route_version if route_version is not None else prev_route_version
+            if prev_route_version and new_route_version and prev_route_version != new_route_version:
+                route_change_count += 1
+            prog_idx, prog_total, prog_ratio = self._compute_progress([], list(path_list))
             self.cars[int(car_id)] = CarStatus(
                 int(car_id),
                 battery,
@@ -164,6 +207,11 @@ class StatusState:
                 s_start=opt_start if opt_start else (list(existing.s_start) if existing else []),
                 s_end=opt_end if opt_end else (list(existing.s_end) if existing else []),
                 end=end,
+                route_version=new_route_version,
+                route_change_count=route_change_count,
+                route_progress_idx=prog_idx,
+                route_progress_total=prog_total,
+                route_progress_ratio=prog_ratio,
                 ts=now,
             )
 
@@ -184,6 +232,9 @@ class StatusState:
             resolution = existing.resolution if existing else None
             s_start = list(existing.s_start) if existing else []
             s_end = list(existing.s_end) if existing else []
+            route_version = existing.route_version if existing else None
+            route_change_count = existing.route_change_count if existing else 0
+            prog_idx, prog_total, prog_ratio = self._compute_progress(path_past, path_future)
             self.cars[int(car_id)] = CarStatus(
                 int(car_id),
                 battery,
@@ -195,6 +246,11 @@ class StatusState:
                 s_start=s_start,
                 s_end=s_end,
                 end=dest_name,
+                route_version=route_version,
+                route_change_count=route_change_count,
+                route_progress_idx=prog_idx,
+                route_progress_total=prog_total,
+                route_progress_ratio=prog_ratio,
                 ts=now,
             )
 
@@ -226,6 +282,10 @@ class StatusState:
                 "resolution": car.resolution,
                 "s_start": car.s_start,
                 "s_end": car.s_end,
+                "route_version": car.route_version,
+                "route_progress_idx": car.route_progress_idx,
+                "route_progress_total": car.route_progress_total,
+                "route_progress_ratio": car.route_progress_ratio,
                 "ts": car.ts,
             }
 
@@ -245,22 +305,41 @@ class StatusState:
         car_id: int,
         position: Tuple[float, float],
         gate_m: float = PATH_PROGRESS_DIST_M,
+        head_window: int = PATH_PROGRESS_HEAD_WINDOW,
     ) -> Optional[Dict[str, Any]]:
         """
         현재 위치가 경로의 앞 구간에 충분히 근접하면 path_past/path_future를 갱신.
         """
         gate = max(0.0, float(gate_m))
+        window = int(head_window) if head_window is not None else 0
         with self._lock:
             car = self.cars.get(int(car_id))
             if not car or not car.path_future:
                 return None
-            idx, dist = self._nearest_path_index(car.path_future, position)
-            if idx is None or dist > gate:
+            px, py = float(position[0]), float(position[1])
+            max_checks = len(car.path_future) if window <= 0 else min(window, len(car.path_future))
+            consumed_any = False
+            checks = 0
+            while car.path_future and checks < max_checks:
+                checks += 1
+                try:
+                    fx, fy = float(car.path_future[0][0]), float(car.path_future[0][1])
+                except Exception:
+                    # 문제가 있는 포인트는 건너뛴다
+                    car.path_future.pop(0)
+                    continue
+                dist = math.hypot(px - fx, py - fy)
+                if dist > gate:
+                    break
+                car.path_past.append(car.path_future.pop(0))
+                consumed_any = True
+            if not consumed_any:
                 return None
-            consumed = car.path_future[: idx + 1]
-            car.path_past.extend(consumed)
-            car.path_future = car.path_future[idx + 1 :]
             car.ts = time.time()
+            prog_idx, prog_total, prog_ratio = self._compute_progress(car.path_past, car.path_future)
+            car.route_progress_idx = prog_idx
+            car.route_progress_total = prog_total
+            car.route_progress_ratio = prog_ratio
             return self._asdict(car)
 
 
@@ -312,7 +391,7 @@ class StatusServer:
         if msg_type == "carStatus":
             try:
                 cid = int(payload.get("car_id"))
-                battery = payload.get("battery")
+                battery = int(payload.get("battery"))
                 battery_val = float(battery) if battery is not None else None
                 self.state.update_car(cid, battery_val, ts=now)
             except Exception:
