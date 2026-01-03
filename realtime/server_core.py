@@ -184,6 +184,7 @@ class FusionDashboard:
         timings = snap.get("timings") or {}
         metrics = snap.get("tracker_metrics") or {}
         car_status = snap.get("car_status") or {}
+        traffic_status = snap.get("traffic_status") or []
 
         def _fmt_progress(info: dict) -> str:
             if not info:
@@ -340,11 +341,44 @@ class FusionDashboard:
         if not metrics:
             metrics_table.add_row("-", "-")
 
+        traffic_table = Table(title="Traffic", box=box.SIMPLE, expand=True, show_lines=False)
+        for col in ["id", "light", "left", "age_s"]:
+            traffic_table.add_column(col)
+        now_ts = ts if ts is not None else time.time()
+        for item in traffic_status:
+            tl_id = item.get("trafficLight_id")
+            if tl_id is None:
+                tl_id = item.get("trafficLightId")
+            if tl_id is None:
+                tl_id = item.get("id")
+            light_val = item.get("light")
+            left_green = item.get("left_green")
+            if left_green is None:
+                left_disp = "-"
+            else:
+                left_disp = "Y" if left_green else "N"
+            age_disp = "-"
+            try:
+                item_ts = item.get("ts")
+                if item_ts is not None and now_ts is not None:
+                    age_disp = self._fmt_float(float(now_ts) - float(item_ts), 1)
+            except Exception:
+                pass
+            traffic_table.add_row(
+                str(tl_id) if tl_id is not None else "-",
+                self._color_text(str(light_val) if light_val is not None else None, None),
+                left_disp,
+                age_disp,
+            )
+        if not traffic_status:
+            traffic_table.add_row("-", "-", "-", "-")
+
         layout = Layout()
         layout.split_column(
             Layout(summary, name="summary", size=5),
             Layout(fused_table, name="fused", ratio=3),
             Layout(track_panel, name="tracks", ratio=4),
+            Layout(traffic_table, name="traffic", size=10),
             Layout(metrics_table, name="metrics", size=10),
         )
         return layout
@@ -2847,6 +2881,20 @@ class RealtimeServer:
                 except Exception:
                     continue
                 car_status[ext_id] = status_entry
+        traffic_status: List[dict] = []
+        if self.status_state:
+            try:
+                traffic_map = self.status_state.snapshot().get("traffic") or {}
+            except Exception:
+                traffic_map = {}
+            for entry in traffic_map.values():
+                if entry:
+                    traffic_status.append(dict(entry))
+            try:
+                traffic_status.sort(key=lambda item: int(item.get("trafficLight_id") or 0))
+            except Exception:
+                pass
+
         snap = {
             "ts": ts,
             "raw_total": sum(raw_stats.values()) if raw_stats else 0,
@@ -2859,6 +2907,7 @@ class RealtimeServer:
             "tracker_metrics": self.tracker.get_last_metrics() if self.tracker else {},
             "ext_to_int": dict(self._external_to_internal),
             "car_status": car_status,
+            "traffic_status": traffic_status,
         }
         self.dashboard.update(snap)
 
