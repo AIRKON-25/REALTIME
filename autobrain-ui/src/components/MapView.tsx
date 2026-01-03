@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 import type {
   CameraId,
   CameraOnMap,
+  CarColor,
   CarOnMap,
   CarId,
   ObstacleOnMap,
@@ -18,12 +19,39 @@ import CameraIconActive from "../assets/camera-icon-active.svg";
 import CameraIconVertical from "../assets/camera-icon_vertical.svg";
 import CameraIconVerticalActive from "../assets/camera-icon-vertical-active.svg";
 import ArrowRect from "../assets/arrow-rectangle.png";
+import ArrowRectGreen from "../assets/arrow-rectangle-green.png";
+import ArrowRectPurple from "../assets/arrow-rectangle-purple.png";
+import ArrowRectRed from "../assets/arrow-rectangle-red.png";
+import ArrowRectYellow from "../assets/arrow-rectangle-yellow.png";
 import ArrowHead from "../assets/arrow.png";
+import ArrowHeadGreen from "../assets/arrow-green.png";
+import ArrowHeadPurple from "../assets/arrow-purple.png";
+import ArrowHeadRed from "../assets/arrow-red.png";
+import ArrowHeadYellow from "../assets/arrow-yellow.png";
 
-const normalizeCarColor = (color: string | undefined) => {
+const CAR_COLORS: readonly CarColor[] = ["red", "green", "yellow", "purple", "white"];
+
+const normalizeCarColor = (color: string | undefined): CarColor => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
-  const allowed = ["red", "green", "yellow", "purple", "white"] as const;
-  return (allowed as readonly string[]).includes(normalized) ? normalized : "red";
+  return (CAR_COLORS as readonly string[]).includes(normalized)
+    ? (normalized as CarColor)
+    : "white";
+};
+
+const ROUTE_ARROW_ASSETS: Record<CarColor, string> = {
+  white: ArrowHead,
+  red: ArrowHeadRed,
+  yellow: ArrowHeadYellow,
+  green: ArrowHeadGreen,
+  purple: ArrowHeadPurple,
+};
+
+const ROUTE_RECT_ASSETS: Record<CarColor, string> = {
+  white: ArrowRect,
+  red: ArrowRectRed,
+  yellow: ArrowRectYellow,
+  green: ArrowRectGreen,
+  purple: ArrowRectPurple,
 };
 
 const isSideCamera = (cam: CameraOnMap) => {
@@ -452,6 +480,13 @@ export const MapView = ({
     clickedRouteSprites.forEach((s) => ids.add(s.carId));
     return ids;
   }, [routeSprites, clickedRouteSprites]);
+  const carColorById = useMemo(() => {
+    const next: Record<CarId, CarColor> = {};
+    carsOnMap.forEach((car) => {
+      next[car.carId] = normalizeCarColor(car.color);
+    });
+    return next;
+  }, [carsOnMap]);
 
   return (
     <div className="map" style={mapStyle}>
@@ -587,7 +622,10 @@ export const MapView = ({
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
                   const size = isArrow ? 28 * mapScale : 13 * mapScale;
-                  const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                  const color = carColorById[sprite.carId] ?? "white";
+                  const imgSrc = isArrow
+                    ? ROUTE_ARROW_ASSETS[color]
+                    : ROUTE_RECT_ASSETS[color];
                   return (
                     <img
                       key={sprite.id}
@@ -620,7 +658,10 @@ export const MapView = ({
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
                   const size = isArrow ? 36 * mapScale : 13 * mapScale;
-                  const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                  const color = carColorById[sprite.carId] ?? "white";
+                  const imgSrc = isArrow
+                    ? ROUTE_ARROW_ASSETS[color]
+                    : ROUTE_RECT_ASSETS[color];
                   return (
                     <img
                       key={sprite.id}
