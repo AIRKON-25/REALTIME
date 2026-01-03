@@ -15,7 +15,7 @@ class StatusReceiver:
         self,
         port: int,
         host: str = "0.0.0.0",
-        max_bytes: int = 16384,
+        max_bytes: int = 163840,
         log_packets: bool = False,
         on_message: Optional[Callable[[dict, Tuple[str, int]], None]] = None,
     ):

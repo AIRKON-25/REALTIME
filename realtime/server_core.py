@@ -37,6 +37,9 @@ from realtime.runtime_constants import (
     PATH_REID_DIST_M,
     PATH_REID_YAW_DEG,
     ROUTE_CHANGE_DISTANCE_M,
+    ROUTE_CHANGE_DRAW_POINTS_PER_SEC,
+    ROUTE_CHANGE_EXTRA_SECONDS,
+    ROUTE_CHANGE_MIN_SECONDS,
     VELOCITY_DT_MAX,
     VELOCITY_DT_MIN,
     VELOCITY_EWMA_ALPHA,
@@ -470,6 +473,8 @@ class RealtimeServer:
         self._last_ui_snapshot: dict = {}
         self._route_change_sig: Dict[int, str] = {}
         self._route_change_sent_sig: Dict[int, str] = {}
+        self._last_route_change_count: Dict[int, int] = {}
+        self._route_change_hold_until: Dict[int, float] = {}
         self._last_s_start_sig: Dict[str, str] = {}
         self._latest_route_versions: Dict[str, str] = {}
         self._latest_routes: Dict[str, List[dict]] = {}
@@ -1694,14 +1699,17 @@ class RealtimeServer:
                     path_future_raw = []
                     category_val = ""
                     resolution_val = None
+                    route_change_count: Optional[int] = None
                     route_changed = False
                     route_sig = None
+                    route_hold_until_ts = self._route_change_hold_until.get(car_key)
                     s_start_sig = None
                     s_start_changed = False
                     path_full_raw = []
                     s_start = None
                     s_end = None
                     allow_route = False
+                    current_ts = ts
                     if car_state:
                         try:
                             battery_raw = car_state.get("battery")
@@ -1719,6 +1727,10 @@ class RealtimeServer:
                         s_end = car_state.get("s_end")
                         route_sig = car_state.get("route_version")
                         allow_route = bool(s_start) or bool(s_end)
+                        try:
+                            route_change_count = int(car_state.get("route_change_count", 0) or 0)
+                        except Exception:
+                            route_change_count = 0
                         if s_start:
                             try:
                                 s_start_sig = json.dumps(s_start, ensure_ascii=False, sort_keys=True)
@@ -1768,6 +1780,47 @@ class RealtimeServer:
                                     pass
                         else:
                             self._route_change_sig.pop(car_key, None)
+                    if route_change_count is not None:
+                        prev_route_change_count = self._last_route_change_count.get(car_key)
+                        if prev_route_change_count is not None and route_change_count != prev_route_change_count and s_start:
+                            route_changed = True
+                            path_len_est = len(path_future_raw) if path_future_raw else len(path_full_raw)
+                            if not path_len_est and car_state:
+                                try:
+                                    path_len_est = len(car_state.get("path_future") or car_state.get("path") or [])
+                                except Exception:
+                                    path_len_est = 0
+                            try:
+                                draw_rate = float(ROUTE_CHANGE_DRAW_POINTS_PER_SEC)
+                            except Exception:
+                                draw_rate = 0.0
+                            draw_rate = draw_rate if draw_rate > 0 else 1.0
+                            try:
+                                est_draw_time = float(path_len_est) / draw_rate if path_len_est else 0.0
+                            except Exception:
+                                est_draw_time = 0.0
+                            try:
+                                hold_extra = float(ROUTE_CHANGE_EXTRA_SECONDS)
+                            except Exception:
+                                hold_extra = 0.0
+                            try:
+                                min_hold = float(ROUTE_CHANGE_MIN_SECONDS)
+                            except Exception:
+                                min_hold = 0.0
+                            hold_sec = max(min_hold, est_draw_time + hold_extra)
+                            route_hold_until_ts = current_ts + hold_sec
+                            self._route_change_hold_until[car_key] = route_hold_until_ts
+                        self._last_route_change_count[car_key] = route_change_count
+                    else:
+                        self._last_route_change_count.pop(car_key, None)
+                        self._route_change_hold_until.pop(car_key, None)
+                    hold_active = False
+                    if not route_changed and route_hold_until_ts is not None:
+                        if current_ts <= route_hold_until_ts:
+                            route_changed = True
+                            hold_active = True
+                        else:
+                            self._route_change_hold_until.pop(car_key, None)
                     route_points = _normalize_route_points(path_future_raw)
                     if route_sig is None and route_points and (s_start or s_end):
                         try:
@@ -1781,7 +1834,9 @@ class RealtimeServer:
                             route_sig = None
                     map_status = "routeChanged" if route_changed else "normal"
                     if route_points:
-                        self._latest_route_visibility[car_id] = bool(allow_route)
+                        prev_visible = self._latest_route_visibility.get(car_id)
+                        visible_now = bool(s_start) and (hold_active or route_changed)
+                        self._latest_route_visibility[car_id] = visible_now
                         last_sent_sig = self._route_change_sent_sig.get(car_id)
                         should_emit_route_change = False
                         if route_sig and last_sent_sig != route_sig:
@@ -1793,9 +1848,16 @@ class RealtimeServer:
                                 "carId": car_id,
                                 "newRoute": route_points,
                                 "routeVersion": route_sig,
-                                "visible": bool(s_start_changed) if allow_route else False,
+                                "visible": visible_now,
                             })
                             self._route_change_sent_sig[car_id] = route_sig
+                        elif prev_visible and not visible_now and route_sig:
+                            route_change_msgs.append({
+                                "carId": car_id,
+                                "newRoute": route_points,
+                                "routeVersion": route_sig,
+                                "visible": False,
+                            })
                         if s_start_sig and s_start_changed:
                             self._last_s_start_sig[car_id] = s_start_sig
                         if route_sig and route_sig != self._route_change_sent_sig.get(car_id):
@@ -1810,6 +1872,8 @@ class RealtimeServer:
                         self._latest_route_versions.pop(car_id, None)
                         self._route_change_sig.pop(car_id, None)
                         self._last_s_start_sig.pop(car_id, None)
+                        self._route_change_hold_until.pop(car_key, None)
+                        self._last_route_change_count.pop(car_key, None)
                     progress_idx = 0
                     progress_total = 0
                     progress_ratio = 0.0
@@ -1842,7 +1906,7 @@ class RealtimeServer:
                         "speed": meta.get("speed", 0.0),
                         "battery": battery_val,
                         "cameraIds": camera_ids,
-                        "path_future": [],
+                        "path_future": route_points,
                         "category": category_val,
                         "resolution": str(resolution_val) if resolution_val is not None else "",
                         "routeChanged": route_changed,

@@ -126,8 +126,14 @@ const applyRouteChange = (
   prev: MonitorState,
   data: RouteChangePacket
 ): MonitorState => {
-  const changes = data.changes ?? [];
-  return { ...prev, routeChanges: changes };
+  const next = new Map<CarId, CarRouteChange>();
+  prev.routeChanges.forEach((c) => {
+    if (c?.carId) next.set(c.carId, c);
+  });
+  (data.changes ?? []).forEach((c) => {
+    if (c?.carId) next.set(c.carId, c);
+  });
+  return { ...prev, routeChanges: Array.from(next.values()) };
 };
 
 const applyTrafficLightStatus = (
