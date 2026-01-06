@@ -527,12 +527,12 @@ class RealtimeServer:
             {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.02},
         ]
         self._ui_cameras_status = [
-            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.107:8080/stream", "streamBEVUrl": "http://192.168.0.107:8081/stream"},
+            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.102:8080/stream", "streamBEVUrl": "http://192.168.0.102:8081/stream"},
             {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.105:8080/stream", "streamBEVUrl": "http://192.168.0.105:8081/stream"},
-            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.102:8080/stream", "streamBEVUrl": "http://192.168.0.102:8081/stream"},
+            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
             {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream", "streamBEVUrl": "http://192.168.0.106:8081/stream"},
-            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
-            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
+            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.107:8080/stream", "streamBEVUrl": "http://192.168.0.107:8081/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
         ]
         self._ui_cam_status: Optional[dict] = None
         _raw_traffic_lights = [
@@ -2604,6 +2604,7 @@ class RealtimeServer:
                 meta["color_votes"] = dict(votes)
 
     def _mapping_color_id_cut(self, tracks: np.ndarray, meta: Dict[int, dict], ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
+        mapped = []
         if tracks is not None and len(tracks):
             for row in tracks:
                 try:
@@ -2621,7 +2622,10 @@ class RealtimeServer:
                     color = extra.get("color")
                 
                 meta[tid]["color"] = color
-            mapped = tracks.copy()  
+                
+                mapped.append(row)
+            mapped = np.array(mapped, dtype=tracks.dtype)
+            # mapped = tracks.copy()  
             return mapped, meta
         return tracks, meta
     
@@ -3177,11 +3181,11 @@ class RealtimeServer:
             except Exception:
                 self._last_input_latency_ms = None
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
-            self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
+            # self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
             timings["fuse"] = (time.perf_counter() - t1) * 1000.0
-            self._broadcast_cluster_stage("postCluster", fused, frame_ts)
+            # self._broadcast_cluster_stage("postCluster", fused, frame_ts)
             t2 = time.perf_counter()
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
