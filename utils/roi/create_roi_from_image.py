@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Simple ROI creator/editor: load an image, click to add polygon vertices, fill that region as the ROI mask,
-and save mask + metadata to .npz. If --out already exists, the existing mask/meta will be loaded first so
-you can edit/extend it.
+Simple ROI creator/editor: load an image, paint an ROI mask with a brush, and save mask + metadata to .npz.
+If --out already exists, the existing mask/meta will be loaded first so you can edit/extend it.
 
 Usage:
   python utils/roi/create_roi_from_image.py --image path/to/frame.jpg --out roi/example_roi.npz \
@@ -15,7 +14,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -118,67 +117,60 @@ def main():
 
     out_path = Path(args.out).expanduser().resolve()
     mask = np.zeros((H, W), dtype=np.uint8)
-    poly_points: List[Tuple[int, int]] = []
     meta_base = {}
     if out_path.is_file():
         try:
             mask_loaded, poly_loaded, meta_loaded = _load_roi_npz(out_path, (H, W))
+            mask = mask_loaded.copy()
             if meta_loaded:
                 meta_base.update(meta_loaded)
             print(f"[ROI] Loaded existing ROI from {out_path}")
-            if poly_loaded is not None and len(poly_loaded) >= 3:
-                poly_points = [(int(p[0]), int(p[1])) for p in poly_loaded.reshape(-1, 2)]
-                print(f"[ROI] Existing polygon has {len(poly_points)} points")
-            else:
-                contours, _ = cv2.findContours(mask_loaded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    largest = max(contours, key=cv2.contourArea)
-                    poly_points = [(int(x), int(y)) for x, y in largest.reshape(-1, 2)]
-                    print(f"[ROI] Derived polygon with {len(poly_points)} points from mask")
-            if len(poly_points) >= 3:
-                mask = np.zeros((H, W), dtype=np.uint8)
-                cv2.fillPoly(mask, [np.array(poly_points, dtype=np.int32).reshape(-1, 1, 2)], 255)
+            if poly_loaded is not None:
+                print(f"[ROI] Existing polygon has {len(poly_loaded)} points")
         except Exception as exc:
             print(f"[ROI] WARN: failed to load existing ROI '{out_path}': {exc}")
 
     print("Instructions:")
-    print(" - Left click: add polygon vertex")
-    print(" - Right click or z: undo last vertex")
-    print(" - r: reset polygon")
-    print(" - Enter/Space/s: save and quit (need at least 3 vertices)")
+    print(" - Left click/drag: paint ROI")
+    print(" - Right click/drag: erase")
+    print(" - [ or - : brush smaller | ] or + : brush larger")
+    print(" - r: reset mask")
+    print(" - Enter/Space/s: save and quit (need at least some painted area)")
     print(" - q or ESC: quit without saving")
 
     window_name = "ROI Editor"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(window_name, 1200, 800)
 
-    def _build_mask(points: List[Tuple[int, int]]) -> np.ndarray:
-        m = np.zeros((H, W), dtype=np.uint8)
-        if len(points) >= 3:
-            cv2.fillPoly(m, [np.array(points, dtype=np.int32).reshape(-1, 1, 2)], 255)
-        return m
+    brush_size = 18
+    drawing = False
+    erase_mode = False
+    cursor_pos: Optional[Tuple[int, int]] = None
 
     def _on_mouse(event, x, y, _flags, _userdata):
+        nonlocal drawing, erase_mode, cursor_pos
+        cursor_pos = (int(x), int(y))
         if event == cv2.EVENT_LBUTTONDOWN:
-            poly_points.append((int(x), int(y)))
+            drawing = True
+            erase_mode = False
+            cv2.circle(mask, (x, y), brush_size, 255, -1)
         elif event == cv2.EVENT_RBUTTONDOWN:
-            if poly_points:
-                poly_points.pop()
+            drawing = True
+            erase_mode = True
+            cv2.circle(mask, (x, y), brush_size, 0, -1)
+        elif event == cv2.EVENT_MOUSEMOVE and drawing:
+            val = 0 if erase_mode else 255
+            cv2.circle(mask, (x, y), brush_size, val, -1)
+        elif event in (cv2.EVENT_LBUTTONUP, cv2.EVENT_RBUTTONUP, cv2.EVENT_MBUTTONUP):
+            drawing = False
 
     cv2.setMouseCallback(window_name, _on_mouse)
 
     while True:
-        mask = _build_mask(poly_points)
         vis = _blend_mask(img_bgr, mask)
-
-        if poly_points:
-            pts_arr = np.array(poly_points, dtype=np.int32)
-            cv2.polylines(vis, [pts_arr], isClosed=len(poly_points) >= 3, color=(0, 255, 0),
-                          thickness=2, lineType=cv2.LINE_AA)
-            for pt in poly_points:
-                cv2.circle(vis, pt, 4, (0, 255, 0), -1, cv2.LINE_AA)
-
-        info = f"pts:{len(poly_points)}  add:L click  undo:R click/z  reset:r  save:Enter/Space/s  quit:q/ESC"
+        if cursor_pos is not None:
+            cv2.circle(vis, cursor_pos, brush_size, (0, 255, 0), 1, cv2.LINE_AA)
+        info = f"brush:{brush_size}px  paint:L drag  erase:R drag  resize:[ ]  reset:r  save:Enter/Space/s  quit:q/ESC"
         cv2.putText(vis, info, (10, max(25, H - 20)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.imshow(window_name, vis)
@@ -188,21 +180,26 @@ def main():
             print("[Info] Quit without saving.")
             cv2.destroyAllWindows()
             sys.exit(0)
+        if key in (ord("["), ord("-")):
+            brush_size = max(1, brush_size - 2)
+        if key in (ord("]"), ord("+"), ord("=")):
+            brush_size = min(512, brush_size + 2)
         if key == ord("r"):
-            poly_points.clear()
-        if key in (ord("z"),):
-            if poly_points:
-                poly_points.pop()
+            mask[:] = 0
         if key in (13, 10, 32, ord("s")):  # enter, space, or s
-            if len(poly_points) >= 3 and int(_build_mask(poly_points).sum()) > 0:
+            if int(mask.sum()) > 0:
                 break
             else:
-                print("[Warn] Need at least 3 vertices defining a non-empty polygon.")
+                print("[Warn] No ROI painted yet; paint some area first.")
 
     cv2.destroyAllWindows()
 
-    final_mask = _build_mask(poly_points)
-    poly = np.array(poly_points, dtype=np.int32) if poly_points else np.zeros((0, 2), dtype=np.int32)
+    # Extract a representative polygon (largest contour) for optional downstream use.
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    poly = np.zeros((0, 2), dtype=np.int32)
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        poly = largest.reshape(-1, 2)
 
     meta = dict(meta_base)
     meta.update({
@@ -217,7 +214,7 @@ def main():
     elif "note" in meta and meta["note"] is None:
         meta.pop("note", None)
 
-    _save_npz(out_path, final_mask, poly, meta)
+    _save_npz(out_path, mask, poly, meta)
     print(f"[Meta] camera_size={meta['camera_size']}")
 
 

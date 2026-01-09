@@ -37,4 +37,20 @@ VELOCITY_MAX_MPS = 25.0       # 속도 크기 상한(스파이크 클램프)
 VELOCITY_ZERO_THRESH = 0.1  # 이 미만이면 0으로 취급
 
 #EXT_COLOR_ID = {1: "red", 2: "yellow", 3: "green", 4: "purple", 5: "white"}
-EXT_COLOR_ID = {1: "yellow", 2: "green", 3: "purple", 4: "white", 5: "red"}
+
+# 건들면 혼남
+YELLOW = 'yellow'
+PURPLE = 'purple'
+WHITE = 'white'
+GREEN = 'green'
+RED = 'red'
+# 건들면 혼남
+
+# 여기서 바꾸삼
+EXT_COLOR_ID = {
+    1: YELLOW, 
+    2: GREEN, 
+    3: PURPLE, 
+    4: WHITE, 
+    5: RED
+}
