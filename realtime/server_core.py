@@ -514,6 +514,8 @@ class RealtimeServer:
         self._latest_route_versions: Dict[str, str] = {}
         self._latest_routes: Dict[str, List[dict]] = {}
         self._latest_route_visibility: Dict[str, bool] = {}
+        self._pending_yaw_flips: set = set()
+        self._forced_yaw_once: Dict[int, float] = {}
         self._ws_heartbeat_stop = threading.Event()
         self._ws_heartbeat_thread: Optional[threading.Thread] = None
         # 클러스터 단계별 스냅샷(WS/대시보드 공유)에 사용
@@ -1370,6 +1372,35 @@ class RealtimeServer:
             for row in tracks
         }
         self._external_to_internal = {ext: internal for internal, ext in id_map.items()}
+
+        if tracks is not None and len(tracks) and (self._pending_yaw_flips or self._forced_yaw_once):
+            to_clear: set = set()
+            for idx, row in enumerate(tracks):
+                internal_id = int(row[0])
+                ext_id = id_map.get(internal_id)
+                if ext_id is None:
+                    continue
+                forced = None
+                if ext_id in self._forced_yaw_once:
+                    forced = self._forced_yaw_once.get(ext_id)
+                elif ext_id in self._pending_yaw_flips:
+                    try:
+                        forced = (float(row[6]) + 180.0) % 360.0
+                    except Exception:
+                        forced = None
+                if forced is None:
+                    continue
+                try:
+                    tracks[idx, 6] = float(forced)
+                except Exception:
+                    tracks[idx, 6] = (float(row[6]) + 180.0) % 360.0
+                info = track_info_by_id.get(internal_id)
+                if info is not None:
+                    info["yaw"] = tracks[idx, 6]
+                to_clear.add(ext_id)
+            for ext_id in to_clear:
+                self._pending_yaw_flips.discard(ext_id)
+                self._forced_yaw_once.pop(ext_id, None)
 
         if tracks is not None and len(tracks):
             yaw_threshold = float(YAW_FLIP_THRESHOLD_DEG)
@@ -2335,6 +2366,27 @@ class RealtimeServer:
             flipped = self.tracker.force_flip_yaw(resolved_id, offset_deg=delta)
             if flipped:
                 print(f"[Command] flipped track {tid} yaw by {delta:.1f}°")
+                try:
+                    tracks_snapshot = self.tracker.list_tracks()
+                    for it in tracks_snapshot:
+                        try:
+                            iid = int(it.get("id"))
+                        except Exception:
+                            continue
+                        if iid != resolved_id:
+                            continue
+                        try:
+                            new_yaw_val = float(it.get("yaw"))
+                            self._forced_yaw_once[tid] = new_yaw_val
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    pass
+                try:
+                    self._pending_yaw_flips.add(tid)
+                except Exception:
+                    self._pending_yaw_flips = {tid}
                 return {"status": "ok", "track_id": tid, "delta": delta}
             return {"status": "error", "message": f"track {tid} not found"}
         if cmd == "set_color":
