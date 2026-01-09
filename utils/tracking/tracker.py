@@ -312,6 +312,7 @@ class Track:
         self._update_color(color)
 
         self._append_history_entry()
+        self.force_output_raw: bool = False
 
         # 이동 방향 기반 yaw 부호 고정용 상태
         self.heading_locked: bool = False
@@ -565,6 +566,10 @@ class Track:
         ], dtype=float)
 
     def get_state(self, smooth_window: int = 1, ema_alpha: Optional[float] = None, snap_eps: float = 0.0, stop_alpha_scale: float = 1.0, is_stopped: bool = False) -> np.ndarray:
+        if self.force_output_raw:
+            smooth_window = 1
+            ema_alpha = None
+            snap_eps = 0.0
         base_state = self._assemble_state()
         if smooth_window <= 1:
             out = base_state
@@ -602,6 +607,7 @@ class Track:
                 out = last_output
 
         if ema_alpha is None or ema_alpha <= 0.0 or ema_alpha >= 1.0:
+            self.force_output_raw = False
             return out
         alpha = ema_alpha
         if is_stopped and stop_alpha_scale > 0.0:
@@ -617,6 +623,7 @@ class Track:
             blended = self._ema_state * beta + out * alpha
             blended[5] = blended_yaw
             self._ema_state = blended
+        self.force_output_raw = False
         return self._ema_state
 
     def _is_stopped(self, cfg: TrackerConfigBase) -> bool:
@@ -665,6 +672,11 @@ class Track:
         self.heading_lock_score = HEADING_LOCK_FRAMES
         self.locked_heading = self.car_yaw
         self.yaw_hard_lock = True
+        # 강제 뒤집기 후 바로 출력 반영되도록 스무딩 상태 리셋
+        state = self._assemble_state()
+        self.history = [state]
+        self._ema_state = None
+        self.force_output_raw = True
 
     def force_set_yaw(self, yaw_deg: float) -> None:
         """
@@ -676,6 +688,11 @@ class Track:
         self.heading_lock_score = HEADING_LOCK_FRAMES
         self.locked_heading = self.car_yaw
         self.yaw_hard_lock = True
+        # 즉시 반영 위해 스무딩 상태 리셋
+        state = self._assemble_state()
+        self.history = [state]
+        self._ema_state = None
+        self.force_output_raw = True
 
 
 class SortTracker:
