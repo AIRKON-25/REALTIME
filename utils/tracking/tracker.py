@@ -665,10 +665,6 @@ class Track:
         self.heading_lock_score = HEADING_LOCK_FRAMES
         self.locked_heading = self.car_yaw
         self.yaw_hard_lock = True
-        # 강제 뒤집기 시 바로 출력 반영되도록 스무딩 상태 리셋
-        state = self._assemble_state()
-        self.history = [state]
-        self._ema_state = state.copy()
 
     def force_set_yaw(self, yaw_deg: float) -> None:
         """
@@ -680,10 +676,6 @@ class Track:
         self.heading_lock_score = HEADING_LOCK_FRAMES
         self.locked_heading = self.car_yaw
         self.yaw_hard_lock = True
-        # 즉시 반영 위해 스무딩 상태 리셋
-        state = self._assemble_state()
-        self.history = [state]
-        self._ema_state = state.copy()
 
 
 class SortTracker:
