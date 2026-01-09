@@ -52,7 +52,8 @@ from realtime.runtime_constants import (
     rubberCone_fixed_width,
     barricade_fixed_length,
     barricade_fixed_width,
-    EXT_COLOR_ID
+    EXT_COLOR_ID,
+    YAW_FLIP_THRESHOLD_DEG,
 )
 from realtime.status_core import StatusState
 
@@ -795,6 +796,44 @@ class RealtimeServer:
             return 180.0
         return abs((diff + 180.0) % 360.0 - 180.0)
 
+    def _maybe_flip_yaw_by_history(
+        self,
+        internal_id: int,
+        ext_id: Optional[int],
+        track_info: Optional[dict],
+        threshold_deg: float,
+    ) -> bool:
+        """외부 ID의 이전 yaw/속도 방향과 크게 다르면 180도 뒤집는다."""
+        if ext_id is None or not track_info:
+            return False
+        prev = self._external_history.get(ext_id) or {}
+        prev_yaw = prev.get("yaw")
+        if prev_yaw is None:
+            vel = self._velocity_state.get(ext_id) or {}
+            vx = vel.get("vx")
+            vy = vel.get("vy")
+            if vx is not None and vy is not None:
+                try:
+                    prev_yaw = math.degrees(math.atan2(float(vy), float(vx)))
+                except Exception:
+                    prev_yaw = None
+        curr_yaw = track_info.get("yaw")
+        if prev_yaw is None or curr_yaw is None:
+            return False
+        if self._deg_diff(curr_yaw, prev_yaw) <= threshold_deg:
+            return False
+        flipped = False
+        try:
+            flipped = self.tracker.force_flip_yaw(internal_id)
+        except Exception:
+            flipped = False
+        if flipped:
+            try:
+                track_info["yaw"] = (float(curr_yaw) + 180.0) % 360.0
+            except Exception:
+                pass
+        return flipped
+
     def _path_reid_cost(self, ext_id: int, track_info: dict) -> Optional[float]:
         """
         경로 정보를 이용한 재-ID 비용 계산.
@@ -1331,6 +1370,20 @@ class RealtimeServer:
             for row in tracks
         }
         self._external_to_internal = {ext: internal for internal, ext in id_map.items()}
+
+        if tracks is not None and len(tracks):
+            yaw_threshold = float(YAW_FLIP_THRESHOLD_DEG)
+            for idx, row in enumerate(tracks):
+                internal_id = int(row[0])
+                ext_id = id_map.get(internal_id)
+                info = track_info_by_id.get(internal_id)
+                if not info or int(info.get("cls", 1)) != 0:
+                    continue
+                if self._maybe_flip_yaw_by_history(internal_id, ext_id, info, yaw_threshold):
+                    try:
+                        tracks[idx, 6] = float(info.get("yaw", tracks[idx, 6]))
+                    except Exception:
+                        tracks[idx, 6] = (float(row[6]) + 180.0) % 360.0
 
         new_cache: Dict[int, dict] = {}
         for row in tracks:

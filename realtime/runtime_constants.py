@@ -23,6 +23,9 @@ ROUTE_CHANGE_DRAW_POINTS_PER_SEC = 5.0  # 경로를 웹에서 초당 그리는 �
 ROUTE_CHANGE_EXTRA_SECONDS = 2.0  # 경로 표시 버퍼 시간(초)
 ROUTE_CHANGE_MIN_SECONDS = 1.0  # 최소 표시 시간(초)
 
+# yaw 보정
+YAW_FLIP_THRESHOLD_DEG = 120.0  # 이전 yaw와 이 이상 벌어지면 180도 뒤집기
+
 # 조기 ID 해제/재매칭 (LOST 상태 핸드오프) 파라미터
 EARLY_RELEASE_LOST_FRAMES = 10  # LOST 경과 프레임이 이 이상이면 외부 ID 조기 해제 시도
 EARLY_REID_DIST_M = 3.0         # 조기 해제된 ID를 붙일 때 거리 게이트(보수적)
