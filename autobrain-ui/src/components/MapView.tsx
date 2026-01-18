@@ -4,6 +4,7 @@ import type { CSSProperties } from "react";
 import type {
   CameraId,
   CameraOnMap,
+  CarColor,
   CarOnMap,
   CarId,
   ObstacleOnMap,
@@ -18,12 +19,39 @@ import CameraIconActive from "../assets/camera-icon-active.svg";
 import CameraIconVertical from "../assets/camera-icon_vertical.svg";
 import CameraIconVerticalActive from "../assets/camera-icon-vertical-active.svg";
 import ArrowRect from "../assets/arrow-rectangle.png";
+import ArrowRectGreen from "../assets/arrow-rectangle-green.png";
+import ArrowRectPurple from "../assets/arrow-rectangle-purple.png";
+import ArrowRectRed from "../assets/arrow-rectangle-red.png";
+import ArrowRectYellow from "../assets/arrow-rectangle-yellow.png";
 import ArrowHead from "../assets/arrow.png";
+import ArrowHeadGreen from "../assets/arrow-green.png";
+import ArrowHeadPurple from "../assets/arrow-purple.png";
+import ArrowHeadRed from "../assets/arrow-red.png";
+import ArrowHeadYellow from "../assets/arrow-yellow.png";
 
-const normalizeCarColor = (color: string | undefined) => {
+const CAR_COLORS: readonly CarColor[] = ["red", "green", "yellow", "purple", "white"];
+
+const normalizeCarColor = (color: string | undefined): CarColor => {
   const normalized = (color ?? "").toString().trim().toLowerCase();
-  const allowed = ["red", "green", "yellow", "purple", "white"] as const;
-  return (allowed as readonly string[]).includes(normalized) ? normalized : "red";
+  return (CAR_COLORS as readonly string[]).includes(normalized)
+    ? (normalized as CarColor)
+    : "white";
+};
+
+const ROUTE_ARROW_ASSETS: Record<CarColor, string> = {
+  white: ArrowHead,
+  red: ArrowHeadRed,
+  yellow: ArrowHeadYellow,
+  green: ArrowHeadGreen,
+  purple: ArrowHeadPurple,
+};
+
+const ROUTE_RECT_ASSETS: Record<CarColor, string> = {
+  white: ArrowRect,
+  red: ArrowRectRed,
+  yellow: ArrowRectYellow,
+  green: ArrowRectGreen,
+  purple: ArrowRectPurple,
 };
 
 const isSideCamera = (cam: CameraOnMap) => {
@@ -48,10 +76,18 @@ interface RouteSprite {
   carId: CarId;
 }
 
-const ROUTE_STEP = 0.035; // normalized distance per sprite (~3.5% of map width/height)
+const ROUTE_STEP = 0.05; //0.035; // 경로를 얼마나 띄엄띄엄 찍을지 
+const ROUTE_TAIL_GAP = ROUTE_STEP * 1.5; // 맨마지막화살표 좀 ㅁ띄우자. 
 const RECT_BASE_ANGLE = -90; // adjust if your PNG default orientation differs
 const ARROW_BASE_ANGLE = 180; // arrow.png points left by default
+const REVEAL_DURATION_MS = 2000;
+const REVEAL_TICK_MS = 50;
 const CLICK_PATH_DURATION_MS = 2000;
+
+const getRevealStep = (total: number) => {
+  if (total <= 0) return 0;
+  return Math.max(1, Math.ceil(total * (REVEAL_TICK_MS / REVEAL_DURATION_MS)));
+};
 
 const buildRouteSprites = (
   carId: CarId,
@@ -73,12 +109,19 @@ const buildRouteSprites = (
     const steps = Math.max(1, Math.floor(dist / ROUTE_STEP));
     const stepSize = dist / steps;
     const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const isTailSegment = i === points.length - 2;
     for (let s = 0; s < steps; s++) {
       const t = ((s + 0.5) * stepSize) / dist;
+      const sampleX = a.x + dx * t;
+      const sampleY = a.y + dy * t;
+      if (isTailSegment) {
+        const distToTail = Math.hypot(sampleX - b.x, sampleY - b.y);
+        if (distToTail < ROUTE_TAIL_GAP) continue;
+      }
       samples.push({
         id: `${prefix}-${carId}-seg-${i}-${s}-${counter++}`,
-        x: a.x + dx * t,
-        y: a.y + dy * t,
+        x: sampleX,
+        y: sampleY,
         angleDeg: angleDeg + RECT_BASE_ANGLE,
         kind: "rect",
         carId,
@@ -292,51 +335,62 @@ export const MapView = ({
       return;
     }
 
-    const timers: number[] = [];
-    const doneCars = new Set<CarId>();
     const byCar: Record<CarId, RouteSprite[]> = {};
     routeSprites.forEach((sprite) => {
       if (!byCar[sprite.carId]) byCar[sprite.carId] = [];
       byCar[sprite.carId].push(sprite);
     });
-
-    setVisibleRouteCounts(() => {
-      const next: Record<CarId, number> = {};
-      Object.entries(byCar).forEach(([carId, sprites]) => {
-        if (sprites.length === 0) return;
-        next[carId] = 0; // always restart animation so the final arrow is shown
-      });
-      return next;
-    });
+    const totalsByCar: Record<CarId, number> = {};
+    const stepsByCar: Record<CarId, number> = {};
+    let maxTicks = 0;
 
     Object.entries(byCar).forEach(([carId, sprites]) => {
       const total = sprites.length;
       if (total === 0) return;
-      const timer = window.setInterval(() => {
-        setVisibleRouteCounts((prev) => {
-          const now = prev[carId] ?? 0;
-          if (now >= total) return prev;
-          const next = now + 1;
-          if (next >= total) {
-            doneCars.add(carId);
-            if (doneCars.size === Object.keys(byCar).length && !routeHideTimerRef.current) {
-              routeHideTimerRef.current = window.setTimeout(() => {
-                setRouteSprites([]);
-                setVisibleRouteCounts({});
-                lastRouteChangeSigRef.current = null;
-                routeHideTimerRef.current = null;
-              }, CLICK_PATH_DURATION_MS);
-            }
-          }
-          return { ...prev, [carId]: next };
-        });
-      }, 90);
-      timers.push(timer);
+      const step = getRevealStep(total);
+      totalsByCar[carId] = total;
+      stepsByCar[carId] = step;
+      maxTicks = Math.max(maxTicks, Math.ceil(total / step));
     });
-    routeStepTimersRef.current = timers;
+
+    const initialCounts: Record<CarId, number> = {};
+    Object.keys(totalsByCar).forEach((carId) => {
+      initialCounts[carId as CarId] = 0; // always restart animation so the final arrow is shown
+    });
+    setVisibleRouteCounts(initialCounts);
+
+    if (!maxTicks) {
+      return;
+    }
+
+    let tickIndex = 0;
+    const timer = window.setInterval(() => {
+      tickIndex += 1;
+      const nextCounts: Record<CarId, number> = {};
+      Object.entries(totalsByCar).forEach(([carId, total]) => {
+        const step = stepsByCar[carId as CarId] ?? 1;
+        nextCounts[carId as CarId] = Math.min(total, tickIndex * step);
+      });
+
+      setVisibleRouteCounts(nextCounts);
+
+      if (tickIndex >= maxTicks) {
+        window.clearInterval(timer);
+        routeStepTimersRef.current = [];
+        if (!routeHideTimerRef.current) {
+          routeHideTimerRef.current = window.setTimeout(() => {
+            setRouteSprites([]);
+            setVisibleRouteCounts({});
+            lastRouteChangeSigRef.current = null;
+            routeHideTimerRef.current = null;
+          }, CLICK_PATH_DURATION_MS);
+        }
+      }
+    }, REVEAL_TICK_MS);
+    routeStepTimersRef.current = [timer];
 
     return () => {
-      timers.forEach((t) => window.clearInterval(t));
+      routeStepTimersRef.current.forEach((t) => window.clearInterval(t));
       if (routeHideTimerRef.current) {
         window.clearTimeout(routeHideTimerRef.current);
         routeHideTimerRef.current = null;
@@ -378,25 +432,26 @@ export const MapView = ({
 
     if (sprites.length) {
       const total = sprites.length;
+      const step = getRevealStep(total);
+      let current = 0;
       const timer = window.setInterval(() => {
+        current = Math.min(total, current + step);
         setVisibleClickedRouteCounts((prev) => {
-          const current = prev[activeCarId] ?? 0;
-          if (current >= total) return prev;
-          const next = current + 1;
-          if (next >= total) {
-            window.clearInterval(timer);
-            clickPathStepTimersRef.current = [];
-            if (!clickPathTimerRef.current) {
-              clickPathTimerRef.current = window.setTimeout(() => {
-                setClickedRouteSprites([]);
-                setVisibleClickedRouteCounts({});
-                clickPathTimerRef.current = null;
-              }, CLICK_PATH_DURATION_MS);
-            }
-          }
-          return { ...prev, [activeCarId]: next };
+          if ((prev[activeCarId] ?? 0) === current) return prev;
+          return { ...prev, [activeCarId]: current };
         });
-      }, 90);
+        if (current >= total) {
+          window.clearInterval(timer);
+          clickPathStepTimersRef.current = [];
+          if (!clickPathTimerRef.current) {
+            clickPathTimerRef.current = window.setTimeout(() => {
+              setClickedRouteSprites([]);
+              setVisibleClickedRouteCounts({});
+              clickPathTimerRef.current = null;
+            }, CLICK_PATH_DURATION_MS);
+          }
+        }
+      }, REVEAL_TICK_MS);
       clickPathStepTimersRef.current.push(timer);
     }
 
@@ -452,6 +507,13 @@ export const MapView = ({
     clickedRouteSprites.forEach((s) => ids.add(s.carId));
     return ids;
   }, [routeSprites, clickedRouteSprites]);
+  const carColorById = useMemo(() => {
+    const next: Record<CarId, CarColor> = {};
+    carsOnMap.forEach((car) => {
+      next[car.carId] = normalizeCarColor(car.color);
+    });
+    return next;
+  }, [carsOnMap]);
 
   return (
     <div className="map" style={mapStyle}>
@@ -587,7 +649,10 @@ export const MapView = ({
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
                   const size = isArrow ? 28 * mapScale : 13 * mapScale;
-                  const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                  const color = carColorById[sprite.carId] ?? "white";
+                  const imgSrc = isArrow
+                    ? ROUTE_ARROW_ASSETS[color]
+                    : ROUTE_RECT_ASSETS[color];
                   return (
                     <img
                       key={sprite.id}
@@ -620,7 +685,10 @@ export const MapView = ({
                   progress[sprite.carId] = shownSoFar + 1;
                   const isArrow = sprite.kind === "arrow";
                   const size = isArrow ? 36 * mapScale : 13 * mapScale;
-                  const imgSrc = isArrow ? ArrowHead : ArrowRect;
+                  const color = carColorById[sprite.carId] ?? "white";
+                  const imgSrc = isArrow
+                    ? ROUTE_ARROW_ASSETS[color]
+                    : ROUTE_RECT_ASSETS[color];
                   return (
                     <img
                       key={sprite.id}

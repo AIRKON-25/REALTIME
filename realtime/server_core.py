@@ -52,7 +52,8 @@ from realtime.runtime_constants import (
     rubberCone_fixed_width,
     barricade_fixed_length,
     barricade_fixed_width,
-    EXT_COLOR_ID
+    EXT_COLOR_ID,
+    YAW_FLIP_THRESHOLD_DEG,
 )
 from realtime.status_core import StatusState
 
@@ -184,6 +185,7 @@ class FusionDashboard:
         timings = snap.get("timings") or {}
         metrics = snap.get("tracker_metrics") or {}
         car_status = snap.get("car_status") or {}
+        traffic_status = snap.get("traffic_status") or []
 
         def _fmt_progress(info: dict) -> str:
             if not info:
@@ -340,11 +342,44 @@ class FusionDashboard:
         if not metrics:
             metrics_table.add_row("-", "-")
 
+        traffic_table = Table(title="Traffic", box=box.SIMPLE, expand=True, show_lines=False)
+        for col in ["id", "light", "left", "age_s"]:
+            traffic_table.add_column(col)
+        now_ts = ts if ts is not None else time.time()
+        for item in traffic_status:
+            tl_id = item.get("trafficLight_id")
+            if tl_id is None:
+                tl_id = item.get("trafficLightId")
+            if tl_id is None:
+                tl_id = item.get("id")
+            light_val = item.get("light")
+            left_green = item.get("left_green")
+            if left_green is None:
+                left_disp = "-"
+            else:
+                left_disp = "Y" if left_green else "N"
+            age_disp = "-"
+            try:
+                item_ts = item.get("ts")
+                if item_ts is not None and now_ts is not None:
+                    age_disp = self._fmt_float(float(now_ts) - float(item_ts), 1)
+            except Exception:
+                pass
+            traffic_table.add_row(
+                str(tl_id) if tl_id is not None else "-",
+                self._color_text(str(light_val) if light_val is not None else None, None),
+                left_disp,
+                age_disp,
+            )
+        if not traffic_status:
+            traffic_table.add_row("-", "-", "-", "-")
+
         layout = Layout()
         layout.split_column(
             Layout(summary, name="summary", size=5),
             Layout(fused_table, name="fused", ratio=3),
             Layout(track_panel, name="tracks", ratio=4),
+            Layout(traffic_table, name="traffic", size=10),
             Layout(metrics_table, name="metrics", size=10),
         )
         return layout
@@ -479,6 +514,8 @@ class RealtimeServer:
         self._latest_route_versions: Dict[str, str] = {}
         self._latest_routes: Dict[str, List[dict]] = {}
         self._latest_route_visibility: Dict[str, bool] = {}
+        self._pending_yaw_flips: set = set()
+        self._forced_yaw_once: Dict[int, float] = {}
         self._ws_heartbeat_stop = threading.Event()
         self._ws_heartbeat_thread: Optional[threading.Thread] = None
         # 클러스터 단계별 스냅샷(WS/대시보드 공유)에 사용
@@ -493,12 +530,12 @@ class RealtimeServer:
             {"id": "camMarker-6", "cameraId": "cam-6", "x": 0.25, "y": 1.02},
         ]
         self._ui_cameras_status = [
-            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.107:8080/stream", "streamBEVUrl": "http://192.168.0.107:8081/stream"},
+            {"id": "cam-1", "name": "Camera 1", "streamUrl": "http://192.168.0.102:8080/stream", "streamBEVUrl": "http://192.168.0.102:8081/stream"},
             {"id": "cam-2", "name": "Camera 2", "streamUrl": "http://192.168.0.105:8080/stream", "streamBEVUrl": "http://192.168.0.105:8081/stream"},
-            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.102:8080/stream", "streamBEVUrl": "http://192.168.0.102:8081/stream"},
+            {"id": "cam-3", "name": "Camera 3", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
             {"id": "cam-4", "name": "Camera 4", "streamUrl": "http://192.168.0.106:8080/stream", "streamBEVUrl": "http://192.168.0.106:8081/stream"},
-            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
-            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.103:8080/stream", "streamBEVUrl": "http://192.168.0.103:8081/stream"},
+            {"id": "cam-5", "name": "Camera 5", "streamUrl": "http://192.168.0.107:8080/stream", "streamBEVUrl": "http://192.168.0.107:8081/stream"},
+            {"id": "cam-6", "name": "Camera 6", "streamUrl": "http://192.168.0.104:8080/stream", "streamBEVUrl": "http://192.168.0.104:8081/stream"},
         ]
         self._ui_cam_status: Optional[dict] = None
         _raw_traffic_lights = [
@@ -760,6 +797,44 @@ class RealtimeServer:
         except Exception:
             return 180.0
         return abs((diff + 180.0) % 360.0 - 180.0)
+
+    def _maybe_flip_yaw_by_history(
+        self,
+        internal_id: int,
+        ext_id: Optional[int],
+        track_info: Optional[dict],
+        threshold_deg: float,
+    ) -> bool:
+        """외부 ID의 이전 yaw/속도 방향과 크게 다르면 180도 뒤집는다."""
+        if ext_id is None or not track_info:
+            return False
+        prev = self._external_history.get(ext_id) or {}
+        prev_yaw = prev.get("yaw")
+        if prev_yaw is None:
+            vel = self._velocity_state.get(ext_id) or {}
+            vx = vel.get("vx")
+            vy = vel.get("vy")
+            if vx is not None and vy is not None:
+                try:
+                    prev_yaw = math.degrees(math.atan2(float(vy), float(vx)))
+                except Exception:
+                    prev_yaw = None
+        curr_yaw = track_info.get("yaw")
+        if prev_yaw is None or curr_yaw is None:
+            return False
+        if self._deg_diff(curr_yaw, prev_yaw) <= threshold_deg:
+            return False
+        flipped = False
+        try:
+            flipped = self.tracker.force_flip_yaw(internal_id)
+        except Exception:
+            flipped = False
+        if flipped:
+            try:
+                track_info["yaw"] = (float(curr_yaw) + 180.0) % 360.0
+            except Exception:
+                pass
+        return flipped
 
     def _path_reid_cost(self, ext_id: int, track_info: dict) -> Optional[float]:
         """
@@ -1297,6 +1372,49 @@ class RealtimeServer:
             for row in tracks
         }
         self._external_to_internal = {ext: internal for internal, ext in id_map.items()}
+
+        if tracks is not None and len(tracks) and (self._pending_yaw_flips or self._forced_yaw_once):
+            to_clear: set = set()
+            for idx, row in enumerate(tracks):
+                internal_id = int(row[0])
+                ext_id = id_map.get(internal_id)
+                if ext_id is None:
+                    continue
+                forced = None
+                if ext_id in self._forced_yaw_once:
+                    forced = self._forced_yaw_once.get(ext_id)
+                elif ext_id in self._pending_yaw_flips:
+                    try:
+                        forced = (float(row[6]) + 180.0) % 360.0
+                    except Exception:
+                        forced = None
+                if forced is None:
+                    continue
+                try:
+                    tracks[idx, 6] = float(forced)
+                except Exception:
+                    tracks[idx, 6] = (float(row[6]) + 180.0) % 360.0
+                info = track_info_by_id.get(internal_id)
+                if info is not None:
+                    info["yaw"] = tracks[idx, 6]
+                to_clear.add(ext_id)
+            for ext_id in to_clear:
+                self._pending_yaw_flips.discard(ext_id)
+                self._forced_yaw_once.pop(ext_id, None)
+
+        if tracks is not None and len(tracks):
+            yaw_threshold = float(YAW_FLIP_THRESHOLD_DEG)
+            for idx, row in enumerate(tracks):
+                internal_id = int(row[0])
+                ext_id = id_map.get(internal_id)
+                info = track_info_by_id.get(internal_id)
+                if not info or int(info.get("cls", 1)) != 0:
+                    continue
+                if self._maybe_flip_yaw_by_history(internal_id, ext_id, info, yaw_threshold):
+                    try:
+                        tracks[idx, 6] = float(info.get("yaw", tracks[idx, 6]))
+                    except Exception:
+                        tracks[idx, 6] = (float(row[6]) + 180.0) % 360.0
 
         new_cache: Dict[int, dict] = {}
         for row in tracks:
@@ -2248,6 +2366,27 @@ class RealtimeServer:
             flipped = self.tracker.force_flip_yaw(resolved_id, offset_deg=delta)
             if flipped:
                 print(f"[Command] flipped track {tid} yaw by {delta:.1f}°")
+                try:
+                    tracks_snapshot = self.tracker.list_tracks()
+                    for it in tracks_snapshot:
+                        try:
+                            iid = int(it.get("id"))
+                        except Exception:
+                            continue
+                        if iid != resolved_id:
+                            continue
+                        try:
+                            new_yaw_val = float(it.get("yaw"))
+                            self._forced_yaw_once[tid] = new_yaw_val
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    pass
+                try:
+                    self._pending_yaw_flips.add(tid)
+                except Exception:
+                    self._pending_yaw_flips = {tid}
                 return {"status": "ok", "track_id": tid, "delta": delta}
             return {"status": "error", "message": f"track {tid} not found"}
         if cmd == "set_color":
@@ -2570,6 +2709,7 @@ class RealtimeServer:
                 meta["color_votes"] = dict(votes)
 
     def _mapping_color_id_cut(self, tracks: np.ndarray, meta: Dict[int, dict], ts: float) -> Tuple[np.ndarray, Dict[int, dict]]:
+        mapped = []
         if tracks is not None and len(tracks):
             for row in tracks:
                 try:
@@ -2587,7 +2727,10 @@ class RealtimeServer:
                     color = extra.get("color")
                 
                 meta[tid]["color"] = color
-            mapped = tracks.copy()  
+                
+                mapped.append(row)
+            mapped = np.array(mapped, dtype=tracks.dtype)
+            # mapped = tracks.copy()  
             return mapped, meta
         return tracks, meta
     
@@ -2847,6 +2990,20 @@ class RealtimeServer:
                 except Exception:
                     continue
                 car_status[ext_id] = status_entry
+        traffic_status: List[dict] = []
+        if self.status_state:
+            try:
+                traffic_map = self.status_state.snapshot().get("traffic") or {}
+            except Exception:
+                traffic_map = {}
+            for entry in traffic_map.values():
+                if entry:
+                    traffic_status.append(dict(entry))
+            try:
+                traffic_status.sort(key=lambda item: int(item.get("trafficLight_id") or 0))
+            except Exception:
+                pass
+
         snap = {
             "ts": ts,
             "raw_total": sum(raw_stats.values()) if raw_stats else 0,
@@ -2859,6 +3016,7 @@ class RealtimeServer:
             "tracker_metrics": self.tracker.get_last_metrics() if self.tracker else {},
             "ext_to_int": dict(self._external_to_internal),
             "car_status": car_status,
+            "traffic_status": traffic_status,
         }
         self.dashboard.update(snap)
 
@@ -3128,11 +3286,11 @@ class RealtimeServer:
             except Exception:
                 self._last_input_latency_ms = None
             timings["gather"] = (time.perf_counter() - t0) * 1000.0
-            self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
+            # self._broadcast_cluster_stage("preCluster", raw_dets, frame_ts)
             t1 = time.perf_counter()
             fused = self._fuse_boxes(raw_dets) # 클러스터링 - 융합 [{"cls":...,"cx",...,"score","source_cams"...}, ...]
             timings["fuse"] = (time.perf_counter() - t1) * 1000.0
-            self._broadcast_cluster_stage("postCluster", fused, frame_ts)
+            # self._broadcast_cluster_stage("postCluster", fused, frame_ts)
             t2 = time.perf_counter()
             tracks = self._run_tracker_step(fused) # 트랙 업데이트 np.ndarray([[id, cls, cx, cy, length, width, yaw], ...])
             timings["track"] = (time.perf_counter() - t2) * 1000.0
